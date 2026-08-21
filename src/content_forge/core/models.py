@@ -89,6 +89,13 @@ class _FrozenDict(Mapping[str, object]):
     def __repr__(self) -> str:
         return repr(dict(self._data))
 
+    def __copy__(self) -> _FrozenDict:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenDict:
+        memo[id(self)] = self
+        return self
+
     def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("canonical JSON containers are immutable")
 
@@ -139,6 +146,13 @@ class _FrozenList(Sequence[object]):
         ):
             return tuple(self) == tuple(other)
         return False
+
+    def __copy__(self) -> _FrozenList:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _FrozenList:
+        memo[id(self)] = self
+        return self
 
     def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("canonical JSON containers are immutable")
