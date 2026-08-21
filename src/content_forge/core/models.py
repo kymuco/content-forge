@@ -66,6 +66,23 @@ def _assert_unique(values: list[str], label: str) -> None:
 class _FrozenDict(dict):
     """JSON-compatible dict that blocks ordinary in-place mutation."""
 
+    __slots__ = ("_sealed",)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise TypeError("canonical JSON containers are immutable")
+        dict.__init__(self, *args, **kwargs)
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "_sealed" and not getattr(self, "_sealed", False):
+            object.__setattr__(self, name, value)
+            return
+        raise TypeError("canonical JSON containers are immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("canonical JSON containers are immutable")
+
     @staticmethod
     def _immutable(*args: object, **kwargs: object) -> None:
         raise TypeError("canonical JSON containers are immutable")
@@ -82,6 +99,23 @@ class _FrozenDict(dict):
 
 class _FrozenList(list):
     """JSON-compatible list that blocks ordinary in-place mutation."""
+
+    __slots__ = ("_sealed",)
+
+    def __init__(self, iterable: object = ()) -> None:
+        if getattr(self, "_sealed", False):
+            raise TypeError("canonical JSON containers are immutable")
+        list.__init__(self, iterable)  # type: ignore[arg-type]
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "_sealed" and not getattr(self, "_sealed", False):
+            object.__setattr__(self, name, value)
+            return
+        raise TypeError("canonical JSON containers are immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("canonical JSON containers are immutable")
 
     @staticmethod
     def _immutable(*args: object, **kwargs: object) -> None:
