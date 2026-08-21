@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,35 @@ def test_derivative_metadata_slots_are_persistent(tmp_path: Path) -> None:
     assert restored == slot
 
 
+def test_storage_json_metadata_is_deeply_immutable(tmp_path: Path) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    ingest = library.assets.ingest_file(write_fixture(tmp_path / "clip.mp4"))
+    job = StoredJob(
+        job_type="render.preview",
+        payload={"nested": [{"value": 1}]},
+    )
+    derivative = DerivativeSlot(
+        asset_id=ingest.asset.asset_id,
+        slot="proxy.review",
+        metadata={"nested": [{"value": 1}]},
+    )
+
+    with pytest.raises(TypeError, match="immutable"):
+        job.payload["extra"] = 2
+    with pytest.raises(TypeError, match="immutable"):
+        job.payload["nested"].append(2)  # type: ignore[union-attr]
+    with pytest.raises(TypeError, match="immutable"):
+        derivative.metadata["nested"][0]["value"] = 2  # type: ignore[index]
+
+    library.database.create_job(job)
+    library.database.put_derivative_slot(derivative)
+    assert library.database.get_job(job.job_id) == job
+    assert (
+        library.database.get_derivative_slot(ingest.asset.asset_id, "proxy.review")
+        == derivative
+    )
+
+
 def test_job_metadata_is_persistent_and_uses_job_ids(tmp_path: Path) -> None:
     library = LocalLibrary(tmp_path / "runtime")
     project = Project(content_kind="synthetic")
@@ -174,6 +204,22 @@ def test_job_metadata_is_persistent_and_uses_job_ids(tmp_path: Path) -> None:
     running = library.database.update_job_state(job.job_id, "running")
     assert running.state == "running"
     assert running.updated_at >= job.updated_at
+
+
+def test_concurrent_job_updates_keep_commit_ordered_timestamps(tmp_path: Path) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    job = StoredJob(job_type="render.preview")
+    library.database.create_job(job)
+
+    states = [f"state_{index}" for index in range(8)]
+    with ThreadPoolExecutor(max_workers=len(states)) as pool:
+        updated = list(pool.map(library.database.update_job_state, [job.job_id] * len(states), states))
+
+    final = library.database.get_job(job.job_id)
+    assert final is not None
+    newest = max(updated, key=lambda item: item.updated_at)
+    assert final.updated_at == newest.updated_at
+    assert final.state == newest.state
 
 
 def test_job_state_update_is_validated_before_persistence(tmp_path: Path) -> None:
