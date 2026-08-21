@@ -144,6 +144,23 @@ def test_nested_json_containers_cannot_mutate_canonical_state() -> None:
         first["value"] = 2
 
 
+def test_frozen_json_containers_cannot_be_reinitialized() -> None:
+    project = Project(
+        content_kind="synthetic",
+        metadata={"nested": [1]},
+    )
+
+    with pytest.raises(TypeError, match="immutable"):
+        project.metadata.__init__({"score": float("nan")})
+
+    nested = project.metadata["nested"]
+    assert isinstance(nested, list)
+    with pytest.raises(TypeError, match="immutable"):
+        nested.__init__([2])
+
+    assert project.metadata == {"nested": [1]}
+
+
 def test_validated_copy_rejects_invalid_dynamic_update() -> None:
     project = build_project()
 
