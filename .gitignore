@@ -27,8 +27,7 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#   Usually these files are written by a python script from a template
-#   before PyInstaller builds the exe, so as to inject date/other infos into it.
+#   Usually these files are written by a python script from a template before being used.
 *.manifest
 *.spec
 
@@ -90,8 +89,8 @@ ipython_config.py
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
 #   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
+#   that don't work, pipenv may install dependencies that don't work, or not install all needed
+#   dependencies.
 # Pipfile.lock
 
 # UV
@@ -104,7 +103,7 @@ ipython_config.py
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file
 # poetry.lock
 # poetry.toml
 
@@ -216,3 +215,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Content Forge local runtime data. Production media, SQLite state, previews and
+# exports must never be committed to the public source repository.
+.content-forge/
+content-forge-data/
+content-forge.sqlite3
+content-forge.sqlite3-*
