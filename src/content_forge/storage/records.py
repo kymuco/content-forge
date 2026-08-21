@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from content_forge.core import (
     EntityKind,
@@ -13,6 +14,7 @@ from content_forge.core import (
     new_entity_id,
     require_entity_id,
 )
+from content_forge.core.models import FrozenModel
 
 
 def utc_now() -> datetime:
@@ -25,8 +27,8 @@ def _aware(value: datetime) -> datetime:
     return value
 
 
-class StorageModel(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+class StorageModel(FrozenModel):
+    """Deeply immutable validated storage-layer value object."""
 
 
 class SourceInput(StorageModel):
@@ -77,6 +79,12 @@ class StoredJob(StorageModel):
     @classmethod
     def validate_datetimes(cls, value: datetime) -> datetime:
         return _aware(value)
+
+    @model_validator(mode="after")
+    def validate_timestamp_order(self) -> Self:
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at cannot be before created_at")
+        return self
 
 
 class DerivativeSlot(StorageModel):
