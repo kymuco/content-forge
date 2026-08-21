@@ -424,20 +424,22 @@ class LibraryDatabase:
         )
 
     def update_job_state(self, job_id: str, state: str) -> StoredJob:
-        current = self.get_job(job_id)
-        if current is None:
-            raise StorageError(f"unknown job: {job_id}")
-
-        updated = StoredJob(
-            job_id=current.job_id,
-            project_id=current.project_id,
-            job_type=current.job_type,
-            state=state,
-            payload=current.payload,
-            created_at=current.created_at,
-            updated_at=datetime.now(timezone.utc),
-        )
         with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise StorageError(f"unknown job: {job_id}")
+
+            updated = StoredJob(
+                job_id=row["job_id"],
+                project_id=row["project_id"],
+                job_type=row["job_type"],
+                state=state,
+                payload=json.loads(row["payload_json"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.now(timezone.utc),
+            )
             changed = connection.execute(
                 "UPDATE jobs SET state = ?, updated_at = ? WHERE job_id = ?",
                 (updated.state, updated.updated_at.isoformat(), job_id),
