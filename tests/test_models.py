@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
 import pytest
@@ -131,17 +132,17 @@ def test_nested_json_containers_cannot_mutate_canonical_state() -> None:
     )
 
     with pytest.raises(TypeError, match="immutable"):
-        project.metadata["new"] = 2
+        project.metadata["new"] = 2  # type: ignore[index]
 
     nested = project.metadata["nested"]
-    assert isinstance(nested, list)
+    assert isinstance(nested, Sequence)
     with pytest.raises(TypeError, match="immutable"):
-        nested.append(2)
+        nested.append(2)  # type: ignore[attr-defined]
 
     first = nested[0]
-    assert isinstance(first, dict)
+    assert isinstance(first, Mapping)
     with pytest.raises(TypeError, match="immutable"):
-        first["value"] = 2
+        first["value"] = 2  # type: ignore[index]
 
 
 def test_frozen_json_containers_cannot_be_reinitialized() -> None:
@@ -154,9 +155,30 @@ def test_frozen_json_containers_cannot_be_reinitialized() -> None:
         project.metadata.__init__({"score": float("nan")})
 
     nested = project.metadata["nested"]
-    assert isinstance(nested, list)
+    assert isinstance(nested, Sequence)
     with pytest.raises(TypeError, match="immutable"):
         nested.__init__([2])
+
+    assert project.metadata == {"nested": [1]}
+
+
+def test_frozen_json_containers_reject_unbound_builtin_mutators() -> None:
+    project = Project(
+        content_kind="synthetic",
+        metadata={"nested": [1]},
+    )
+
+    with pytest.raises(TypeError):
+        dict.__setitem__(project.metadata, "score", float("nan"))  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        dict.update(project.metadata, {"score": float("nan")})  # type: ignore[arg-type]
+
+    nested = project.metadata["nested"]
+    assert isinstance(nested, Sequence)
+    with pytest.raises(TypeError):
+        list.append(nested, 2)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        list.__init__(nested, [2])  # type: ignore[arg-type]
 
     assert project.metadata == {"nested": [1]}
 
