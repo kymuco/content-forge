@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
@@ -181,6 +182,24 @@ def test_frozen_json_containers_reject_unbound_builtin_mutators() -> None:
         list.__init__(nested, [2])  # type: ignore[arg-type]
 
     assert project.metadata == {"nested": [1]}
+
+
+def test_frozen_json_containers_support_deep_copy() -> None:
+    project = Project(
+        content_kind="synthetic",
+        metadata={"nested": [{"value": 1}]},
+    )
+
+    pydantic_copy = project.model_copy(deep=True)
+    stdlib_copy = copy.deepcopy(project)
+
+    assert pydantic_copy == project
+    assert stdlib_copy == project
+    assert pydantic_copy is not project
+    assert stdlib_copy is not project
+    assert pydantic_copy.metadata is project.metadata
+    assert stdlib_copy.metadata is project.metadata
+    assert copy.deepcopy(project.metadata) is project.metadata
 
 
 def test_validated_copy_rejects_invalid_dynamic_update() -> None:
