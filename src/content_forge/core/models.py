@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Annotated, Self
 
 from pydantic import (
@@ -12,6 +14,7 @@ from pydantic import (
     JsonValue,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -63,21 +66,30 @@ def _assert_unique(values: list[str], label: str) -> None:
         raise ValueError(f"duplicate {label}")
 
 
-class _FrozenDict(dict):
-    """JSON-compatible dict that blocks ordinary in-place mutation."""
+class _FrozenDict(Mapping[str, object]):
+    """Immutable mapping used for canonical JSON object containers."""
 
-    __slots__ = ("_sealed",)
+    __slots__ = ("_data",)
 
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        if getattr(self, "_sealed", False):
+    def __init__(self, values: Mapping[str, object] | None = None) -> None:
+        if hasattr(self, "_data"):
             raise TypeError("canonical JSON containers are immutable")
-        dict.__init__(self, *args, **kwargs)
-        object.__setattr__(self, "_sealed", True)
+        materialized = {} if values is None else dict(values)
+        object.__setattr__(self, "_data", MappingProxyType(materialized))
+
+    def __getitem__(self, key: str) -> object:
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return repr(dict(self._data))
 
     def __setattr__(self, name: str, value: object) -> None:
-        if name == "_sealed" and not getattr(self, "_sealed", False):
-            object.__setattr__(self, name, value)
-            return
         raise TypeError("canonical JSON containers are immutable")
 
     def __delattr__(self, name: str) -> None:
@@ -97,21 +109,38 @@ class _FrozenDict(dict):
     update = _immutable
 
 
-class _FrozenList(list):
-    """JSON-compatible list that blocks ordinary in-place mutation."""
+class _FrozenList(Sequence[object]):
+    """Immutable sequence used for canonical JSON array containers."""
 
-    __slots__ = ("_sealed",)
+    __slots__ = ("_items",)
+    __hash__ = None
 
-    def __init__(self, iterable: object = ()) -> None:
-        if getattr(self, "_sealed", False):
+    def __init__(self, values: object = ()) -> None:
+        if hasattr(self, "_items"):
             raise TypeError("canonical JSON containers are immutable")
-        list.__init__(self, iterable)  # type: ignore[arg-type]
-        object.__setattr__(self, "_sealed", True)
+        object.__setattr__(self, "_items", tuple(values))  # type: ignore[arg-type]
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __repr__(self) -> str:
+        return repr(list(self._items))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(
+            other,
+            (str, bytes, bytearray),
+        ):
+            return tuple(self) == tuple(other)
+        return False
 
     def __setattr__(self, name: str, value: object) -> None:
-        if name == "_sealed" and not getattr(self, "_sealed", False):
-            object.__setattr__(self, name, value)
-            return
         raise TypeError("canonical JSON containers are immutable")
 
     def __delattr__(self, name: str) -> None:
@@ -136,11 +165,11 @@ class _FrozenList(list):
 
 
 def _freeze_json_containers(value: object) -> object:
-    """Recursively freeze JSON container values while preserving serialization shape."""
+    """Recursively freeze JSON container values without mutable built-in inheritance."""
 
     if isinstance(value, (_FrozenDict, _FrozenList)):
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return _FrozenDict(
             {key: _freeze_json_containers(item) for key, item in value.items()}
         )
@@ -151,12 +180,26 @@ def _freeze_json_containers(value: object) -> object:
     return value
 
 
+def _thaw_json_containers(value: object) -> object:
+    """Return plain JSON-compatible containers for Pydantic serialization."""
+
+    if isinstance(value, _FrozenDict):
+        return {
+            key: _thaw_json_containers(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, _FrozenList):
+        return [_thaw_json_containers(item) for item in value]
+    return value
+
+
 class FrozenModel(BaseModel):
     """Base class for canonical value objects.
 
     Models reject unknown fields and direct field assignment. JSON-compatible nested
-    containers are recursively frozen after validation, so normal in-place mutation
-    cannot bypass invariants. Use `validated_copy()` for copy-on-write updates.
+    containers are recursively frozen after validation using immutable mapping/sequence
+    representations that cannot be mutated through `dict`/`list` base-class APIs. Use
+    `validated_copy()` for copy-on-write updates.
     """
 
     model_config = ConfigDict(
@@ -175,6 +218,16 @@ class FrozenModel(BaseModel):
             if frozen is not current:
                 object.__setattr__(self, name, frozen)
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_frozen_containers(self, handler):
+        proxy = self.model_copy()
+        for name in type(self).model_fields:
+            current = getattr(proxy, name)
+            thawed = _thaw_json_containers(current)
+            if thawed is not current:
+                object.__setattr__(proxy, name, thawed)
+        return handler(proxy)
 
     def validated_copy(self, *, update: dict[str, object] | None = None) -> Self:
         """Return a fully revalidated copy with optional field updates.
@@ -315,8 +368,8 @@ class Variant(PersistedModel):
     title: str | None = Field(default=None, max_length=4096)
     description: str | None = Field(default=None, max_length=20000)
     hashtags: tuple[str, ...] = ()
-    text_overrides: dict[str, str] = Field(default_factory=dict)
-    style_overrides: dict[str, JsonValue] = Field(default_factory=dict)
+    text_overrides: Mapping[str, str] = Field(default_factory=dict)
+    style_overrides: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("variant_id")
     @classmethod
@@ -334,13 +387,13 @@ class MotionSpec(FrozenModel):
     start_rect: NormalizedRect | None = None
     end_rect: NormalizedRect | None = None
     focus: NormalizedPoint | None = None
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
 
 class TransitionSpec(FrozenModel):
     transition_type: RegistryKey = "cut"
     duration_seconds: float = Field(default=0.0, ge=0.0)
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
 
 class Overlay(PersistedModel):
@@ -355,7 +408,7 @@ class Overlay(PersistedModel):
     text: str | None = None
     variant_field: RegistryKey | None = None
     asset_ref: AssetRef | None = None
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("overlay_id")
     @classmethod
@@ -373,7 +426,7 @@ class AudioTrack(PersistedModel):
     duration_seconds: float | None = Field(default=None, gt=0.0)
     gain_db: float = Field(default=0.0, ge=-120.0, le=24.0)
     loop: bool = False
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("audio_track_id")
     @classmethod
@@ -399,7 +452,7 @@ class Scene(PersistedModel):
     transition_out: TransitionSpec | None = None
     overlays: tuple[Overlay, ...] = ()
     audio_tracks: tuple[AudioTrack, ...] = ()
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("scene_id")
     @classmethod
@@ -439,7 +492,7 @@ class OutputProfile(PersistedModel):
     video_bitrate_kbps: int | None = Field(default=None, ge=1)
     audio_bitrate_kbps: int | None = Field(default=None, ge=1)
     safe_zones: tuple[SafeZone, ...] = ()
-    properties: dict[str, JsonValue] = Field(default_factory=dict)
+    properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def unique_safe_zone_names(self) -> Self:
@@ -454,7 +507,7 @@ class ReviewSuggestion(PersistedModel):
     label: str = Field(min_length=1, max_length=4096)
     value: JsonValue
     provider: str | None = Field(default=None, max_length=512)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: Mapping[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("suggestion_id")
     @classmethod
@@ -472,7 +525,7 @@ class ReviewTask(PersistedModel):
     attention: AttentionMode = AttentionMode.REVIEW
     priority: ReviewPriority = ReviewPriority.NORMAL
     blocking: bool = True
-    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    payload: Mapping[str, JsonValue] = Field(default_factory=dict)
     suggestions: tuple[ReviewSuggestion, ...] = ()
     accepted_value: JsonValue | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -531,7 +584,7 @@ class Project(PersistedModel):
     audio_tracks: tuple[AudioTrack, ...] = ()
     output_profiles: tuple[OutputProfile, ...] = ()
     review_tasks: tuple[ReviewTask, ...] = ()
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: Mapping[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
