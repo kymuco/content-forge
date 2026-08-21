@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from content_forge.core import AssetRef, EntityKind, MediaType, Project, new_entity_id
 from content_forge.storage import (
@@ -173,3 +174,15 @@ def test_job_metadata_is_persistent_and_uses_job_ids(tmp_path: Path) -> None:
     running = library.database.update_job_state(job.job_id, "running")
     assert running.state == "running"
     assert running.updated_at >= job.updated_at
+
+
+def test_job_state_update_is_validated_before_persistence(tmp_path: Path) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    job = StoredJob(job_type="render.preview")
+    library.database.create_job(job)
+
+    with pytest.raises(ValidationError):
+        library.database.update_job_state(job.job_id, "NOT A REGISTRY KEY")
+
+    restored = library.database.get_job(job.job_id)
+    assert restored == job
