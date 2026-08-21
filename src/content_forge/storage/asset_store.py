@@ -81,9 +81,12 @@ class AssetStore:
         size_bytes = 0
 
         try:
-            with input_path.open("rb") as source_handle, os.fdopen(
-                descriptor, "wb"
-            ) as destination_handle:
+            # Own the staging descriptor before attempting to open the source. If the
+            # source disappears or becomes unreadable after the initial is_file() check,
+            # the destination context still closes the descriptor on every platform.
+            with os.fdopen(descriptor, "wb") as destination_handle, input_path.open(
+                "rb"
+            ) as source_handle:
                 while chunk := source_handle.read(CHUNK_SIZE):
                     digest.update(chunk)
                     size_bytes += len(chunk)
