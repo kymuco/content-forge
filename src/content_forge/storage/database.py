@@ -43,7 +43,6 @@ def _strict_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
-        default=str,
     )
 
 
@@ -75,7 +74,8 @@ class LibraryDatabase:
 
     def initialize(self) -> "LibraryDatabase":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
+        with self.connection() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version > DATABASE_SCHEMA_VERSION:
                 raise StorageSchemaError(
@@ -147,8 +147,16 @@ class LibraryDatabase:
         return self
 
     @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._connect() as connection:
+        with self.connection() as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 yield connection
@@ -163,7 +171,6 @@ class LibraryDatabase:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
@@ -188,14 +195,14 @@ class LibraryDatabase:
             return stored
 
     def get_asset(self, asset_id: str) -> Asset | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT manifest_json FROM assets WHERE asset_id = ?", (asset_id,)
             ).fetchone()
         return None if row is None else load_json(Asset, row["manifest_json"])
 
     def get_asset_by_sha256(self, digest: str) -> Asset | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT manifest_json FROM assets WHERE sha256 = ?", (digest,)
             ).fetchone()
@@ -238,14 +245,14 @@ class LibraryDatabase:
         )
 
     def get_source(self, source_id: str) -> SourceRecord | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT manifest_json FROM sources WHERE source_id = ?", (source_id,)
             ).fetchone()
         return None if row is None else load_json(SourceRecord, row["manifest_json"])
 
     def list_sources(self, asset_id: str) -> tuple[SourceRecord, ...]:
-        with self._connect() as connection:
+        with self.connection() as connection:
             rows = connection.execute(
                 """
                 SELECT manifest_json FROM sources
@@ -301,9 +308,7 @@ class LibraryDatabase:
             connection.execute(
                 "DELETE FROM project_assets WHERE project_id = ?", (project.project_id,)
             )
-            unique_refs = {
-                (ref.asset_id, ref.source_id, str(ref.role)) for ref in refs
-            }
+            unique_refs = {(ref.asset_id, ref.source_id, str(ref.role)) for ref in refs}
             connection.executemany(
                 """
                 INSERT INTO project_assets(project_id, asset_id, source_id, role)
@@ -319,14 +324,14 @@ class LibraryDatabase:
         return project
 
     def load_project(self, project_id: str) -> Project | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT manifest_json FROM projects WHERE project_id = ?", (project_id,)
             ).fetchone()
         return None if row is None else load_json(Project, row["manifest_json"])
 
     def project_ids_for_asset(self, asset_id: str) -> tuple[str, ...]:
-        with self._connect() as connection:
+        with self.connection() as connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT project_id FROM project_assets
@@ -361,7 +366,7 @@ class LibraryDatabase:
         return slot
 
     def get_derivative_slot(self, asset_id: str, slot: str) -> DerivativeSlot | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 """
                 SELECT storage_key, metadata_json, updated_at
@@ -402,7 +407,7 @@ class LibraryDatabase:
         return job
 
     def get_job(self, job_id: str) -> StoredJob | None:
-        with self._connect() as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
@@ -419,15 +424,24 @@ class LibraryDatabase:
         )
 
     def update_job_state(self, job_id: str, state: str) -> StoredJob:
-        now = datetime.now(timezone.utc)
+        current = self.get_job(job_id)
+        if current is None:
+            raise StorageError(f"unknown job: {job_id}")
+
+        updated = StoredJob(
+            job_id=current.job_id,
+            project_id=current.project_id,
+            job_type=current.job_type,
+            state=state,
+            payload=current.payload,
+            created_at=current.created_at,
+            updated_at=datetime.now(timezone.utc),
+        )
         with self.transaction() as connection:
             changed = connection.execute(
                 "UPDATE jobs SET state = ?, updated_at = ? WHERE job_id = ?",
-                (state, now.isoformat(), job_id),
+                (updated.state, updated.updated_at.isoformat(), job_id),
             ).rowcount
             if changed != 1:
-                raise StorageError(f"unknown job: {job_id}")
-        stored = self.get_job(job_id)
-        if stored is None:
-            raise StorageError(f"job disappeared after update: {job_id}")
-        return stored
+                raise StorageError(f"job disappeared during update: {job_id}")
+        return updated
