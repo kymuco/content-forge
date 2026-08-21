@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import content_forge.storage.asset_store as asset_store_module
 from content_forge.core import AssetRef, EntityKind, MediaType, Project, new_entity_id
 from content_forge.storage import (
     AssetIntegrityError,
@@ -80,6 +81,37 @@ def test_blob_corruption_is_detected(tmp_path: Path) -> None:
 
     with pytest.raises(AssetIntegrityError):
         library.assets.ingest_file(fixture)
+
+
+def test_source_open_failure_closes_staging_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    fixture = write_fixture(tmp_path / "clip.mp4", b"original")
+    captured_handles = []
+    real_fdopen = asset_store_module.os.fdopen
+    real_path_open = Path.open
+
+    def capture_fdopen(*args, **kwargs):
+        handle = real_fdopen(*args, **kwargs)
+        captured_handles.append(handle)
+        return handle
+
+    def fail_fixture_open(self: Path, *args, **kwargs):
+        if self == fixture:
+            raise PermissionError("synthetic source-open race")
+        return real_path_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(asset_store_module.os, "fdopen", capture_fdopen)
+    monkeypatch.setattr(Path, "open", fail_fixture_open)
+
+    with pytest.raises(PermissionError, match="synthetic source-open race"):
+        library.assets.ingest_file(fixture)
+
+    assert len(captured_handles) == 1
+    assert captured_handles[0].closed is True
+    assert list(library.paths.incoming.iterdir()) == []
 
 
 def test_project_round_trip_references_library_asset_and_provenance(tmp_path: Path) -> None:
@@ -213,7 +245,13 @@ def test_concurrent_job_updates_keep_commit_ordered_timestamps(tmp_path: Path) -
 
     states = [f"state_{index}" for index in range(8)]
     with ThreadPoolExecutor(max_workers=len(states)) as pool:
-        updated = list(pool.map(library.database.update_job_state, [job.job_id] * len(states), states))
+        updated = list(
+            pool.map(
+                library.database.update_job_state,
+                [job.job_id] * len(states),
+                states,
+            )
+        )
 
     final = library.database.get_job(job.job_id)
     assert final is not None
