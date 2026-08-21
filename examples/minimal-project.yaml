@@ -1,0 +1,101 @@
+schema_version: "1.0"
+project_id: cf_project_11111111111111111111111111111111
+content_kind: character_moment
+state: needs_review
+source_refs:
+  - asset_id: cf_asset_22222222222222222222222222222222
+    source_id: cf_source_33333333333333333333333333333333
+    role: primary
+source_records:
+  - schema_version: "1.0"
+    source_id: cf_source_33333333333333333333333333333333
+    asset_id: cf_asset_22222222222222222222222222222222
+    source_url: https://example.invalid/synthetic-source
+    platform: synthetic
+    creator_name: null
+    creator_handle: null
+    original_title: Synthetic source
+    collected_at: 2026-08-21T12:00:00+00:00
+    credit_text: null
+    requires_credit: null
+    permission_status: unknown
+    permission_note: null
+    notes: Synthetic fixture only
+variants:
+  - schema_version: "1.0"
+    variant_id: cf_variant_44444444444444444444444444444444
+    language: en
+    hook: This is a synthetic hook
+    title: Synthetic project
+    description: null
+    hashtags: []
+    text_overrides: {}
+    style_overrides: {}
+workflow_id: quick_clip
+template:
+  template_id: hook_overlay
+  version: "1"
+scenes:
+  - schema_version: "1.0"
+    scene_id: cf_scene_55555555555555555555555555555555
+    order: 0
+    duration_seconds: 5.0
+    media:
+      asset_id: cf_asset_22222222222222222222222222222222
+      source_id: cf_source_33333333333333333333333333333333
+      role: primary
+    trim_start_seconds: 0.0
+    trim_duration_seconds: null
+    placement: {x: 0.0, y: 0.0, width: 1.0, height: 1.0}
+    fit_mode: cover
+    crop: null
+    focus: null
+    motion: null
+    transition_in: null
+    transition_out: null
+    overlays:
+      - schema_version: "1.0"
+        overlay_id: cf_overlay_66666666666666666666666666666666
+        component_type: text
+        start_seconds: 0.0
+        duration_seconds: null
+        placement: {x: 0.1, y: 0.05, width: 0.8, height: 0.15}
+        z_index: 10
+        text: null
+        variant_field: hook
+        asset_ref: null
+        properties: {}
+    audio_tracks: []
+    properties: {}
+overlays: []
+audio_tracks: []
+output_profiles:
+  - schema_version: "1.0"
+    profile_id: preview_vertical
+    width: 540
+    height: 960
+    fps: 30.0
+    container: mp4
+    video_codec: h264
+    audio_codec: aac
+    video_bitrate_kbps: null
+    audio_bitrate_kbps: null
+    safe_zones: []
+    properties: {}
+review_tasks:
+  - schema_version: "1.0"
+    review_task_id: cf_review_88888888888888888888888888888888
+    project_id: cf_project_11111111111111111111111111111111
+    task_type: approve_preview
+    status: open
+    attention: review
+    priority: normal
+    blocking: true
+    payload: {}
+    suggestions: []
+    accepted_value: null
+    created_at: 2026-08-21T12:00:00+00:00
+    resolved_at: null
+metadata: {}
+created_at: 2026-08-21T12:00:00+00:00
+updated_at: 2026-08-21T12:00:00+00:00
