@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,9 +37,19 @@ class StorageConflictError(StorageError):
     pass
 
 
+def _json_plain(value: object) -> object:
+    """Thaw immutable JSON containers without accepting arbitrary object coercion."""
+
+    if isinstance(value, Mapping):
+        return {key: _json_plain(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_plain(item) for item in value]
+    return value
+
+
 def _strict_json(value: object) -> str:
     return json.dumps(
-        value,
+        _json_plain(value),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
