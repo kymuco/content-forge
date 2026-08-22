@@ -135,6 +135,36 @@ def test_command_manifest_is_deterministic_and_uses_cpu_fallback(tmp_path: Path)
     assert first.inputs[0].role.startswith("scene:")
 
 
+def test_drawtext_honors_optional_safe_font_property(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"synthetic-placeholder")
+    plan, paths = image_plan(source, with_text=True)
+    overlay = plan.overlays[0].validated_copy(
+        update={"properties": {"font_size": 42, "box": True, "font": "sans-serif"}}
+    )
+    plan = plan.validated_copy(update={"overlays": (overlay,)})
+
+    manifest = compile_ffmpeg_command(
+        plan,
+        paths,
+        capabilities(),
+        tmp_path / "font.mp4",
+    )
+    assert ":font=sans-serif:fontcolor=" in manifest.filtergraph
+
+    invalid = overlay.validated_copy(
+        update={"properties": {"font_size": 42, "box": True, "font": "bad font"}}
+    )
+    invalid_plan = plan.validated_copy(update={"overlays": (invalid,)})
+    with pytest.raises(FFmpegCompileError, match="invalid drawtext font"):
+        compile_ffmpeg_command(
+            invalid_plan,
+            paths,
+            capabilities(),
+            tmp_path / "invalid-font.mp4",
+        )
+
+
 def test_command_manifest_selects_nvenc_only_when_runtime_probe_succeeded(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     source.write_bytes(b"synthetic-placeholder")
