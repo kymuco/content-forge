@@ -228,20 +228,30 @@ def _validate_hook_character_coverage(text: str) -> None:
     )
 
 
-def _wrap_hook(text: str, config: HookOverlayConfig) -> tuple[str, int, int]:
+def _wrap_hook(
+    text: str,
+    config: HookOverlayConfig,
+    profile: OutputProfile,
+    *,
+    font_size: int,
+    border_width: int,
+) -> tuple[str, int, int, int, int]:
     _validate_hook_character_coverage(text)
-    # One code point is conservatively budgeted as >= 1 em. This is intentionally less
-    # space-efficient than average-character heuristics but ensures a run of W/M glyphs
-    # cannot be accepted merely because an average width estimate was optimistic.
-    width = max(
-        4,
-        int(
-            math.floor(
-                config.hook_region.width
-                / (config.font_size_ratio * config.max_glyph_width_em)
-            )
-        ),
-    )
+    # Base the budget on the actual emitted pixel font size, not only the configured
+    # ratio. This keeps the 12px minimum honest and prevents tiny custom regions from
+    # bypassing the conservative glyph-width contract through a synthetic minimum
+    # character count.
+    region_width = max(1, int(math.floor(config.hook_region.width * profile.width)))
+    decoration_width = border_width * (4 if config.box else 2)
+    available_width = region_width - decoration_width
+    glyph_width = font_size * config.max_glyph_width_em
+    width = int(math.floor(available_width / glyph_width)) if available_width > 0 else 0
+    if width < 1:
+        raise HookOverlayTemplateError(
+            "hook region is too narrow for one conservative glyph: "
+            f"{available_width}px available for >= {glyph_width:.3f}px"
+        )
+
     wrapper = textwrap.TextWrapper(
         width=width,
         break_long_words=True,
@@ -260,7 +270,7 @@ def _wrap_hook(text: str, config: HookOverlayConfig) -> tuple[str, int, int]:
         raise HookOverlayTemplateError(
             f"hook requires {len(lines)} lines but template allows {config.max_lines}"
         )
-    return "\n".join(lines), width, len(lines)
+    return "\n".join(lines), width, len(lines), region_width, available_width
 
 
 def _scaled_integer(value: float, scale: int, *, minimum: int) -> int:
@@ -320,7 +330,25 @@ def _resolve_selected(
     if not project.scenes:
         raise HookOverlayTemplateError("hook_overlay requires at least one source scene")
 
-    wrapped_hook, wrap_width, line_count = _wrap_hook(_hook_text(variant), config)
+    font_size = _scaled_integer(config.font_size_ratio, profile.width, minimum=12)
+    border_width = _scaled_integer(
+        config.border_width_ratio,
+        profile.width,
+        minimum=0,
+    )
+    (
+        wrapped_hook,
+        wrap_width,
+        line_count,
+        region_width,
+        available_width,
+    ) = _wrap_hook(
+        _hook_text(variant),
+        config,
+        profile,
+        font_size=font_size,
+        border_width=border_width,
+    )
     hook_overlay_id = _derived_id(
         EntityKind.OVERLAY,
         project.project_id,
@@ -390,12 +418,6 @@ def _resolve_selected(
             )
         )
 
-    font_size = _scaled_integer(config.font_size_ratio, profile.width, minimum=12)
-    border_width = _scaled_integer(
-        config.border_width_ratio,
-        profile.width,
-        minimum=0,
-    )
     region_height, line_height, required_height = _validate_vertical_layout(
         profile,
         config,
@@ -435,6 +457,8 @@ def _resolve_selected(
             "font_family": HOOK_OVERLAY_FONT_FAMILY,
             "font_size_pixels": font_size,
             "border_width_pixels": border_width,
+            "hook_region_width_pixels": region_width,
+            "hook_available_width_pixels": available_width,
             "line_height_em": config.line_height_em,
             "line_height_pixels": line_height,
             "hook_region_height_pixels": region_height,
