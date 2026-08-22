@@ -250,3 +250,19 @@ def test_motion_fails_closed_until_backend_implements_it(tmp_path: Path) -> None
 
     with pytest.raises(UnsupportedRenderFeatureError, match="motion"):
         compile_ffmpeg_command(moving, paths, capabilities(), tmp_path / "out.mp4")
+
+
+def test_output_path_cannot_alias_render_input_even_via_hard_link(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"immutable-source")
+    plan, paths = image_plan(source)
+
+    with pytest.raises(ValueError, match="must not alias any render input"):
+        compile_ffmpeg_command(plan, paths, capabilities(), source)
+
+    hard_link = tmp_path / "hard-link.mp4"
+    hard_link.hardlink_to(source)
+    with pytest.raises(ValueError, match="must not alias any render input"):
+        compile_ffmpeg_command(plan, paths, capabilities(), hard_link)
+
+    assert source.read_bytes() == b"immutable-source"
