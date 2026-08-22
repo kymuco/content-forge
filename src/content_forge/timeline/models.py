@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Self
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from content_forge.core import (
     AudioTrack,
@@ -15,23 +15,31 @@ from content_forge.core import (
     OutputProfile,
     Overlay,
     RegistryKey,
+    Scene,
 )
 from content_forge.core.models import FrozenModel
 
 RENDER_PLAN_VERSION = "1.0"
 TIMELINE_COMPILER_VERSION = "1"
+_EPSILON = 1e-9
+
+
+def _close(left: float, right: float) -> bool:
+    return abs(left - right) <= _EPSILON
 
 
 class ResolvedTemplate(FrozenModel):
     """Renderer-independent contribution produced by an upstream template resolver.
 
-    PR4 deliberately does not implement a template registry. Later template plugins may
-    resolve arbitrary content-specific logic into ordinary overlays/audio tracks before
-    the deterministic timeline compiler runs.
+    `scenes=None` means the canonical project scenes pass through unchanged. A template
+    may instead provide a fully resolved replacement scene graph, which is how future
+    formats can change placement/repetition without adding content-specific branches to
+    the timeline compiler or renderer.
     """
 
     template_id: RegistryKey
     version: str = Field(min_length=1, max_length=64)
+    scenes: tuple[Scene, ...] | None = None
     overlays: tuple[Overlay, ...] = ()
     audio_tracks: tuple[AudioTrack, ...] = ()
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
@@ -78,6 +86,12 @@ class PlannedScene(FrozenModel):
     transition_out: PlannedTransition = PlannedTransition()
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_time_identity(self) -> Self:
+        if not _close(self.end_seconds, self.start_seconds + self.duration_seconds):
+            raise ValueError("planned scene end must equal start + duration")
+        return self
+
 
 class PlannedOverlay(FrozenModel):
     overlay_id: str
@@ -93,6 +107,12 @@ class PlannedOverlay(FrozenModel):
     source_id: str | None = None
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_time_identity(self) -> Self:
+        if not _close(self.end_seconds, self.start_seconds + self.duration_seconds):
+            raise ValueError("planned overlay end must equal start + duration")
+        return self
+
 
 class PlannedAudioTrack(FrozenModel):
     audio_track_id: str
@@ -107,6 +127,12 @@ class PlannedAudioTrack(FrozenModel):
     gain_db: float = Field(ge=-120.0, le=24.0)
     loop: bool = False
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_time_identity(self) -> Self:
+        if not _close(self.end_seconds, self.start_seconds + self.duration_seconds):
+            raise ValueError("planned audio end must equal start + duration")
+        return self
 
 
 class RenderPlan(FrozenModel):
@@ -130,3 +156,50 @@ class RenderPlan(FrozenModel):
     audio_tracks: tuple[PlannedAudioTrack, ...] = ()
     assets: tuple[PlannedAsset, ...] = ()
     template_properties: Mapping[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_plan_graph(self) -> Self:
+        if not self.scenes:
+            raise ValueError("render plan requires at least one scene")
+
+        orders = tuple(scene.order for scene in self.scenes)
+        if orders != tuple(range(len(self.scenes))):
+            raise ValueError("render plan scene orders must be contiguous from zero")
+        scene_ids = [scene.scene_id for scene in self.scenes]
+        if len(scene_ids) != len(set(scene_ids)):
+            raise ValueError("render plan scene IDs must be unique")
+
+        max_scene_end = max(scene.end_seconds for scene in self.scenes)
+        if not _close(self.total_duration_seconds, max_scene_end):
+            raise ValueError("render plan duration must equal final scene end")
+
+        overlay_ids = [item.overlay_id for item in self.overlays]
+        if len(overlay_ids) != len(set(overlay_ids)):
+            raise ValueError("render plan overlay IDs must be unique")
+        audio_ids = [item.audio_track_id for item in self.audio_tracks]
+        if len(audio_ids) != len(set(audio_ids)):
+            raise ValueError("render plan audio IDs must be unique")
+        asset_ids = [item.asset_id for item in self.assets]
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("render plan asset IDs must be unique")
+
+        scene_id_set = set(scene_ids)
+        asset_id_set = set(asset_ids)
+        for overlay in self.overlays:
+            if overlay.end_seconds - self.total_duration_seconds > _EPSILON:
+                raise ValueError("planned overlay extends past render-plan duration")
+            if overlay.scope_scene_id is not None and overlay.scope_scene_id not in scene_id_set:
+                raise ValueError("planned overlay references unknown scene scope")
+            if overlay.asset_id is not None and overlay.asset_id not in asset_id_set:
+                raise ValueError("planned overlay references missing planned asset")
+        for track in self.audio_tracks:
+            if track.end_seconds - self.total_duration_seconds > _EPSILON:
+                raise ValueError("planned audio extends past render-plan duration")
+            if track.scope_scene_id is not None and track.scope_scene_id not in scene_id_set:
+                raise ValueError("planned audio references unknown scene scope")
+            if track.asset_id is not None and track.asset_id not in asset_id_set:
+                raise ValueError("planned audio references missing planned asset")
+        for scene in self.scenes:
+            if scene.media_asset_id is not None and scene.media_asset_id not in asset_id_set:
+                raise ValueError("planned scene references missing planned asset")
+        return self
