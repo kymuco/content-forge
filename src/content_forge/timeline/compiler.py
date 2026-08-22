@@ -275,9 +275,9 @@ def compile_timeline(
     for index, scene in enumerate(ordered_scenes):
         if scene.media is not None:
             media_asset = require_asset(scene.media.asset_id)
-            if media_asset.media_type is MediaType.AUDIO:
+            if media_asset.media_type not in {MediaType.VIDEO, MediaType.IMAGE}:
                 raise TimelineCompileError(
-                    "audio assets must be placed through AudioTrack, not Scene.media"
+                    f"scene media must be video or image: {media_asset.asset_id}"
                 )
             if media_asset.media_type is MediaType.IMAGE:
                 if scene.trim_start_seconds > _EPSILON or scene.trim_duration_seconds is not None:
@@ -383,9 +383,9 @@ def compile_timeline(
         source_id = None
         if overlay.asset_ref is not None:
             asset = require_asset(overlay.asset_ref.asset_id)
-            if asset.media_type is MediaType.AUDIO:
+            if asset.media_type not in {MediaType.VIDEO, MediaType.IMAGE}:
                 raise TimelineCompileError(
-                    f"visual overlay references an audio-only asset: {asset.asset_id}"
+                    f"visual overlay requires a video or image asset: {asset.asset_id}"
                 )
             asset_id = overlay.asset_ref.asset_id
             source_id = overlay.asset_ref.source_id
@@ -450,7 +450,10 @@ def compile_timeline(
             asset = require_asset(ref.asset_id)
             asset_id = ref.asset_id
             source_id = ref.source_id
-            if asset.media_type is MediaType.IMAGE or asset.has_audio is False:
+            if (
+                asset.media_type not in {MediaType.AUDIO, MediaType.VIDEO}
+                or asset.has_audio is False
+            ):
                 raise TimelineCompileError(
                     f"audio track references an asset with no audio: {ref.asset_id}"
                 )
