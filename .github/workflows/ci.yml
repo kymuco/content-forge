@@ -28,3 +28,30 @@ jobs:
         run: python -m compileall -q src
       - name: Test
         run: pytest -q
+
+  ffmpeg-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Compile
+        run: python -m compileall -q src
+      - name: FFmpeg integration tests
+        run: |
+          ffmpeg -hide_banner -version
+          ffprobe -hide_banner -version
+          pytest -q \
+            tests/test_ffmpeg_capabilities_and_probe.py \
+            tests/test_ffmpeg_compiler.py \
+            tests/test_ffmpeg_runner.py \
+            tests/test_ffmpeg_integration.py
