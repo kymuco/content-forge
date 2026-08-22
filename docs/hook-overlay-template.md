@@ -59,18 +59,34 @@ The default composition is deliberately narrow:
 - explicit crop/focus/trim/transition data remains attached to the scene;
 - one deterministic top text overlay spans the complete compiled timeline;
 - hook text comes from the selected `Variant` (`text_overrides["hook"]` first, then `hook`);
-- text is deterministically wrapped before FFmpeg;
+- text is wrapped before FFmpeg with a conservative width budget of at least one full em per code point;
+- wide runs such as repeated `W`/`M` therefore cannot pass layout merely because an average-character estimate was too optimistic;
 - overflow fails closed instead of being silently truncated;
-- drawtext receives scaled font size, outline, and box/background properties;
+- drawtext receives scaled font size, outline, box/background properties, and an explicit portable sans-serif family request;
 - original scene audio is added only when the source is video and probed metadata says audio is present.
 
 For a video whose `has_audio` metadata is unknown, automatic original-audio resolution fails rather than guessing. Images never receive an original-audio track.
+
+## Text-script boundary
+
+`hook_overlay` v1 deliberately does **not** claim arbitrary Unicode/CJK/emoji rendering through host-font `drawtext`.
+
+The simple text path accepts common Latin, Greek, Cyrillic, combining marks, ordinary punctuation, and currency symbols. CJK, emoji, and other specialized scripts fail resolution with an explicit request to use a future font-backed/raster text pipeline instead of silently relying on whatever fallback font happens to exist on the machine.
+
+This boundary exists for two reasons:
+
+1. glyph availability must not silently turn translated hooks into missing-glyph boxes;
+2. layout safety must not depend on an optimistic average width for wide glyphs.
+
+A later richer text component may pin an actual font asset and measure exact glyph metrics. That extension belongs above the generic renderer and must not introduce a `hook_overlay` branch into FFmpeg.
 
 ## Determinism
 
 Template-generated overlay/audio IDs are derived from project/template/scene identity with a domain-separated SHA-256 construction. Re-resolving the same project produces the same generated IDs and the same semantic render-plan digest.
 
 Preview and final use the same generated IDs and wrapped line breaks. Pixel typography values scale with profile width, so the two profiles remain presentation-equivalent without storing final-only pixel geometry in the canonical project.
+
+The v1 script boundary and conservative width budget make layout acceptance deterministic. The requested drawtext font family is explicit in template output; exact cross-machine font-file pinning remains a deliberate future capability rather than being implied by this PR.
 
 ## Variant style overrides
 
@@ -80,7 +96,7 @@ Variant-specific style overrides use a namespace:
 hook_overlay.<field>
 ```
 
-Supported fields are the validated `HookOverlayConfig` fields, including hook region, fit mode, font sizing, outline/background colors, maximum lines, and original-audio policy. Unknown `hook_overlay.*` keys fail closed; unrelated template namespaces are ignored.
+Supported fields are the validated `HookOverlayConfig` fields, including hook region, fit mode, font sizing, conservative glyph-width budget, outline/background colors, maximum lines, and original-audio policy. The glyph-width budget cannot be reduced below one em. Unknown `hook_overlay.*` keys fail closed; unrelated template namespaces are ignored.
 
 This keeps localization/presentation variants in `Variant` while preventing arbitrary renderer/filtergraph configuration from leaking through template properties.
 
@@ -95,7 +111,9 @@ Resolution rejects, among other cases:
 - missing source assets;
 - non-image/video scene media;
 - empty hook text or NUL input;
+- CJK/emoji/specialized glyphs outside the v1 simple-drawtext coverage boundary;
 - hooks requiring more than the allowed wrapped line count;
+- attempts to reduce the conservative glyph-width budget below one em;
 - unknown video-audio metadata when automatic original audio is enabled;
 - invalid or unknown namespaced style overrides;
 - deterministic generated-ID collisions with canonical project state.
@@ -106,6 +124,6 @@ CI includes a real FFmpeg integration test that resolves a synthetic image proje
 
 ## Deliberate limits
 
-PR6 does not add Pillow raster cards, advanced typography, ASS subtitles, motion, API/PWA endpoints, QC, or export orchestration. The first template intentionally uses the simple text path allowed by the v0.1 specification.
+PR6 does not add Pillow raster cards, font-asset management, arbitrary-script typography, ASS subtitles, motion, API/PWA endpoints, QC, or export orchestration. The first template intentionally uses the bounded simple text path allowed by the v0.1 specification.
 
 More complex templates can later resolve to rasterized components or richer primitives without changing the content-kind model or adding template-specific code to the FFmpeg backend.
