@@ -67,7 +67,7 @@ def test_hook_overlay_template_renders_real_vertical_mp4(tmp_path: Path) -> None
         variants=(
             Variant(
                 language="en",
-                hook="Don't blink: this tiny detail changes everything!",
+                hook="Don't blink: tiny detail changes everything!",
             ),
         ),
         scenes=(
