@@ -82,6 +82,18 @@ def test_source_trim_shorter_than_scene_is_rejected_even_without_probe_duration(
         compile_timeline(changed_project, changed_assets, template=template)
 
 
+def test_scene_rejects_non_visual_other_asset() -> None:
+    project, template, assets = build_case()
+    video_id = project.scenes[0].media.asset_id
+    unknown = asset("1", media_type=MediaType.OTHER)
+    assert unknown.asset_id == video_id
+    changed_assets = dict(assets)
+    changed_assets[video_id] = unknown
+
+    with pytest.raises(TimelineCompileError, match="video or image"):
+        compile_timeline(project, changed_assets, template=template)
+
+
 def test_visual_overlay_rejects_audio_only_asset() -> None:
     project, template, assets = build_case()
     music_id = fixed_id(EntityKind.ASSET, "3")
@@ -92,7 +104,7 @@ def test_visual_overlay_rejects_audio_only_asset() -> None:
     )
     resolved = template.validated_copy(update={"overlays": (overlay,)})
 
-    with pytest.raises(TimelineCompileError, match="audio-only"):
+    with pytest.raises(TimelineCompileError, match="video or image"):
         compile_timeline(project, assets, template=resolved)
 
 
@@ -129,3 +141,59 @@ def test_planned_scene_model_rejects_inconsistent_end_time() -> None:
 
     with pytest.raises(ValidationError, match=r"start \+ duration"):
         PlannedScene.model_validate(payload)
+
+
+def test_reconstructed_render_plan_rejects_scene_schedule_gap() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    second = dict(payload["scenes"][1])
+    second["start_seconds"] += 0.25
+    second["end_seconds"] += 0.25
+    payload["scenes"] = (payload["scenes"][0], second)
+    payload["total_duration_seconds"] += 0.25
+
+    with pytest.raises(ValidationError, match="previous end minus transition"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_scene_scoped_overlay_must_stay_inside_scene() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    overlay_index = next(
+        index
+        for index, item in enumerate(payload["overlays"])
+        if item["scope_scene_id"] == project.scenes[0].scene_id
+    )
+    overlays = list(payload["overlays"])
+    changed = dict(overlays[overlay_index])
+    changed["start_seconds"] = 4.1
+    changed["duration_seconds"] = 1.0
+    changed["end_seconds"] = 5.1
+    overlays[overlay_index] = changed
+    payload["overlays"] = tuple(overlays)
+
+    with pytest.raises(ValidationError, match="past its scene scope"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_scene_scoped_audio_must_stay_inside_scene() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    track_index = next(
+        index
+        for index, item in enumerate(payload["audio_tracks"])
+        if item["scope_scene_id"] == project.scenes[0].scene_id
+    )
+    tracks = list(payload["audio_tracks"])
+    changed = dict(tracks[track_index])
+    changed["start_seconds"] = 4.1
+    changed["duration_seconds"] = 1.0
+    changed["end_seconds"] = 5.1
+    tracks[track_index] = changed
+    payload["audio_tracks"] = tuple(tracks)
+
+    with pytest.raises(ValidationError, match="past its scene scope"):
+        RenderPlan.model_validate(payload)
