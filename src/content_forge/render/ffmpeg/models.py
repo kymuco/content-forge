@@ -18,6 +18,24 @@ CommandManifestVersion = Literal["1.0"]
 FFmpegBackendVersion = Literal["1"]
 
 
+def paths_alias(left: str | Path, right: str | Path) -> bool:
+    """Return whether two local paths identify the same filesystem object.
+
+    Resolved-path equality catches lexical and symlink aliases. `samefile()` additionally
+    catches hard links when both paths exist. Failure to stat a path is treated as
+    non-aliasing after the canonical comparison so a not-yet-created output is valid.
+    """
+
+    left_path = Path(left).expanduser().resolve()
+    right_path = Path(right).expanduser().resolve()
+    if left_path == right_path:
+        return True
+    try:
+        return left_path.exists() and right_path.exists() and left_path.samefile(right_path)
+    except OSError:
+        return False
+
+
 class FFmpegCapabilities(FrozenModel):
     ffmpeg_path: str = Field(min_length=1)
     ffprobe_path: str = Field(min_length=1)
@@ -89,6 +107,11 @@ class RenderCommandManifest(FrozenModel):
         input_indices = [item.input_index for item in self.inputs]
         if input_indices != list(range(len(self.inputs))):
             raise ValueError("FFmpeg input indices must be contiguous from zero")
+        for item in self.inputs:
+            if paths_alias(self.output_path, item.path):
+                raise ValueError(
+                    "FFmpeg output path must not alias any render input path"
+                )
         return self
 
     @property
