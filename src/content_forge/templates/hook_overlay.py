@@ -58,6 +58,9 @@ class HookOverlayConfig(FrozenModel):
     # Budget at least one full em per code point so wide Latin glyphs such as W/M cannot
     # escape the declared hook region. Callers may only make this more conservative.
     max_glyph_width_em: float = Field(default=1.0, ge=1.0, le=2.0)
+    # Keep a conservative minimum line-height budget as long as PR6 relies on drawtext
+    # rather than measured/rasterized typography. Callers may only increase it.
+    line_height_em: float = Field(default=1.35, ge=1.35, le=2.0)
     max_lines: int = Field(default=4, ge=1, le=8)
     font_color: str = Field(default="white", pattern=_STYLE_VALUE_PATTERN)
     border_color: str = Field(default="black", pattern=_STYLE_VALUE_PATTERN)
@@ -211,7 +214,9 @@ def _simple_drawtext_character_supported(character: str) -> bool:
 
 
 def _validate_hook_character_coverage(text: str) -> None:
-    unsupported = [character for character in text if not _simple_drawtext_character_supported(character)]
+    unsupported = [
+        character for character in text if not _simple_drawtext_character_supported(character)
+    ]
     if not unsupported:
         return
     character = unsupported[0]
@@ -260,6 +265,31 @@ def _wrap_hook(text: str, config: HookOverlayConfig) -> tuple[str, int, int]:
 
 def _scaled_integer(value: float, scale: int, *, minimum: int) -> int:
     return max(minimum, int(math.floor(value * scale + 0.5)))
+
+
+def _validate_vertical_layout(
+    profile: OutputProfile,
+    config: HookOverlayConfig,
+    *,
+    line_count: int,
+    font_size: int,
+    border_width: int,
+) -> tuple[int, int, int]:
+    """Reject drawtext layouts that can exceed the declared hook region vertically."""
+
+    available_height = max(1, int(math.floor(config.hook_region.height * profile.height)))
+    line_height = max(font_size, int(math.ceil(font_size * config.line_height_em)))
+    # Text outline expands on both vertical sides. Box rendering itself has no explicit
+    # boxborderw in PR6, but reserving one extra outline-width per side keeps the simple
+    # path fail-closed across FFmpeg/fontconfig differences.
+    decoration_height = border_width * (4 if config.box else 2)
+    required_height = line_count * line_height + decoration_height
+    if required_height > available_height:
+        raise HookOverlayTemplateError(
+            "hook text exceeds hook region height: "
+            f"requires {required_height}px but only {available_height}px is available"
+        )
+    return available_height, line_height, required_height
 
 
 def _generated_id_collides(project: Project, generated_id: str) -> bool:
@@ -366,6 +396,13 @@ def _resolve_selected(
         profile.width,
         minimum=0,
     )
+    region_height, line_height, required_height = _validate_vertical_layout(
+        profile,
+        config,
+        line_count=line_count,
+        font_size=font_size,
+        border_width=border_width,
+    )
     hook_overlay = Overlay(
         overlay_id=hook_overlay_id,
         component_type="text",
@@ -398,6 +435,10 @@ def _resolve_selected(
             "font_family": HOOK_OVERLAY_FONT_FAMILY,
             "font_size_pixels": font_size,
             "border_width_pixels": border_width,
+            "line_height_em": config.line_height_em,
+            "line_height_pixels": line_height,
+            "hook_region_height_pixels": region_height,
+            "hook_required_height_pixels": required_height,
             "source_fit": config.source_fit.value,
             "auto_original_audio_tracks": auto_audio_count,
         },
