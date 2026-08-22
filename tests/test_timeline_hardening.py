@@ -197,3 +197,91 @@ def test_reconstructed_scene_scoped_audio_must_stay_inside_scene() -> None:
 
     with pytest.raises(ValidationError, match="past its scene scope"):
         RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_unsupported_versions() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    payload["render_plan_version"] = "2.0"
+
+    with pytest.raises(ValidationError):
+        RenderPlan.model_validate(payload)
+
+    payload = plan.model_dump(mode="python", round_trip=True)
+    payload["compiler_version"] = "99"
+    with pytest.raises(ValidationError):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_non_visual_scene_asset() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    video_id = project.scenes[0].media.asset_id
+    planned_assets = [dict(item) for item in payload["assets"]]
+    target = next(item for item in planned_assets if item["asset_id"] == video_id)
+    target["media_type"] = MediaType.OTHER.value
+    payload["assets"] = tuple(planned_assets)
+
+    with pytest.raises(ValidationError, match="scene media must be video or image"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_image_as_audio_source() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    image_id = project.scenes[1].media.asset_id
+    tracks = [dict(item) for item in payload["audio_tracks"]]
+    music = next(item for item in tracks if item["track_type"] == "music")
+    music["asset_id"] = image_id
+    payload["audio_tracks"] = tuple(tracks)
+
+    with pytest.raises(ValidationError, match="asset with no audio"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_short_scene_trim() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    scenes = [dict(item) for item in payload["scenes"]]
+    scenes[0]["trim_duration_seconds"] = 1.0
+    payload["scenes"] = tuple(scenes)
+
+    with pytest.raises(ValidationError, match="source trim is shorter than scene"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_image_source_trim() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    scenes = [dict(item) for item in payload["scenes"]]
+    scenes[1]["trim_start_seconds"] = 0.25
+    payload["scenes"] = tuple(scenes)
+
+    with pytest.raises(ValidationError, match="image scene cannot define source trim"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_rejects_unused_asset_table_entries() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    extra = asset("c", media_type=MediaType.IMAGE)
+    payload["assets"] = (*payload["assets"], {
+        "asset_id": extra.asset_id,
+        "sha256": extra.sha256,
+        "media_type": extra.media_type.value,
+        "mime_type": extra.mime_type,
+        "storage_key": extra.storage_key,
+        "width": extra.width,
+        "height": extra.height,
+        "duration_seconds": extra.duration_seconds,
+        "has_audio": extra.has_audio,
+    })
+
+    with pytest.raises(ValidationError, match="exactly referenced assets"):
+        RenderPlan.model_validate(payload)
