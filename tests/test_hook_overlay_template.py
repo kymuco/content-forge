@@ -177,6 +177,22 @@ def test_wide_ascii_glyphs_use_conservative_full_em_wrap_budget() -> None:
     assert all(len(line) <= wrap_width for line in lines)
 
 
+def test_undersized_hook_region_fails_before_forcing_artificial_wrap_capacity() -> None:
+    asset = image_asset()
+    project = project_for(asset, hook="W")
+    config = HookOverlayConfig(
+        hook_region=NormalizedRect(x=0.10, y=0.06, width=0.01, height=0.19)
+    )
+
+    with pytest.raises(HookOverlayTemplateError, match="too narrow for one conservative glyph"):
+        resolve_hook_overlay(
+            project,
+            {asset.asset_id: asset},
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            config=config,
+        )
+
+
 def test_cjk_and_emoji_fail_closed_until_font_backed_text_pipeline() -> None:
     asset = image_asset()
     for hook in ("別のフック", "Look 👀 here"):
