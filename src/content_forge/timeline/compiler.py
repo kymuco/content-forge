@@ -167,6 +167,10 @@ def _scene_schedule(scenes: tuple[Scene, ...]) -> tuple[
     if not scenes:
         raise TimelineCompileError("project must contain at least one scene")
     ordered = tuple(sorted(scenes, key=lambda item: item.order))
+    scene_ids = [scene.scene_id for scene in ordered]
+    if len(scene_ids) != len(set(scene_ids)):
+        raise TimelineCompileError("scene IDs must be unique after template resolution")
+
     expected_orders = tuple(range(len(ordered)))
     actual_orders = tuple(scene.order for scene in ordered)
     if actual_orders != expected_orders:
@@ -242,7 +246,12 @@ def compile_timeline(
     variant = _select_variant(project, variant_id)
     resolved_template = _validate_template(project, template)
 
-    ordered_scenes = tuple(sorted(project.scenes, key=lambda item: item.order))
+    source_scenes = (
+        project.scenes
+        if resolved_template is None or resolved_template.scenes is None
+        else resolved_template.scenes
+    )
+    ordered_scenes = tuple(sorted(source_scenes, key=lambda item: item.order))
     starts, ends, transitions = _scene_schedule(ordered_scenes)
     total_duration = ends[-1]
 
@@ -255,12 +264,15 @@ def compile_timeline(
         asset = _asset_from(assets, asset_id)
         if asset is None:
             raise MissingTimelineAssetError(f"unknown asset in timeline: {asset_id}")
+        if asset.asset_id != asset_id:
+            raise TimelineCompileError(
+                f"asset resolver returned {asset.asset_id} for requested {asset_id}"
+            )
         asset_cache[asset_id] = asset
         return asset
 
     planned_scenes: list[PlannedScene] = []
     for index, scene in enumerate(ordered_scenes):
-        media_asset: Asset | None = None
         if scene.media is not None:
             media_asset = require_asset(scene.media.asset_id)
             if media_asset.media_type is MediaType.AUDIO:
@@ -270,7 +282,7 @@ def compile_timeline(
             if media_asset.media_type is MediaType.IMAGE:
                 if scene.trim_start_seconds > _EPSILON or scene.trim_duration_seconds is not None:
                     raise TimelineCompileError("image scenes cannot define source trim")
-            elif media_asset.duration_seconds is not None:
+            else:
                 requested = (
                     scene.trim_duration_seconds
                     if scene.trim_duration_seconds is not None
@@ -281,7 +293,8 @@ def compile_timeline(
                         f"scene source trim is shorter than scene duration: {scene.scene_id}"
                     )
                 if (
-                    scene.trim_start_seconds + requested
+                    media_asset.duration_seconds is not None
+                    and scene.trim_start_seconds + requested
                     - media_asset.duration_seconds
                     > _EPSILON
                 ):
@@ -369,7 +382,11 @@ def compile_timeline(
         asset_id = None
         source_id = None
         if overlay.asset_ref is not None:
-            require_asset(overlay.asset_ref.asset_id)
+            asset = require_asset(overlay.asset_ref.asset_id)
+            if asset.media_type is MediaType.AUDIO:
+                raise TimelineCompileError(
+                    f"visual overlay references an audio-only asset: {asset.asset_id}"
+                )
             asset_id = overlay.asset_ref.asset_id
             source_id = overlay.asset_ref.source_id
         start = _seconds(scope_start + overlay.start_seconds)
@@ -433,7 +450,7 @@ def compile_timeline(
             asset = require_asset(ref.asset_id)
             asset_id = ref.asset_id
             source_id = ref.source_id
-            if asset.has_audio is False:
+            if asset.media_type is MediaType.IMAGE or asset.has_audio is False:
                 raise TimelineCompileError(
                     f"audio track references an asset with no audio: {ref.asset_id}"
                 )
