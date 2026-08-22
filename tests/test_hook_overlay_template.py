@@ -31,7 +31,11 @@ from content_forge.templates import (
     compile_hook_overlay,
     resolve_hook_overlay,
 )
-from content_forge.timeline import render_plan_digest
+from content_forge.timeline import (
+    TemplateResolutionError,
+    compile_timeline,
+    render_plan_digest,
+)
 
 
 def image_asset(*, has_audio: bool | None = False) -> Asset:
@@ -122,6 +126,9 @@ def test_hook_overlay_resolves_fullscreen_media_wrapped_hook_and_original_audio(
     assert resolved.overlays[0].properties["font_size"] == 63
     assert resolved.properties["resolved_profile_id"] == SHORTS_FINAL_PROFILE_ID
     assert resolved.properties["auto_original_audio_tracks"] == 1
+    assert resolved.properties["hook_required_height_pixels"] <= resolved.properties[
+        "hook_region_height_pixels"
+    ]
 
 
 def test_template_generated_ids_and_wrapping_are_deterministic() -> None:
@@ -185,6 +192,27 @@ def test_cjk_and_emoji_fail_closed_until_font_backed_text_pipeline() -> None:
 def test_glyph_safety_budget_cannot_be_reduced_below_one_em() -> None:
     with pytest.raises(ValueError):
         HookOverlayConfig(max_glyph_width_em=0.9)
+
+
+def test_line_height_safety_budget_cannot_be_reduced() -> None:
+    with pytest.raises(ValueError):
+        HookOverlayConfig(line_height_em=1.2)
+
+
+def test_large_typography_that_cannot_fit_hook_region_fails_closed() -> None:
+    asset = image_asset()
+    project = project_for(asset, hook="one two three")
+    variant = project.variants[0].validated_copy(
+        update={"style_overrides": {"hook_overlay.font_size_ratio": 0.2}}
+    )
+    project = project.validated_copy(update={"variants": (variant,)})
+
+    with pytest.raises(HookOverlayTemplateError, match="hook region height"):
+        resolve_hook_overlay(
+            project,
+            {asset.asset_id: asset},
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+        )
 
 
 def test_image_scene_does_not_receive_original_audio_track() -> None:
@@ -311,6 +339,50 @@ def test_compile_hook_overlay_binds_variant_profile_and_produces_stable_plan_dig
     assert first.audio_tracks[0].track_type == "original"
     assert first.audio_tracks[0].asset_id == asset.asset_id
     assert render_plan_digest(first) == render_plan_digest(second)
+
+
+def test_resolved_template_rejects_cross_profile_and_cross_variant_compilation() -> None:
+    asset = image_asset()
+    project = project_for(asset, hook="Primary hook")
+    primary = project.variants[0]
+    alternate = Variant(language="ru", hook="Другой хук")
+    project = project.validated_copy(update={"variants": (primary, alternate)})
+    assets = {asset.asset_id: asset}
+
+    resolved = resolve_hook_overlay(
+        project,
+        assets,
+        profile_id=SHORTS_FINAL_PROFILE_ID,
+        variant_id=primary.variant_id,
+    )
+
+    with pytest.raises(TemplateResolutionError, match="profile binding"):
+        compile_timeline(
+            project,
+            assets,
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            variant_id=primary.variant_id,
+            template=resolved,
+        )
+
+    with pytest.raises(TemplateResolutionError, match="variant binding"):
+        compile_timeline(
+            project,
+            assets,
+            profile_id=SHORTS_FINAL_PROFILE_ID,
+            variant_id=alternate.variant_id,
+            template=resolved,
+        )
+
+    matching = compile_timeline(
+        project,
+        assets,
+        profile_id=SHORTS_FINAL_PROFILE_ID,
+        variant_id=primary.variant_id,
+        template=resolved,
+    )
+    assert matching.output_profile.profile_id == SHORTS_FINAL_PROFILE_ID
+    assert matching.variant_id == primary.variant_id
 
 
 def test_resolver_requires_matching_template_reference_and_explicit_variant_selection() -> None:
