@@ -62,6 +62,15 @@ class PlannedTransition(FrozenModel):
     duration_seconds: float = Field(default=0.0, ge=0.0)
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_transition_semantics(self) -> Self:
+        if self.transition_type == "cut":
+            if self.duration_seconds > _EPSILON:
+                raise ValueError("planned cut transition must have zero duration")
+        elif self.duration_seconds <= 0.0:
+            raise ValueError("planned non-cut transition must have positive duration")
+        return self
+
 
 class PlannedScene(FrozenModel):
     scene_id: str
@@ -169,8 +178,40 @@ class RenderPlan(FrozenModel):
         if len(scene_ids) != len(set(scene_ids)):
             raise ValueError("render plan scene IDs must be unique")
 
-        max_scene_end = max(scene.end_seconds for scene in self.scenes)
-        if not _close(self.total_duration_seconds, max_scene_end):
+        first = self.scenes[0]
+        last = self.scenes[-1]
+        if not _close(first.start_seconds, 0.0):
+            raise ValueError("render plan first scene must start at zero")
+        if first.transition_in.transition_type != "cut":
+            raise ValueError("render plan first scene transition_in must be cut")
+        if last.transition_out.transition_type != "cut":
+            raise ValueError("render plan last scene transition_out must be cut")
+
+        for index, scene in enumerate(self.scenes):
+            incoming = scene.transition_in.duration_seconds
+            outgoing = scene.transition_out.duration_seconds
+            if incoming + outgoing - scene.duration_seconds > _EPSILON:
+                raise ValueError(
+                    "render plan transition overlaps consume more than scene duration"
+                )
+
+            if index == 0:
+                continue
+            previous = self.scenes[index - 1]
+            if previous.transition_out != scene.transition_in:
+                raise ValueError("render plan adjacent scene transitions must agree")
+            transition_duration = scene.transition_in.duration_seconds
+            if transition_duration - previous.duration_seconds > _EPSILON:
+                raise ValueError("render plan transition exceeds preceding scene duration")
+            if transition_duration - scene.duration_seconds > _EPSILON:
+                raise ValueError("render plan transition exceeds following scene duration")
+            expected_start = previous.end_seconds - transition_duration
+            if not _close(scene.start_seconds, expected_start):
+                raise ValueError(
+                    "render plan scene start must equal previous end minus transition"
+                )
+
+        if not _close(self.total_duration_seconds, last.end_seconds):
             raise ValueError("render plan duration must equal final scene end")
 
         overlay_ids = [item.overlay_id for item in self.overlays]
@@ -183,20 +224,32 @@ class RenderPlan(FrozenModel):
         if len(asset_ids) != len(set(asset_ids)):
             raise ValueError("render plan asset IDs must be unique")
 
-        scene_id_set = set(scene_ids)
+        scene_by_id = {scene.scene_id: scene for scene in self.scenes}
         asset_id_set = set(asset_ids)
         for overlay in self.overlays:
             if overlay.end_seconds - self.total_duration_seconds > _EPSILON:
                 raise ValueError("planned overlay extends past render-plan duration")
-            if overlay.scope_scene_id is not None and overlay.scope_scene_id not in scene_id_set:
-                raise ValueError("planned overlay references unknown scene scope")
+            if overlay.scope_scene_id is not None:
+                scoped_scene = scene_by_id.get(overlay.scope_scene_id)
+                if scoped_scene is None:
+                    raise ValueError("planned overlay references unknown scene scope")
+                if overlay.start_seconds + _EPSILON < scoped_scene.start_seconds:
+                    raise ValueError("planned overlay starts before its scene scope")
+                if overlay.end_seconds - scoped_scene.end_seconds > _EPSILON:
+                    raise ValueError("planned overlay extends past its scene scope")
             if overlay.asset_id is not None and overlay.asset_id not in asset_id_set:
                 raise ValueError("planned overlay references missing planned asset")
         for track in self.audio_tracks:
             if track.end_seconds - self.total_duration_seconds > _EPSILON:
                 raise ValueError("planned audio extends past render-plan duration")
-            if track.scope_scene_id is not None and track.scope_scene_id not in scene_id_set:
-                raise ValueError("planned audio references unknown scene scope")
+            if track.scope_scene_id is not None:
+                scoped_scene = scene_by_id.get(track.scope_scene_id)
+                if scoped_scene is None:
+                    raise ValueError("planned audio references unknown scene scope")
+                if track.start_seconds + _EPSILON < scoped_scene.start_seconds:
+                    raise ValueError("planned audio starts before its scene scope")
+                if track.end_seconds - scoped_scene.end_seconds > _EPSILON:
+                    raise ValueError("planned audio extends past its scene scope")
             if track.asset_id is not None and track.asset_id not in asset_id_set:
                 raise ValueError("planned audio references missing planned asset")
         for scene in self.scenes:
