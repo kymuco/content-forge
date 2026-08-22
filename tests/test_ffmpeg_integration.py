@@ -19,7 +19,7 @@ from content_forge.render.ffmpeg import (
     probe_ffmpeg_runtime,
     probe_media,
 )
-from content_forge.timeline import PlannedAsset, PlannedScene, RenderPlan
+from content_forge.timeline import PlannedAsset, PlannedOverlay, PlannedScene, RenderPlan
 
 
 def test_synthetic_image_render_reaches_real_mp4_exit_condition(tmp_path: Path) -> None:
@@ -51,6 +51,17 @@ def test_synthetic_image_render_reaches_real_mp4_exit_condition(tmp_path: Path) 
         placement=NormalizedRect(x=0, y=0, width=1, height=1),
         fit_mode=FitMode.COVER,
     )
+    overlay = PlannedOverlay(
+        overlay_id=new_entity_id(EntityKind.OVERLAY),
+        component_type="text",
+        start_seconds=0.05,
+        duration_seconds=0.5,
+        end_seconds=0.55,
+        placement=NormalizedRect(x=0.05, y=0.05, width=0.9, height=0.2),
+        z_index=1,
+        text="Don't: inject; [filters], ever",
+        properties={"font_size": 14, "box": True},
+    )
     plan = RenderPlan(
         project_id=new_entity_id(EntityKind.PROJECT),
         output_profile=OutputProfile(
@@ -62,6 +73,7 @@ def test_synthetic_image_render_reaches_real_mp4_exit_condition(tmp_path: Path) 
         ),
         total_duration_seconds=0.6,
         scenes=(scene,),
+        overlays=(overlay,),
         assets=(
             PlannedAsset(
                 asset_id=asset_id,
