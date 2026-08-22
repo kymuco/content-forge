@@ -288,3 +288,59 @@ def test_reconstructed_plan_rejects_unused_asset_table_entries() -> None:
 
     with pytest.raises(ValidationError, match="exactly referenced assets"):
         RenderPlan.model_validate(payload)
+
+
+def test_scene_without_media_rejects_source_trim_during_compilation() -> None:
+    project, template, assets = build_case()
+    blank = Scene(
+        scene_id=fixed_id(EntityKind.SCENE, "c"),
+        order=0,
+        duration_seconds=2.0,
+        trim_start_seconds=0.25,
+    )
+    resolved = template.validated_copy(update={"scenes": (blank,)})
+
+    with pytest.raises(TimelineCompileError, match="without media cannot define source trim"):
+        compile_timeline(project, assets, template=resolved)
+
+
+def test_reconstructed_scene_without_media_rejects_source_trim() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    scene = plan.scenes[0].model_dump(mode="python", round_trip=True)
+    scene["media_asset_id"] = None
+    scene["media_source_id"] = None
+    scene["trim_start_seconds"] = 0.25
+
+    with pytest.raises(ValidationError, match="without media cannot define source trim"):
+        PlannedScene.model_validate(scene)
+
+
+def test_reconstructed_original_audio_requires_asset() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+    payload = plan.model_dump(mode="python", round_trip=True)
+    tracks = [dict(item) for item in payload["audio_tracks"]]
+    original = next(item for item in tracks if item["track_type"] == "original")
+    original["asset_id"] = None
+    original["source_id"] = None
+    original["source_start_seconds"] = 0.0
+    payload["audio_tracks"] = tuple(tracks)
+
+    with pytest.raises(ValidationError, match="original audio requires a source asset"):
+        RenderPlan.model_validate(payload)
+
+
+def test_reconstructed_plan_requires_variant_and_template_metadata_pairs() -> None:
+    project, template, assets = build_case()
+    plan = compile_timeline(project, assets, template=template)
+
+    payload = plan.model_dump(mode="python", round_trip=True)
+    payload["variant_language"] = None
+    with pytest.raises(ValidationError, match="variant ID/language"):
+        RenderPlan.model_validate(payload)
+
+    payload = plan.model_dump(mode="python", round_trip=True)
+    payload["template_version"] = None
+    with pytest.raises(ValidationError, match="template ID/version"):
+        RenderPlan.model_validate(payload)
