@@ -6,10 +6,11 @@ import hashlib
 import json
 import math
 import textwrap
+import unicodedata
 from collections.abc import Mapping
 from typing import Protocol, Self
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import Field, model_validator
 
 from content_forge.core import (
     Asset,
@@ -29,6 +30,7 @@ from content_forge.timeline import RenderPlan, ResolvedTemplate, compile_timelin
 
 HOOK_OVERLAY_TEMPLATE_ID = "hook_overlay"
 HOOK_OVERLAY_TEMPLATE_VERSION = "1.0"
+HOOK_OVERLAY_FONT_FAMILY = "sans-serif"
 _DEFAULT_HOOK_REGION = NormalizedRect(x=0.06, y=0.06, width=0.80, height=0.19)
 _STYLE_VALUE_PATTERN = r"^[A-Za-z0-9#@._+-]+$"
 _STYLE_PREFIX = "hook_overlay."
@@ -52,8 +54,11 @@ class HookOverlayConfig(FrozenModel):
     source_fit: FitMode = FitMode.COVER
     font_size_ratio: float = Field(default=0.058, gt=0.0, le=0.2)
     border_width_ratio: float = Field(default=0.0037, ge=0.0, le=0.03)
-    estimated_character_width: float = Field(default=0.58, gt=0.1, le=1.5)
-    max_lines: int = Field(default=3, ge=1, le=8)
+    # The simple drawtext path cannot measure the exact host font before compilation.
+    # Budget at least one full em per code point so wide Latin glyphs such as W/M cannot
+    # escape the declared hook region. Callers may only make this more conservative.
+    max_glyph_width_em: float = Field(default=1.0, ge=1.0, le=2.0)
+    max_lines: int = Field(default=4, ge=1, le=8)
     font_color: str = Field(default="white", pattern=_STYLE_VALUE_PATTERN)
     border_color: str = Field(default="black", pattern=_STYLE_VALUE_PATTERN)
     box: bool = True
@@ -176,13 +181,59 @@ def _hook_text(variant: Variant) -> str:
     return value
 
 
+def _simple_drawtext_character_supported(character: str) -> bool:
+    """Return whether v1's host-font drawtext path has bounded glyph expectations.
+
+    PR6 deliberately supports the common Latin/Greek/Cyrillic writing systems plus
+    combining marks and ordinary punctuation. CJK, emoji and other wide/specialized
+    scripts need an explicitly pinned font/raster text pipeline; accepting them here
+    would make glyph coverage depend on the host and could silently render tofu boxes.
+    """
+
+    if character in "\n\r\t":
+        return True
+    codepoint = ord(character)
+    if codepoint < 0x20 or codepoint == 0x7F:
+        return False
+    if 0x20 <= codepoint <= 0x024F:  # ASCII, Latin-1, Latin Extended A/B.
+        return True
+    if 0x0300 <= codepoint <= 0x036F:  # Combining diacritics.
+        return True
+    if 0x0370 <= codepoint <= 0x03FF:  # Greek and Coptic.
+        return True
+    if 0x0400 <= codepoint <= 0x052F:  # Cyrillic + supplements.
+        return True
+    if 0x2000 <= codepoint <= 0x206F:  # General punctuation.
+        return True
+    if 0x20A0 <= codepoint <= 0x20CF:  # Currency symbols.
+        return True
+    return False
+
+
+def _validate_hook_character_coverage(text: str) -> None:
+    unsupported = [character for character in text if not _simple_drawtext_character_supported(character)]
+    if not unsupported:
+        return
+    character = unsupported[0]
+    name = unicodedata.name(character, "UNNAMED")
+    raise HookOverlayTemplateError(
+        "hook contains a glyph outside hook_overlay v1 simple drawtext coverage: "
+        f"U+{ord(character):04X} {name}; use a font-backed text pipeline for CJK/emoji/"
+        "other specialized scripts"
+    )
+
+
 def _wrap_hook(text: str, config: HookOverlayConfig) -> tuple[str, int, int]:
+    _validate_hook_character_coverage(text)
+    # One code point is conservatively budgeted as >= 1 em. This is intentionally less
+    # space-efficient than average-character heuristics but ensures a run of W/M glyphs
+    # cannot be accepted merely because an average width estimate was optimistic.
     width = max(
         4,
         int(
             math.floor(
                 config.hook_region.width
-                / (config.font_size_ratio * config.estimated_character_width)
+                / (config.font_size_ratio * config.max_glyph_width_em)
             )
         ),
     )
@@ -324,6 +375,7 @@ def _resolve_selected(
         z_index=config.z_index,
         text=wrapped_hook,
         properties={
+            "font": HOOK_OVERLAY_FONT_FAMILY,
             "font_size": font_size,
             "border_width": border_width,
             "font_color": config.font_color,
@@ -343,6 +395,7 @@ def _resolve_selected(
             "resolved_variant_id": variant.variant_id,
             "hook_wrap_width_chars": wrap_width,
             "hook_line_count": line_count,
+            "font_family": HOOK_OVERLAY_FONT_FAMILY,
             "font_size_pixels": font_size,
             "border_width_pixels": border_width,
             "source_fit": config.source_fit.value,
