@@ -105,7 +105,11 @@ def _select_variant(project: Project, variant_id: str | None) -> Variant | None:
 
 
 def _validate_template(
-    project: Project, template: ResolvedTemplate | None
+    project: Project,
+    template: ResolvedTemplate | None,
+    *,
+    profile: OutputProfile,
+    variant: Variant | None,
 ) -> ResolvedTemplate | None:
     if project.template is None:
         if template is not None:
@@ -125,6 +129,30 @@ def _validate_template(
         raise TemplateResolutionError(
             "resolved template version does not match project template reference"
         )
+
+    if "resolved_profile_id" in template.properties:
+        resolved_profile_id = template.properties["resolved_profile_id"]
+        if not isinstance(resolved_profile_id, str):
+            raise TemplateResolutionError(
+                "resolved template profile binding must be a string"
+            )
+        if resolved_profile_id != profile.profile_id:
+            raise TemplateResolutionError(
+                "resolved template profile binding does not match selected output profile"
+            )
+
+    if "resolved_variant_id" in template.properties:
+        resolved_variant_id = template.properties["resolved_variant_id"]
+        selected_variant_id = None if variant is None else variant.variant_id
+        if resolved_variant_id is not None and not isinstance(resolved_variant_id, str):
+            raise TemplateResolutionError(
+                "resolved template variant binding must be a string or null"
+            )
+        if resolved_variant_id != selected_variant_id:
+            raise TemplateResolutionError(
+                "resolved template variant binding does not match selected variant"
+            )
+
     return template
 
 
@@ -244,7 +272,12 @@ def compile_timeline(
 
     profile = _select_profile(project, profile_id)
     variant = _select_variant(project, variant_id)
-    resolved_template = _validate_template(project, template)
+    resolved_template = _validate_template(
+        project,
+        template,
+        profile=profile,
+        variant=variant,
+    )
 
     source_scenes = (
         project.scenes
