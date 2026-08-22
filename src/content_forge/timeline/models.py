@@ -7,11 +7,13 @@ from typing import Mapping
 from pydantic import Field, JsonValue
 
 from content_forge.core import (
+    AudioTrack,
     FitMode,
     MediaType,
     NormalizedPoint,
     NormalizedRect,
     OutputProfile,
+    Overlay,
     RegistryKey,
 )
 from content_forge.core.models import FrozenModel
@@ -24,14 +26,14 @@ class ResolvedTemplate(FrozenModel):
     """Renderer-independent contribution produced by an upstream template resolver.
 
     PR4 deliberately does not implement a template registry. Later template plugins may
-    resolve arbitrary content-specific logic into these ordinary overlays/audio tracks
-    before the deterministic timeline compiler runs.
+    resolve arbitrary content-specific logic into ordinary overlays/audio tracks before
+    the deterministic timeline compiler runs.
     """
 
     template_id: RegistryKey
     version: str = Field(min_length=1, max_length=64)
-    overlays: tuple[object, ...] = ()
-    audio_tracks: tuple[object, ...] = ()
+    overlays: tuple[Overlay, ...] = ()
+    audio_tracks: tuple[AudioTrack, ...] = ()
     properties: Mapping[str, JsonValue] = Field(default_factory=dict)
 
 
