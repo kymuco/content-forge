@@ -273,7 +273,15 @@ def compile_timeline(
 
     planned_scenes: list[PlannedScene] = []
     for index, scene in enumerate(ordered_scenes):
-        if scene.media is not None:
+        if scene.media is None:
+            if (
+                scene.trim_start_seconds > _EPSILON
+                or scene.trim_duration_seconds is not None
+            ):
+                raise TimelineCompileError(
+                    "scene without media cannot define source trim"
+                )
+        else:
             media_asset = require_asset(scene.media.asset_id)
             if media_asset.media_type not in {MediaType.VIDEO, MediaType.IMAGE}:
                 raise TimelineCompileError(
