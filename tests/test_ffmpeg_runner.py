@@ -59,6 +59,58 @@ def test_runner_surfaces_structured_process_failure_and_removes_partial_output(
     assert not output.exists()
 
 
+def test_runner_failure_preserves_previous_successful_output(tmp_path: Path) -> None:
+    output = tmp_path / "previous.bin"
+    output.write_bytes(b"previous-success")
+    command = manifest(
+        output,
+        "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'partial'); "
+        "sys.exit(9)",
+    )
+
+    with pytest.raises(FFmpegBackendError) as captured:
+        execute_ffmpeg(command)
+
+    assert captured.value.error.code == "ffmpeg_failed"
+    assert output.read_bytes() == b"previous-success"
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
+
+
+def test_runner_success_replaces_previous_output_only_after_completion(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "replace.bin"
+    output.write_bytes(b"old")
+    command = manifest(
+        output,
+        "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'new')",
+    )
+
+    result = execute_ffmpeg(command)
+
+    assert result.bytes_written == 3
+    assert output.read_bytes() == b"new"
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
+
+
+def test_runner_precancel_preserves_existing_output(tmp_path: Path) -> None:
+    output = tmp_path / "already-rendered.bin"
+    output.write_bytes(b"completed")
+    command = manifest(
+        output,
+        "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'new')",
+    )
+    cancellation = CancellationToken()
+    cancellation.cancel()
+
+    with pytest.raises(FFmpegBackendError) as captured:
+        execute_ffmpeg(command, cancellation=cancellation)
+
+    assert captured.value.error.code == "render_cancelled"
+    assert output.read_bytes() == b"completed"
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
+
+
 def test_runner_cancellation_terminates_process_and_removes_partial_output(
     tmp_path: Path,
 ) -> None:
@@ -82,6 +134,7 @@ def test_runner_cancellation_terminates_process_and_removes_partial_output(
 
     assert captured.value.error.code == "render_cancelled"
     assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
 
 
 def test_runner_timeout_uses_distinct_error_code(tmp_path: Path) -> None:
@@ -97,3 +150,4 @@ def test_runner_timeout_uses_distinct_error_code(tmp_path: Path) -> None:
 
     assert captured.value.error.code == "render_timeout"
     assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
