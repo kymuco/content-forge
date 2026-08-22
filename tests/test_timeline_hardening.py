@@ -127,5 +127,5 @@ def test_planned_scene_model_rejects_inconsistent_end_time() -> None:
     payload = scene.model_dump(mode="python", round_trip=True)
     payload["end_seconds"] = scene.end_seconds + 1.0
 
-    with pytest.raises(ValidationError, match="start \+ duration"):
+    with pytest.raises(ValidationError, match=r"start \+ duration"):
         PlannedScene.model_validate(payload)
