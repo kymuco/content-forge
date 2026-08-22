@@ -96,14 +96,21 @@ def _integer_property(value: object, *, name: str, default: int, minimum: int = 
     return value
 
 
-def _escape_drawtext(value: str) -> str:
-    return (
+def _quote_drawtext_text(value: str) -> str:
+    """Quote text across FFmpeg filtergraph and drawtext option parsing.
+
+    FFmpeg single-quoted values cannot contain an escaped apostrophe inside the quote.
+    Close the quote, emit an escaped apostrophe outside it, then reopen the quote. The
+    colon/backslash/newline escaping remains for drawtext's secondary option parser.
+    """
+
+    escaped = (
         value.replace("\\", "\\\\")
-        .replace("'", "\\'")
         .replace(":", "\\:")
         .replace("\r", "")
         .replace("\n", "\\n")
     )
+    return "'" + escaped.replace("'", "'\\''") + "'"
 
 
 def _resolve_asset_path(source: AssetPathSource, asset: PlannedAsset) -> Path:
@@ -405,10 +412,10 @@ def compile_ffmpeg_command(
             box = overlay.properties.get("box", False)
             if not isinstance(box, bool):
                 raise FFmpegCompileError("drawtext box property must be boolean")
-            escaped = _escape_drawtext(overlay.text)
+            quoted_text = _quote_drawtext_text(overlay.text)
             output = f"video_text_{overlay_index}"
             draw = (
-                f"drawtext=text='{escaped}':expansion=none:x={placement.x}:y={placement.y}:"
+                f"drawtext=text={quoted_text}:expansion=none:x={placement.x}:y={placement.y}:"
                 f"fontsize={font_size}:fontcolor={font_color}:borderw={border_width}:"
                 f"bordercolor={border_color}:box={1 if box else 0}:boxcolor={box_color}:"
                 f"enable='{enable}'"
