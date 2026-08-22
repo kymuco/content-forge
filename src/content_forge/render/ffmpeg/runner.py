@@ -91,9 +91,15 @@ def execute_ffmpeg(
     successful render.
     """
 
+    if timeout is not None and timeout <= 0.0:
+        raise ValueError("render timeout must be positive")
+    if poll_interval <= 0.0:
+        raise ValueError("render poll_interval must be positive")
+
     destination = Path(manifest.output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    deadline = None if timeout is None else started + timeout
     digest = command_manifest_digest(manifest)
 
     if cancellation is not None and cancellation.cancelled:
@@ -129,7 +135,7 @@ def execute_ffmpeg(
             errors="replace",
             shell=False,
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         staging.unlink(missing_ok=True)
         raise _error(
             manifest,
@@ -153,20 +159,27 @@ def execute_ffmpeg(
                     return_code=process.returncode,
                     stderr=stderr,
                 )
-            elapsed = time.monotonic() - started
-            if timeout is not None and elapsed > timeout:
-                stdout, stderr = _terminate(process)
-                staging.unlink(missing_ok=True)
-                raise _error(
-                    manifest,
-                    code="render_timeout",
-                    stage="execute",
-                    message=f"render exceeded timeout of {timeout:.3f}s",
-                    return_code=process.returncode,
-                    stderr=stderr,
-                )
+
+            now = time.monotonic()
+            if deadline is not None:
+                remaining = deadline - now
+                if remaining <= 0.0:
+                    stdout, stderr = _terminate(process)
+                    staging.unlink(missing_ok=True)
+                    raise _error(
+                        manifest,
+                        code="render_timeout",
+                        stage="execute",
+                        message=f"render exceeded timeout of {timeout:.3f}s",
+                        return_code=process.returncode,
+                        stderr=stderr,
+                    )
+                wait_timeout = min(poll_interval, remaining)
+            else:
+                wait_timeout = poll_interval
+
             try:
-                stdout, stderr = process.communicate(timeout=poll_interval)
+                stdout, stderr = process.communicate(timeout=wait_timeout)
                 break
             except subprocess.TimeoutExpired:
                 continue
@@ -177,6 +190,30 @@ def execute_ffmpeg(
         raise
 
     elapsed = time.monotonic() - started
+    # A process can exit during the final bounded communicate() just after the deadline;
+    # never publish that overdue result. Likewise, honor a cancellation that races with
+    # normal process exit but arrives before publication.
+    if deadline is not None and time.monotonic() > deadline:
+        staging.unlink(missing_ok=True)
+        raise _error(
+            manifest,
+            code="render_timeout",
+            stage="execute",
+            message=f"render exceeded timeout of {timeout:.3f}s",
+            return_code=process.returncode,
+            stderr=stderr,
+        )
+    if cancellation is not None and cancellation.cancelled:
+        staging.unlink(missing_ok=True)
+        raise _error(
+            manifest,
+            code="render_cancelled",
+            stage="execute",
+            message="render cancelled before output publication",
+            return_code=process.returncode,
+            stderr=stderr,
+        )
+
     if process.returncode != 0:
         staging.unlink(missing_ok=True)
         raise _error(
