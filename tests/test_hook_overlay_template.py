@@ -26,6 +26,7 @@ from content_forge.profiles import (
 from content_forge.templates import (
     HOOK_OVERLAY_TEMPLATE_ID,
     HOOK_OVERLAY_TEMPLATE_VERSION,
+    HookOverlayConfig,
     HookOverlayTemplateError,
     compile_hook_overlay,
     resolve_hook_overlay,
@@ -125,7 +126,7 @@ def test_hook_overlay_resolves_fullscreen_media_wrapped_hook_and_original_audio(
 
 def test_template_generated_ids_and_wrapping_are_deterministic() -> None:
     asset = video_asset(has_audio=True)
-    project = project_for(asset, hook="One two three four five six seven eight nine ten eleven twelve")
+    project = project_for(asset, hook="One two three four five six seven eight")
     assets = {asset.asset_id: asset}
 
     first = resolve_hook_overlay(project, assets, profile_id=SHORTS_PREVIEW_PROFILE_ID)
@@ -139,7 +140,7 @@ def test_template_generated_ids_and_wrapping_are_deterministic() -> None:
 
 def test_preview_and_final_scale_typography_but_keep_semantic_ids_and_line_breaks() -> None:
     asset = image_asset()
-    project = project_for(asset, hook="A deterministic hook wraps the same in preview and final")
+    project = project_for(asset, hook="Deterministic wrapping stays equal")
     assets = {asset.asset_id: asset}
 
     preview = resolve_hook_overlay(project, assets, profile_id=SHORTS_PREVIEW_PROFILE_ID)
@@ -150,6 +151,40 @@ def test_preview_and_final_scale_typography_but_keep_semantic_ids_and_line_break
     assert preview.overlays[0].placement == final.overlays[0].placement
     assert preview.overlays[0].properties["font_size"] == 31
     assert final.overlays[0].properties["font_size"] == 63
+
+
+def test_wide_ascii_glyphs_use_conservative_full_em_wrap_budget() -> None:
+    asset = image_asset()
+    project = project_for(asset, hook="W" * 40)
+
+    resolved = resolve_hook_overlay(
+        project,
+        {asset.asset_id: asset},
+        profile_id=SHORTS_FINAL_PROFILE_ID,
+    )
+
+    lines = (resolved.overlays[0].text or "").split("\n")
+    wrap_width = resolved.properties["hook_wrap_width_chars"]
+    assert wrap_width == 13
+    assert len(lines) == 4
+    assert all(len(line) <= wrap_width for line in lines)
+
+
+def test_cjk_and_emoji_fail_closed_until_font_backed_text_pipeline() -> None:
+    asset = image_asset()
+    for hook in ("別のフック", "Look 👀 here"):
+        project = project_for(asset, hook=hook)
+        with pytest.raises(HookOverlayTemplateError, match="font-backed text pipeline"):
+            resolve_hook_overlay(
+                project,
+                {asset.asset_id: asset},
+                profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            )
+
+
+def test_glyph_safety_budget_cannot_be_reduced_below_one_em() -> None:
+    with pytest.raises(ValueError):
+        HookOverlayConfig(max_glyph_width_em=0.9)
 
 
 def test_image_scene_does_not_receive_original_audio_track() -> None:
@@ -287,7 +322,7 @@ def test_resolver_requires_matching_template_reference_and_explicit_variant_sele
     with pytest.raises(HookOverlayTemplateError, match="project template must be"):
         resolve_hook_overlay(wrong, {asset.asset_id: asset}, profile_id=SHORTS_PREVIEW_PROFILE_ID)
 
-    second_variant = Variant(language="ja", hook="別のフック")
+    second_variant = Variant(language="ru", hook="Другой хук")
     multi = project.validated_copy(update={"variants": (project.variants[0], second_variant)})
     with pytest.raises(HookOverlayTemplateError, match="explicit variant_id"):
         resolve_hook_overlay(multi, {asset.asset_id: asset}, profile_id=SHORTS_PREVIEW_PROFILE_ID)
