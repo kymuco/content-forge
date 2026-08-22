@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from content_forge.core import (
@@ -28,7 +26,6 @@ from content_forge.profiles import (
 from content_forge.templates import (
     HOOK_OVERLAY_TEMPLATE_ID,
     HOOK_OVERLAY_TEMPLATE_VERSION,
-    HookOverlayConfig,
     HookOverlayTemplateError,
     compile_hook_overlay,
     resolve_hook_overlay,
@@ -142,7 +139,7 @@ def test_template_generated_ids_and_wrapping_are_deterministic() -> None:
 
 def test_preview_and_final_scale_typography_but_keep_semantic_ids_and_line_breaks() -> None:
     asset = image_asset()
-    project = project_for(asset, hook="A deterministic hook should wrap the same way in preview and final")
+    project = project_for(asset, hook="A deterministic hook wraps the same in preview and final")
     assets = {asset.asset_id: asset}
 
     preview = resolve_hook_overlay(project, assets, profile_id=SHORTS_PREVIEW_PROFILE_ID)
