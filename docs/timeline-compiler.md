@@ -51,7 +51,7 @@ This is intentional and supersedes the early PR1 wording in `rendering-model.md`
 
 ## Scene scheduling
 
-Scenes have explicit `order` values and PR4 requires them to be contiguous from zero.
+Scenes have explicit `order` values and PR4 requires them to be contiguous from zero. Scene IDs must also remain unique after template resolution.
 
 Without transitions:
 
@@ -99,7 +99,7 @@ absolute overlay start = 3.75
 
 If an overlay has no explicit duration, it lasts until the end of its scope. Project/template overlays are scoped to the complete timeline.
 
-All visual overlays must have a resolved normalized placement before the plan is accepted. Slot/anchor resolution belongs upstream in template/component logic.
+All visual overlays must have a resolved normalized placement before the plan is accepted. Slot/anchor resolution belongs upstream in template/component logic. A visual overlay cannot reference an audio-only asset.
 
 ## Variant text resolution
 
@@ -121,7 +121,7 @@ Audio timing follows the same scope model as overlays.
 
 A scene-local track is converted to absolute timeline seconds. `track_type="original"` may omit `asset_ref`; the compiler then binds it to the containing scene media and carries the scene source trim into `source_start_seconds`.
 
-Known source durations are checked before rendering. Looping tracks may intentionally outlive their source asset; non-looping tracks may not.
+Known source durations are checked before rendering. Looping tracks may intentionally outlive their source asset; non-looping tracks may not. Image assets and assets explicitly known to contain no audio cannot be used as audio tracks.
 
 ## Asset resolution
 
@@ -130,27 +130,47 @@ Every referenced media asset is resolved through either:
 - a mapping of `asset_id -> Asset`; or
 - an object implementing `get_asset(asset_id)` such as the PR3 library database.
 
-Unknown assets fail compilation.
+Unknown assets fail compilation. A resolver must also return an `Asset` whose own `asset_id` exactly matches the requested identity; a mapping entry cannot silently substitute another asset.
 
 The final plan contains a sorted asset table with stable identity/hash/media metadata so later render manifests can include reproducibility evidence without reinterpreting project semantics.
 
 ## Template boundary
 
-`ResolvedTemplate` is intentionally small in PR4:
+`ResolvedTemplate` is the normalized output of the future template/plugin layer:
 
 ```text
 template_id
 version
+scenes          # optional fully resolved replacement scene graph
 overlays
 audio_tracks
 properties
 ```
 
-It is not the future plugin/template registry. It is the normalized contribution produced by that layer.
+It is not itself the template registry.
+
+`scenes=None` preserves `Project.scenes`. When `scenes` is supplied, it fully replaces the project scene graph for this compilation. This is the content-agnostic mechanism future templates can use to change placement, repeat or stack media, or otherwise resolve presentation into ordinary scenes without teaching the timeline compiler or renderer about a named content format.
+
+All replacement scenes still pass through the same deterministic order, transition, source-bound, asset-identity, overlay, and audio validation as project scenes.
 
 The compiler requires `ResolvedTemplate.template_id/version` to match `Project.template` exactly. A project with no template reference must not receive a resolved template contribution.
 
 PR6 can therefore implement `hook_overlay` as ordinary upstream resolution logic without adding `if template == ...` branches to the renderer.
+
+## Render-plan invariants
+
+`RenderPlan` and its timed child models validate their own redundant timing/reference structure rather than trusting only the compiler that constructed them.
+
+In particular:
+
+- each planned `end_seconds` must equal `start_seconds + duration_seconds`;
+- total plan duration must equal the final scene end;
+- scene/overlay/audio/asset identities are unique in their respective plan namespaces;
+- scene scopes referenced by overlays/audio must exist;
+- every referenced media asset must appear in the plan asset table;
+- planned overlays/audio cannot extend beyond total plan duration.
+
+This makes serialized or externally reconstructed plans fail closed before PR5 consumes them.
 
 ## Determinism
 
@@ -198,4 +218,6 @@ Those remain later roadmap layers.
 
 ## Tests
 
-The test suite contains both invariant tests and a semantic render-plan snapshot. The snapshot freezes scene timing, transition overlap, variant text, global/template layers, audio source offsets, referenced assets, and output-profile identity using synthetic data only.
+The test suite contains invariant tests and a semantic render-plan snapshot. The snapshot freezes scene timing, transition overlap, variant text, global/template layers, audio source offsets, referenced assets, and output-profile identity using synthetic data only.
+
+Additional hardening coverage exercises template scene replacement, resolver identity mismatch, missing plan asset-table entries, invalid planned timing identities, source trims when probe duration is unknown, and media-type misuse across visual/audio layers.
