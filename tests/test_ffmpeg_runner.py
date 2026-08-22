@@ -151,3 +151,36 @@ def test_runner_timeout_uses_distinct_error_code(tmp_path: Path) -> None:
     assert captured.value.error.code == "render_timeout"
     assert not output.exists()
     assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
+
+
+def test_runner_timeout_is_enforced_when_process_exits_inside_long_poll(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "late.bin"
+    output.write_bytes(b"previous")
+    command = manifest(
+        output,
+        "from pathlib import Path; import sys, time; time.sleep(0.12); "
+        "Path(sys.argv[1]).write_bytes(b'late-success')",
+    )
+
+    with pytest.raises(FFmpegBackendError) as captured:
+        execute_ffmpeg(command, timeout=0.05, poll_interval=0.5)
+
+    assert captured.value.error.code == "render_timeout"
+    assert output.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
+
+
+def test_runner_popen_value_error_is_structured_and_cleans_staging(tmp_path: Path) -> None:
+    output = tmp_path / "nul.bin"
+    output.write_bytes(b"previous")
+    command = manifest(output, "print('bad')\x00")
+
+    with pytest.raises(FFmpegBackendError) as captured:
+        execute_ffmpeg(command)
+
+    assert captured.value.error.code == "ffmpeg_start_failed"
+    assert "embedded null" in captured.value.error.message.lower()
+    assert output.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(f".{output.name}.*.rendering"))
