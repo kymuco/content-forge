@@ -223,6 +223,9 @@ def test_reconstructed_plan_rejects_non_visual_scene_asset() -> None:
     target = next(item for item in planned_assets if item["asset_id"] == video_id)
     target["media_type"] = MediaType.OTHER.value
     payload["assets"] = tuple(planned_assets)
+    payload["audio_tracks"] = tuple(
+        item for item in payload["audio_tracks"] if item["asset_id"] != video_id
+    )
 
     with pytest.raises(ValidationError, match="scene media must be video or image"):
         RenderPlan.model_validate(payload)
