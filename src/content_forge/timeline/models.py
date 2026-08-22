@@ -129,6 +129,11 @@ class PlannedScene(FrozenModel):
             raise ValueError("planned scene end must equal start + duration")
         if self.media_source_id is not None and self.media_asset_id is None:
             raise ValueError("planned scene source requires a media asset")
+        if self.media_asset_id is None and (
+            self.trim_start_seconds > _EPSILON
+            or self.trim_duration_seconds is not None
+        ):
+            raise ValueError("planned scene without media cannot define source trim")
         return self
 
 
@@ -227,6 +232,10 @@ class PlannedAudioTrack(FrozenModel):
             raise ValueError("planned audio end must equal start + duration")
         if self.source_id is not None and self.asset_id is None:
             raise ValueError("planned audio source requires an asset")
+        if self.track_type == "original" and self.asset_id is None:
+            raise ValueError("planned original audio requires a source asset")
+        if self.asset_id is None and self.source_start_seconds > _EPSILON:
+            raise ValueError("assetless planned audio cannot define a source offset")
         return self
 
 
@@ -268,6 +277,10 @@ class RenderPlan(FrozenModel):
     def validate_plan_graph(self) -> Self:
         if not self.scenes:
             raise ValueError("render plan requires at least one scene")
+        if (self.variant_id is None) != (self.variant_language is None):
+            raise ValueError("render plan variant ID/language must be present together")
+        if (self.template_id is None) != (self.template_version is None):
+            raise ValueError("render plan template ID/version must be present together")
 
         orders = tuple(scene.order for scene in self.scenes)
         if orders != tuple(range(len(self.scenes))):
@@ -368,6 +381,11 @@ class RenderPlan(FrozenModel):
                     or asset.has_audio is False
                 ):
                     raise ValueError("planned audio references an asset with no audio")
+                if (
+                    asset.duration_seconds is not None
+                    and track.source_start_seconds >= asset.duration_seconds
+                ):
+                    raise ValueError("planned audio source offset is outside source duration")
                 if (
                     not track.loop
                     and asset.duration_seconds is not None
