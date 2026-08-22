@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -65,6 +66,16 @@ def _terminate(process: subprocess.Popen[str]) -> tuple[str, str]:
         return process.communicate()
 
 
+def _staging_path(destination: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".rendering",
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
 def execute_ffmpeg(
     manifest: RenderCommandManifest,
     *,
@@ -72,7 +83,13 @@ def execute_ffmpeg(
     timeout: float | None = None,
     poll_interval: float = 0.1,
 ) -> RenderResult:
-    """Execute a command manifest without a shell and remove partial output on failure."""
+    """Execute a command manifest and atomically publish only successful output.
+
+    FFmpeg writes to a unique same-directory staging path. The requested destination is
+    replaced only after FFmpeg exits successfully and the staging file is non-empty, so
+    cancellation, timeout, startup failure, or encoder failure cannot erase a previous
+    successful render.
+    """
 
     destination = Path(manifest.output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +97,6 @@ def execute_ffmpeg(
     digest = command_manifest_digest(manifest)
 
     if cancellation is not None and cancellation.cancelled:
-        destination.unlink(missing_ok=True)
         raise _error(
             manifest,
             code="render_cancelled",
@@ -89,8 +105,23 @@ def execute_ffmpeg(
         )
 
     try:
+        staging = _staging_path(destination)
+    except OSError as exc:
+        raise _error(
+            manifest,
+            code="render_staging_failed",
+            stage="execute",
+            message=f"failed to create render staging file: {exc}",
+        ) from exc
+
+    # The manifest remains deterministic and names the final destination. Runtime
+    # execution substitutes only the final output argument with a unique staging path;
+    # all semantic/filter/codec arguments remain exactly those recorded in the manifest.
+    execution_command = (*manifest.command[:-1], str(staging))
+
+    try:
         process = subprocess.Popen(
-            manifest.command,
+            execution_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -99,7 +130,7 @@ def execute_ffmpeg(
             shell=False,
         )
     except OSError as exc:
-        destination.unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
         raise _error(
             manifest,
             code="ffmpeg_start_failed",
@@ -113,7 +144,7 @@ def execute_ffmpeg(
         while True:
             if cancellation is not None and cancellation.cancelled:
                 stdout, stderr = _terminate(process)
-                destination.unlink(missing_ok=True)
+                staging.unlink(missing_ok=True)
                 raise _error(
                     manifest,
                     code="render_cancelled",
@@ -125,7 +156,7 @@ def execute_ffmpeg(
             elapsed = time.monotonic() - started
             if timeout is not None and elapsed > timeout:
                 stdout, stderr = _terminate(process)
-                destination.unlink(missing_ok=True)
+                staging.unlink(missing_ok=True)
                 raise _error(
                     manifest,
                     code="render_timeout",
@@ -142,11 +173,12 @@ def execute_ffmpeg(
     except BaseException:
         if process.poll() is None:
             _terminate(process)
+        staging.unlink(missing_ok=True)
         raise
 
     elapsed = time.monotonic() - started
     if process.returncode != 0:
-        destination.unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
         raise _error(
             manifest,
             code="ffmpeg_failed",
@@ -155,8 +187,8 @@ def execute_ffmpeg(
             return_code=process.returncode,
             stderr=stderr,
         )
-    if not destination.is_file() or destination.stat().st_size <= 0:
-        destination.unlink(missing_ok=True)
+    if not staging.is_file() or staging.stat().st_size <= 0:
+        staging.unlink(missing_ok=True)
         raise _error(
             manifest,
             code="render_output_missing",
@@ -165,6 +197,19 @@ def execute_ffmpeg(
             return_code=process.returncode,
             stderr=stderr,
         )
+
+    try:
+        os.replace(staging, destination)
+    except OSError as exc:
+        staging.unlink(missing_ok=True)
+        raise _error(
+            manifest,
+            code="render_publish_failed",
+            stage="publish_output",
+            message=f"failed to publish completed render: {exc}",
+            return_code=process.returncode,
+            stderr=stderr,
+        ) from exc
 
     # Flush the directory entry where practical so a successful return means the file is
     # visible to a following worker. Windows does not expose a portable directory fsync.
