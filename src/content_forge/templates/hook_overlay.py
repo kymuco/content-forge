@@ -8,6 +8,7 @@ import math
 import textwrap
 import unicodedata
 from collections.abc import Mapping
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Protocol, Self
 
 from pydantic import Field, model_validator
@@ -150,21 +151,53 @@ def _rectangles_overlap(
     )
 
 
+def _profile_edge(value: float, extent: int) -> int:
+    """Match the generic render geometry contract's stable half-up edge rounding."""
+
+    scaled = Decimal(str(value)) * Decimal(extent)
+    return int(scaled.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _resolve_hook_region_pixels(
+    profile: OutputProfile,
+    rect: NormalizedRect,
+) -> tuple[int, int]:
+    """Resolve hook-region edges exactly as the render backend will resolve them."""
+
+    left = max(0, min(profile.width, _profile_edge(rect.x, profile.width)))
+    top = max(0, min(profile.height, _profile_edge(rect.y, profile.height)))
+    right = max(
+        0,
+        min(profile.width, _profile_edge(rect.x + rect.width, profile.width)),
+    )
+    bottom = max(
+        0,
+        min(profile.height, _profile_edge(rect.y + rect.height, profile.height)),
+    )
+    if right <= left or bottom <= top:
+        raise HookOverlayTemplateError(
+            "hook region collapses after output-profile pixel rounding"
+        )
+    return right - left, bottom - top
+
+
 def _validate_profile(
     profile: OutputProfile,
     config: HookOverlayConfig,
-    *,
-    border_width: int,
-) -> None:
+) -> tuple[int, int]:
     if profile.width >= profile.height:
         raise HookOverlayTemplateError("hook_overlay requires a vertical output profile")
 
-    # drawtext outline can extend outside the nominal placement. Keep the same
-    # conservative reserve used by the horizontal/vertical layout budgets and protect
-    # both the output canvas and safe zones against that expanded visual footprint.
-    decoration_padding = border_width * (2 if config.box else 1)
-    pad_x = decoration_padding / profile.width
-    pad_y = decoration_padding / profile.height
+    region_width, region_height = _resolve_hook_region_pixels(profile, config.hook_region)
+
+    # Validate the visual footprint from normalized decoration ratios rather than the
+    # profile-rounded border width. A positive decoration therefore has the same edge
+    # semantics in preview and final even when one profile rounds it to 0px and another
+    # rounds it to 1px. border_width_ratio is relative to output width, so convert its
+    # vertical footprint through the selected profile aspect ratio.
+    decoration_multiplier = 2 if config.box else 1
+    pad_x = config.border_width_ratio * decoration_multiplier
+    pad_y = pad_x * profile.width / profile.height
     if (
         config.hook_region.x - pad_x < 0.0
         or config.hook_region.y - pad_y < 0.0
@@ -186,6 +219,7 @@ def _validate_profile(
                 f"hook region or text decoration overlaps protected output safe zone: "
                 f"{safe_zone.name}"
             )
+    return region_width, region_height
 
 
 def _config_for_variant(base: HookOverlayConfig, variant: Variant) -> HookOverlayConfig:
@@ -307,16 +341,15 @@ def _scaled_integer(value: float, scale: int, *, minimum: int) -> int:
 
 
 def _validate_horizontal_layout(
-    profile: OutputProfile,
     config: HookOverlayConfig,
     *,
+    region_width: int,
     wrapped_hook: str,
     font_size: int,
     border_width: int,
 ) -> tuple[int, int, int]:
     """Reject rounded pixel layouts that exceed the semantic horizontal budget."""
 
-    region_width = max(1, int(math.floor(config.hook_region.width * profile.width)))
     decoration_width = border_width * (4 if config.box else 2)
     available_width = region_width - decoration_width
     longest_line = max(len(line) for line in wrapped_hook.split("\n"))
@@ -334,28 +367,27 @@ def _validate_horizontal_layout(
 
 
 def _validate_vertical_layout(
-    profile: OutputProfile,
     config: HookOverlayConfig,
     *,
+    region_height: int,
     line_count: int,
     font_size: int,
     border_width: int,
 ) -> tuple[int, int, int]:
     """Reject drawtext layouts that can exceed the declared hook region vertically."""
 
-    available_height = max(1, int(math.floor(config.hook_region.height * profile.height)))
     line_height = max(font_size, int(math.ceil(font_size * config.line_height_em)))
     # Text outline expands on both vertical sides. Box rendering itself has no explicit
     # boxborderw in PR6, but reserving one extra outline-width per side keeps the simple
     # path fail-closed across FFmpeg/fontconfig differences.
     decoration_height = border_width * (4 if config.box else 2)
     required_height = line_count * line_height + decoration_height
-    if required_height > available_height:
+    if required_height > region_height:
         raise HookOverlayTemplateError(
             "hook text exceeds hook region height: "
-            f"requires {required_height}px but only {available_height}px is available"
+            f"requires {required_height}px but only {region_height}px is available"
         )
-    return available_height, line_height, required_height
+    return region_height, line_height, required_height
 
 
 def _generated_id_collides(project: Project, generated_id: str) -> bool:
@@ -393,11 +425,11 @@ def _resolve_selected(
         profile.width,
         minimum=0,
     )
-    _validate_profile(profile, config, border_width=border_width)
+    region_width, region_height = _validate_profile(profile, config)
     wrapped_hook, wrap_width, line_count = _wrap_hook(_hook_text(variant), config)
     region_width, available_width, required_width = _validate_horizontal_layout(
-        profile,
         config,
+        region_width=region_width,
         wrapped_hook=wrapped_hook,
         font_size=font_size,
         border_width=border_width,
@@ -473,8 +505,8 @@ def _resolve_selected(
         )
 
     region_height, line_height, required_height = _validate_vertical_layout(
-        profile,
         config,
+        region_height=region_height,
         line_count=line_count,
         font_size=font_size,
         border_width=border_width,
