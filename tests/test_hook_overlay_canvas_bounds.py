@@ -71,7 +71,7 @@ def test_text_decoration_cannot_expand_beyond_output_canvas() -> None:
         border_width_ratio=0.03,
     )
 
-    with pytest.raises(HookOverlayTemplateError, match="extends beyond output canvas"):
+    with pytest.raises(HookOverlayTemplateError, match="exceeds output canvas"):
         resolve_hook_overlay(project, {asset.asset_id: asset}, config=config)
 
 
