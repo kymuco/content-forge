@@ -161,10 +161,20 @@ def _validate_profile(
 
     # drawtext outline can extend outside the nominal placement. Keep the same
     # conservative reserve used by the horizontal/vertical layout budgets and protect
-    # safe zones against that expanded visual footprint.
+    # both the output canvas and safe zones against that expanded visual footprint.
     decoration_padding = border_width * (2 if config.box else 1)
     pad_x = decoration_padding / profile.width
     pad_y = decoration_padding / profile.height
+    if (
+        config.hook_region.x - pad_x < 0.0
+        or config.hook_region.y - pad_y < 0.0
+        or config.hook_region.x + config.hook_region.width + pad_x > 1.0
+        or config.hook_region.y + config.hook_region.height + pad_y > 1.0
+    ):
+        raise HookOverlayTemplateError(
+            "hook region or text decoration exceeds output canvas"
+        )
+
     for safe_zone in profile.safe_zones:
         if _rectangles_overlap(
             config.hook_region,
