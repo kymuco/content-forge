@@ -15,6 +15,7 @@ from content_forge.render.ffmpeg import (
     CancellationToken,
     FFmpegBackendError,
     FFmpegCapabilities,
+    MediaProbeError,
     RenderCommandManifest,
     RuntimeStorageResolver,
     command_manifest_digest,
@@ -29,7 +30,7 @@ from content_forge.storage import (
     sha256_file,
     transition_job_state,
 )
-from content_forge.timeline import RenderPlan, render_plan_digest
+from content_forge.timeline import PlannedAsset, RenderPlan, render_plan_digest
 
 from .models import (
     RenderArtifactManifest,
@@ -133,6 +134,44 @@ def _payload_optional_string(payload: Mapping[str, object], key: str) -> str | N
     return value
 
 
+def _planned_asset_metadata(planned: PlannedAsset) -> tuple[object, ...]:
+    return (
+        planned.asset_id,
+        planned.sha256,
+        planned.media_type,
+        planned.mime_type,
+        planned.storage_key,
+        planned.width,
+        planned.height,
+        planned.duration_seconds,
+        planned.has_audio,
+    )
+
+
+def _stored_asset_metadata(stored: object) -> tuple[object, ...]:
+    return (
+        stored.asset_id,  # type: ignore[attr-defined]
+        stored.sha256,  # type: ignore[attr-defined]
+        stored.media_type,  # type: ignore[attr-defined]
+        stored.mime_type,  # type: ignore[attr-defined]
+        stored.storage_key,  # type: ignore[attr-defined]
+        stored.width,  # type: ignore[attr-defined]
+        stored.height,  # type: ignore[attr-defined]
+        stored.duration_seconds,  # type: ignore[attr-defined]
+        stored.has_audio,  # type: ignore[attr-defined]
+    )
+
+
+def _close_float(left: float, right: float, *, tolerance: float = 1e-6) -> bool:
+    return abs(left - right) <= tolerance
+
+
+def _optional_float_equal(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return _close_float(left, right)
+
+
 class RenderOrchestrator:
     """Persist a RenderPlan, execute it once, and publish an audited artifact."""
 
@@ -191,13 +230,10 @@ class RenderOrchestrator:
                 raise RenderJobIntegrityError(
                     f"render plan asset is not stored in the local library: {planned_asset.asset_id}"
                 )
-            if stored_asset.sha256 != planned_asset.sha256:
+            if _planned_asset_metadata(planned_asset) != _stored_asset_metadata(stored_asset):
                 raise RenderJobIntegrityError(
-                    f"render plan asset digest differs from library metadata: {planned_asset.asset_id}"
-                )
-            if stored_asset.storage_key != planned_asset.storage_key:
-                raise RenderJobIntegrityError(
-                    f"render plan asset storage key differs from library metadata: {planned_asset.asset_id}"
+                    "render plan asset metadata differs from authoritative library metadata: "
+                    f"{planned_asset.asset_id}"
                 )
 
         digest = render_plan_digest(plan)
@@ -337,6 +373,34 @@ class RenderOrchestrator:
             )
         return command
 
+    def _verify_command_source_bytes(
+        self,
+        command: RenderCommandManifest,
+        plan: RenderPlan,
+    ) -> None:
+        planned_by_id = {asset.asset_id: asset for asset in plan.assets}
+        verified: set[tuple[str, str]] = set()
+        for render_input in command.inputs:
+            planned = planned_by_id.get(render_input.asset_id)
+            if planned is None:
+                raise RenderJobIntegrityError(
+                    "compiled command references an asset outside the render plan: "
+                    f"{render_input.asset_id}"
+                )
+            input_path = Path(render_input.path).expanduser().resolve()
+            identity = (planned.asset_id, str(input_path))
+            if identity in verified:
+                continue
+            if not input_path.is_file():
+                raise RenderJobIntegrityError(
+                    f"render source disappeared before execution: {planned.asset_id}"
+                )
+            if sha256_file(input_path) != planned.sha256:
+                raise RenderJobIntegrityError(
+                    f"render source bytes do not match planned digest: {planned.asset_id}"
+                )
+            verified.add(identity)
+
     def _write_failure(
         self,
         job: StoredJob,
@@ -422,6 +486,7 @@ class RenderOrchestrator:
                 output_path,
                 prefer_nvenc=prefer_nvenc,
             )
+            self._verify_command_source_bytes(command, plan)
             command_digest = command_manifest_digest(command)
             _atomic_write_model(command_path, command)
             result = execute_ffmpeg(
@@ -512,7 +577,13 @@ class RenderOrchestrator:
         paths = self._paths_from_job(job)
         return self._load_plan(job, paths)
 
-    def load_artifact(self, job_id: str) -> RenderArtifactManifest | None:
+    def load_artifact(
+        self,
+        job_id: str,
+        *,
+        ffprobe_path: str = "ffprobe",
+        probe_timeout: float = 20.0,
+    ) -> RenderArtifactManifest | None:
         job = self._job(job_id)
         if job.state != "succeeded":
             return None
@@ -582,6 +653,33 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError("successful render artifact size changed")
         if sha256_file(output_path) != artifact.output_sha256:
             raise RenderJobIntegrityError("successful render artifact digest changed")
+        try:
+            probe = probe_media(
+                output_path,
+                ffprobe_path=ffprobe_path,
+                timeout=probe_timeout,
+            )
+        except (OSError, MediaProbeError) as exc:
+            raise RenderJobIntegrityError(
+                f"failed to re-probe successful render artifact: {exc}"
+            ) from exc
+        if not probe.has_video:
+            raise RenderJobIntegrityError("successful render artifact no longer has video")
+        if (probe.width, probe.height) != (artifact.width, artifact.height):
+            raise RenderJobIntegrityError("artifact probe dimensions changed")
+        if probe.duration_seconds is None or not _close_float(
+            probe.duration_seconds,
+            artifact.duration_seconds,
+        ):
+            raise RenderJobIntegrityError("artifact probe duration changed")
+        if not _optional_float_equal(probe.fps, artifact.fps):
+            raise RenderJobIntegrityError("artifact probe frame rate changed")
+        if probe.has_audio != artifact.has_audio:
+            raise RenderJobIntegrityError("artifact probe audio presence changed")
+        if probe.video_codec != artifact.video_codec:
+            raise RenderJobIntegrityError("artifact probe video codec changed")
+        if probe.audio_codec != artifact.audio_codec:
+            raise RenderJobIntegrityError("artifact probe audio codec changed")
         return artifact
 
     def load_failure(self, job_id: str) -> RenderFailureManifest | None:
