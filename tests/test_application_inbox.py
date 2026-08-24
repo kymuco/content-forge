@@ -174,6 +174,31 @@ def test_startup_reconciliation_recovers_project_to_receipt_crash_window(tmp_pat
     assert service.repository.find_project_for_intake(intake.intake_id) == project
 
 
+def test_project_identity_converges_before_receipt_link(tmp_path) -> None:
+    service = _service(tmp_path)
+    intake = service.repository.create_intake(
+        InboxIntake(
+            kind=IntakeKind.URL_NOTE,
+            source_url="https://example.invalid/concurrent-recovery",
+            probe_state=PreparationState.SKIPPED,
+            thumbnail_state=PreparationState.SKIPPED,
+        )
+    )
+
+    # Model two reconcilers that both observed the same unlinked receipt before either
+    # committed a Project. They must independently construct byte-identical manifests.
+    project_a = service._build_url_project(intake)
+    project_b = service._build_url_project(intake)
+    assert project_a == project_b
+    assert project_a.project_id == f"cf_project_{intake.intake_id.rsplit('_', 1)[1]}"
+    assert project_a.created_at == intake.created_at
+    assert project_a.updated_at == intake.created_at
+
+    service.library.save_project(project_a)
+    service.library.save_project(project_b)
+    assert service.repository.find_project_for_intake(intake.intake_id) == project_a
+
+
 def test_startup_reconciliation_recovers_asset_row_before_receipt_link(
     tmp_path, monkeypatch
 ) -> None:
