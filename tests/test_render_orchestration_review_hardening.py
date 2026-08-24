@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import content_forge.orchestration._render_jobs_hardened as hardened
 from content_forge.core import (
     AssetRef,
     MediaType,
@@ -154,3 +155,32 @@ def test_failure_manifest_tamper_is_rejected_by_sqlite_receipt(tmp_path: Path) -
 
     with pytest.raises(RenderJobIntegrityError, match="authoritative job receipt"):
         orchestrator.load_failure(job.job_id)
+
+
+def test_command_receipt_requires_successful_manifest_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library, project, _ = _fixture(tmp_path)
+    plan = compile_hook_overlay(project, library.database)
+    orchestrator = RenderOrchestrator(library)
+    job = orchestrator.submit(plan, purpose="preview")
+
+    original_write = hardened._atomic_write_model
+
+    def reject_command_manifest(path: Path, model: object) -> None:
+        if path.name == "command-manifest.json":
+            raise OSError("synthetic command publication failure")
+        original_write(path, model)
+
+    monkeypatch.setattr(hardened, "_atomic_write_model", reject_command_manifest)
+
+    with pytest.raises(OSError, match="synthetic command publication failure"):
+        orchestrator.run_job(job.job_id, _capabilities(), prefer_nvenc=False)
+
+    stored = library.database.get_job(job.job_id)
+    assert stored is not None
+    assert stored.state == "failed"
+    assert "command_manifest_digest" not in stored.payload
+    assert isinstance(stored.payload.get("failure_manifest_digest"), str)
+    assert orchestrator.load_failure(job.job_id) is not None
