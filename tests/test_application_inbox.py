@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 
 import pytest
@@ -15,7 +16,7 @@ from content_forge.application import (
     UploadTooLargeError,
 )
 from content_forge.application.models import InboxIntake
-from content_forge.core import Project, ProjectState
+from content_forge.core import EntityKind, MediaType, Project, ProjectState, new_entity_id
 from content_forge.render.ffmpeg import MediaProbe, MediaProbeError
 from content_forge.storage import DerivativeSlot, LocalLibrary
 
@@ -26,10 +27,7 @@ def _service(tmp_path) -> InboxService:
     return InboxService(library, repository, max_upload_bytes=1024)
 
 
-def test_upload_classification_comes_from_probe_not_client_mime_or_filename(
-    tmp_path, monkeypatch
-) -> None:
-    service = _service(tmp_path)
+def _install_video_preparation(monkeypatch) -> None:
     monkeypatch.setattr(
         inbox_module,
         "probe_media",
@@ -47,8 +45,16 @@ def test_upload_classification_comes_from_probe_not_client_mime_or_filename(
     )
     monkeypatch.setattr(inbox_module, "generate_thumbnail", lambda *args, **kwargs: object())
 
+
+def test_upload_classification_comes_from_probe_not_client_mime_or_filename(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_video_preparation(monkeypatch)
+    payload = b"synthetic-video-bytes"
+
     intake = service.ingest_upload(
-        BytesIO(b"synthetic-video-bytes"),
+        BytesIO(payload),
         filename="misleading.txt",
         mime_type="text/plain",
         source_url="https://example.invalid/source",
@@ -59,7 +65,9 @@ def test_upload_classification_comes_from_probe_not_client_mime_or_filename(
     assert intake.state is IntakeState.PREPARED
     assert intake.probe_state is PreparationState.SUCCEEDED
     assert intake.thumbnail_state is PreparationState.SUCCEEDED
+    assert intake.content_sha256 == hashlib.sha256(payload).hexdigest()
     assert intake.asset_id is not None
+    assert intake.source_id is not None
     assert intake.project_id is not None
 
     asset = service.library.database.get_asset(intake.asset_id)
@@ -68,11 +76,18 @@ def test_upload_classification_comes_from_probe_not_client_mime_or_filename(
     assert asset.mime_type == "video/mp4"
     assert (asset.width, asset.height) == (32, 48)
 
+    source = service.library.database.get_source(intake.source_id)
+    assert source is not None
+    assert source.asset_id == intake.asset_id
+    assert source.source_url == "https://example.invalid/source"
+    assert source.original_title == "misleading.txt"
+
     project = service.library.load_project(intake.project_id)
     assert project is not None
     assert project.state.value == "inbox"
     assert project.content_kind == "character_moment"
     assert project.source_refs[0].asset_id == intake.asset_id
+    assert project.source_refs[0].source_id == intake.source_id
 
 
 def test_probe_failure_retains_asset_and_project_as_partial_without_path_leak(
@@ -119,11 +134,14 @@ def test_unexpected_post_ingest_failure_keeps_asset_and_project_linkage(
 
     intake = service.list_intakes()[0]
     assert intake.state is IntakeState.FAILED
+    assert intake.content_sha256 is not None
     assert intake.asset_id is not None
+    assert intake.source_id is not None
     assert intake.project_id is not None
     assert intake.error_message == "operation failed"
     assert str(tmp_path) not in (intake.error_message or "")
     assert service.library.database.get_asset(intake.asset_id) is not None
+    assert service.library.database.get_source(intake.source_id) is not None
     assert service.library.load_project(intake.project_id) is not None
 
 
@@ -154,6 +172,94 @@ def test_startup_reconciliation_recovers_project_to_receipt_crash_window(tmp_pat
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].project_id == project.project_id
     assert service.repository.find_project_for_intake(intake.intake_id) == project
+
+
+def test_startup_reconciliation_recovers_asset_row_before_receipt_link(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_video_preparation(monkeypatch)
+    payload = b"accepted-before-receipt-link"
+    digest = hashlib.sha256(payload).hexdigest()
+    source_id = new_entity_id(EntityKind.SOURCE)
+    intake = service.repository.create_intake(
+        InboxIntake(
+            kind=IntakeKind.FILE,
+            original_name="crash-window.mp4",
+            mime_type="video/mp4",
+            size_bytes=len(payload),
+            content_sha256=digest,
+            source_url="https://example.invalid/crash-window",
+            note="recover provenance too",
+            source_id=source_id,
+        )
+    )
+    staged = tmp_path / "crash-window.mp4"
+    staged.write_bytes(payload)
+    result = service.library.assets.ingest_file(
+        staged,
+        source=None,
+        media_type=MediaType.OTHER,
+        mime_type="application/octet-stream",
+    )
+    assert intake.asset_id is None
+    assert service.library.database.get_asset(result.asset.asset_id) is not None
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    item = recovered[0]
+    assert item.state is IntakeState.PREPARED
+    assert item.asset_id == result.asset.asset_id
+    assert item.source_id == source_id
+    assert item.project_id is not None
+    source = service.library.database.get_source(source_id)
+    assert source is not None
+    assert source.asset_id == result.asset.asset_id
+    assert source.source_url == "https://example.invalid/crash-window"
+    project = service.library.load_project(item.project_id)
+    assert project is not None
+    assert project.source_refs[0].source_id == source_id
+
+
+def test_startup_reconciliation_recovers_blob_before_asset_row(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_video_preparation(monkeypatch)
+    payload = b"published-blob-before-catalog-row"
+    digest = hashlib.sha256(payload).hexdigest()
+    source_id = new_entity_id(EntityKind.SOURCE)
+    service.repository.create_intake(
+        InboxIntake(
+            kind=IntakeKind.FILE,
+            original_name="blob-only.mp4",
+            size_bytes=len(payload),
+            content_sha256=digest,
+            source_id=source_id,
+        )
+    )
+    blob_path = service.library.paths.blob_path_for_sha256(digest)
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(payload)
+    assert service.library.database.get_asset_by_sha256(digest) is None
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    item = recovered[0]
+    assert item.state is IntakeState.PREPARED
+    assert item.asset_id is not None
+    assert item.source_id == source_id
+    asset = service.library.database.get_asset(item.asset_id)
+    assert asset is not None
+    assert asset.sha256 == digest
+    assert asset.size_bytes == len(payload)
+    assert service.library.assets.verify(asset)
+    source = service.library.database.get_source(source_id)
+    assert source is not None
+    assert source.asset_id == item.asset_id
+    assert item.project_id is not None
 
 
 def test_oversized_upload_is_durably_failed(tmp_path) -> None:
