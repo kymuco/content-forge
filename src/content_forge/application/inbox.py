@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import BinaryIO
@@ -615,11 +616,16 @@ class InboxService:
                         and current.size_bytes is not None
                         and current.project_id is None
                     )
-                    if accepted_unlinked_file and isinstance(exc, OSError):
-                        # A transient filesystem/storage failure during recovery must not
-                        # destroy the only authenticated copy of already-accepted bytes.
-                        # Integrity/linkage failures are not retried indefinitely: they
-                        # fall through to the explicit terminal failure path below.
+                    retryable_storage_error = isinstance(
+                        exc,
+                        (OSError, sqlite3.OperationalError),
+                    )
+                    if accepted_unlinked_file and retryable_storage_error:
+                        # Operational filesystem or SQLite failures (for example ENOSPC,
+                        # a busy/locked catalog, or inability to complete a storage
+                        # operation) are retryable after byte acceptance. Integrity and
+                        # linkage contradictions use different exception types and fall
+                        # through to the explicit terminal path below.
                         recovered.append(current)
                         continue
                     try:
