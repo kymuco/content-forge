@@ -51,7 +51,7 @@ A multipart upload follows this boundary:
 pre-parse bearer authentication + Content-Length bound
 -> create durable intake receipt with reserved provenance ID
 -> bounded/fsynced application staging
--> freeze exact size + SHA-256 in the intake receipt
+-> freeze exact size + SHA-256 in the intake receipt   [byte acceptance]
 -> existing AssetStore bytes ingest + SHA-256 deduplication
 -> durable asset linkage checkpoint
 -> idempotent source/provenance record
@@ -64,19 +64,34 @@ pre-parse bearer authentication + Content-Length bound
 
 FastAPI/Starlette would normally parse/spool `UploadFile` before endpoint dependencies. PR8 therefore guards the upload route in middleware before multipart parsing: authentication is checked first, `Content-Length` is mandatory, and the complete multipart body is capped before Starlette consumes it. The application staging copy independently enforces the actual file-byte limit.
 
-The application computes SHA-256 while copying the bounded upload and persists that digest plus the exact byte count before AssetStore publication. Provenance receives a stable source ID in the initial intake receipt. AssetStore is then used for immutable bytes/deduplication without creating provenance inside the same opaque call; after the asset checkpoint, the reserved provenance record and Inbox project are attached idempotently. This ordering makes every cross-store handoff recoverable.
+The application computes SHA-256 while copying the bounded upload. After the complete staging file has been flushed and fsynced, the exact byte count plus SHA-256 are committed to the intake receipt. That receipt transition is the byte-acceptance linearization point: before it, interruption may safely fail the intake and discard staging; after it, the bytes have a durable identity and recovery must either reproduce exactly those bytes or fail closed.
+
+Provenance receives a stable source ID in the initial intake receipt. AssetStore is used for immutable bytes/deduplication without creating provenance inside the same opaque call; after the asset checkpoint, the reserved provenance record and Inbox project are attached idempotently. This ordering makes every post-acceptance cross-store handoff recoverable.
 
 Client-provided multipart MIME type and filename remain provenance/UI hints only. A new uploaded Asset begins with neutral `OTHER` / `application/octet-stream` classification; a successful ffprobe is the authority allowed to promote those shared fields. A later intake cannot reclassify an already-classified deduplicated asset.
 
-A probe or thumbnail failure does not delete an already accepted immutable asset. The intake becomes `partial`, retains the project/asset identity, and records a path-safe diagnostic. Unexpected failures preserve durable links and fail closed without publishing raw subprocess/storage exception text.
+A probe or thumbnail failure does not delete an already accepted immutable asset. The intake becomes `partial`, retains the project/asset identity, and records a path-safe diagnostic. Unexpected handled failures preserve durable links and fail closed without publishing raw subprocess/storage exception text.
 
 ## Interruption recovery
 
-Application startup reconciles any intake left in `receiving` by process termination or power loss. For file intake, the durable pre-ingest digest/size lets recovery search the asset catalog by SHA-256. If the process died in the even narrower window after the canonical content-addressed blob was atomically published but before its `assets` row committed, recovery verifies the canonical blob's path, size, and SHA-256 and reconstructs the neutral Asset metadata row. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
+Application startup reconciles an intake left in `receiving` by process termination or power loss. A file is considered accepted for interruption recovery only if its intake contains both the frozen SHA-256 and exact byte count.
 
-Project identity is deterministically derived from the intake's UUID payload and project timestamps are frozen to the intake creation time. Therefore two reconcilers that both observe the same unlinked intake before either commits a project independently construct the same canonical project ID and manifest instead of allocating duplicate projects. SQLite receipt transitions remain serialized/CAS-checked, while pre-existing PR8 receipts with an older randomly allocated project are still discoverable through `metadata.inbox_intake_id`.
+After that acceptance point, recovery can resume from progressively later durable representations:
 
-Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is recoverable: an already-committed project is rediscovered instead of duplicated. URL/note intake restores or creates its project and finishes. A file receipt with neither an accepted/recoverable asset nor a complete frozen byte identity becomes explicitly failed rather than remaining permanently `receiving`.
+1. an already-linked verified Asset;
+2. an Asset catalog row found by the frozen SHA-256;
+3. the canonical content-addressed blob, if its expected path, exact size, and SHA-256 all verify;
+4. the surviving application staging file, but only when exactly one file belongs to that intake and its exact size and SHA-256 match the frozen receipt.
+
+A verified staging file is re-ingested through the existing AssetStore rather than promoted by path manipulation. If more than one staging file claims the intake, or its size/digest disagrees with the frozen receipt, recovery fails closed and does not accept those bytes. Once a canonical/catalog Asset is established and verified, obsolete staging for that intake is discarded.
+
+If the process died after the canonical content-addressed blob was atomically published but before its `assets` row committed, recovery reconstructs only the neutral Asset metadata row after verifying the canonical blob against the frozen receipt. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
+
+Project identity is deterministically derived from the intake's UUID payload and project timestamps are frozen to intake creation time. Therefore duplicated reconciliation of an accepted unlinked intake converges on the same canonical project ID and manifest instead of allocating duplicate random projects. SQLite receipt transitions remain serialized/CAS-checked. Pre-hardening PR8 receipts with an older randomly allocated project remain discoverable through `metadata.inbox_intake_id`.
+
+Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is recoverable: an already-committed project is rediscovered instead of duplicated. URL/note intake restores or creates its project and finishes. A file receipt with no complete frozen byte identity, or with no verified recoverable representation after acceptance, becomes explicitly failed rather than remaining permanently `receiving`.
+
+PR8's server entry point remains single-process; a worker pool and general multi-process upload ownership protocol are outside this milestone. The deterministic project identity prevents duplicate project allocation during duplicated recovery, but it is not presented as a general worker-lease system.
 
 ## URL/note capture
 
@@ -93,6 +108,7 @@ PR8 does not add:
 - a PWA or mobile UI;
 - a public-internet deployment mode;
 - a worker pool or batch scheduler;
+- a general multi-process upload/recovery lease protocol;
 - automatic source downloading;
 - direct render execution from HTTP handlers;
 - review-task UI;
