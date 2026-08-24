@@ -192,8 +192,9 @@ class RenderOrchestrator(_BaseRenderOrchestrator):
                 prefer_nvenc=prefer_nvenc,
             )
             self._verify_command_source_bytes(command, plan)
-            command_digest = command_manifest_digest(command)
             _atomic_write_model(command_path, command)
+            # Receipt authority begins only after the sidecar is durably published.
+            command_digest = command_manifest_digest(command)
 
             result = execute_ffmpeg(
                 command,
