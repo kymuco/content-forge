@@ -171,8 +171,11 @@ def create_app(
     app.state.application_repository = repository
     app.state.auth = auth
     app.state.inbox = inbox
+    # The lease is intentionally process-scoped. Keeping it reachable from app.state
+    # holds the OS advisory lock for the API object's lifetime; process exit releases it
+    # unconditionally, including crashes. Tests/tools that intentionally replace a live
+    # app in-process can explicitly close this narrow ownership object first.
     app.state.runtime_lease = runtime_lease
-    app.add_event_handler("shutdown", runtime_lease.close)
 
     @app.middleware("http")
     async def protect_upload_body(request: Request, call_next):
