@@ -136,8 +136,13 @@ Deliverables:
 - thin FastAPI transport over an explicit application-service boundary;
 - multipart upload from phone/desktop with pre-parse authentication and bounded request size;
 - URL/note intake records even when downloading is not automated;
-- automatic content-addressed asset ingest, authoritative ffprobe classification, thumbnail generation, and `INBOX` project creation;
+- durable byte acceptance only after staging file fsync, containing-directory persistence where supported, and an exact size + SHA-256 receipt;
+- restart recovery from authenticated staging, canonical content-addressed blobs, catalogued assets, provenance, and deterministic project checkpoints;
+- transient post-acceptance storage failures remain resumable while integrity contradictions fail closed;
+- automatic content-addressed asset ingest, authoritative ffprobe classification/legacy metadata repair, attached-cover-art-safe probing, thumbnail generation, and `INBOX` project creation;
+- serialized canonical thumbnail publication inside the supported single-owner runtime;
 - durable receiving/prepared/partial/failed intake records and restart reconciliation;
+- one live API owner per runtime root enforced with an OS advisory lock before reconciliation;
 - loopback pairing bootstrap plus revocable bearer sessions;
 - TLS required for non-loopback/LAN binding;
 - no public-internet exposure by default;
