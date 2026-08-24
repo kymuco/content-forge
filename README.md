@@ -17,12 +17,12 @@ The project starts with YouTube Shorts-style workflows, but the core model is in
 - **Reproducible output.** Projects retain source hashes, accepted text, template versions, provider parameters, and render metadata.
 - **Extensible by composition.** New content formats should usually require a template, component, provider, or workflow plugin—not changes to the core renderer.
 
-## Planned architecture
+## Current architecture
 
 ```text
 Phone / Desktop
       |
-   Web / PWA
+ authenticated local API
       |
 +-----+------------------+
 |                        |
@@ -43,23 +43,59 @@ Inbox                Review Queue
          Template
             |
       Render Compiler
-       /           \
-   Pillow          FFmpeg
-                     |
-                   NVENC
-                     |
-                     QC
-                     |
-                   Export
+            |
+          FFmpeg
+            |
+     durable render job
+            |
+     verified artifact
 ```
+
+## Development status
+
+PR1–PR7 are complete on `main`: canonical domain contracts, content-addressed local storage, provenance, deterministic timeline compilation, the generic FFmpeg backend, the first `hook_overlay` template, and durable authenticated render-attempt artifacts are implemented.
+
+The current milestone is **Milestone 2 — Phone-first production workflow**. PR8 introduces the first application/service boundary: authenticated local FastAPI, durable Inbox intake, automatic asset ingest/probe/thumbnail preparation, and `INBOX` project creation.
+
+The intended v0.1 vertical slice remains:
+
+```text
+Phone upload/share
+  -> Inbox
+  -> Project
+  -> hook_overlay template
+  -> fast preview
+  -> approval
+  -> 1080x1920 render
+  -> QC
+  -> export
+```
+
+## Local API
+
+Install the project and run the API on loopback by default:
+
+```text
+content-forge-api
+```
+
+Phone access must be enabled explicitly:
+
+```text
+content-forge-api --lan
+```
+
+Sensitive reads and writes require a paired bearer session. Pairing challenges can only be created from a loopback client on the desktop; the phone exchanges the short-lived challenge for a revocable session token. The API never returns raw runtime filesystem paths or stored token digests.
+
+See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the current PR8 contract.
 
 ## Initial content families
 
-The first architecture is being designed to cover:
+The architecture is designed to cover:
 
 - funny/reaction clips;
 - anime moments;
-- game and character moments (Genshin, ZZZ, Wuthering Waves, Marvel Rivals-style material);
+- game and character moments;
 - game news/reveal moments;
 - single-art and multi-art stories;
 - comic, manga, and manhwa panel sequences;
@@ -69,26 +105,9 @@ The first architecture is being designed to cover:
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
-## Development status
-
-The repository is at the architecture/foundation stage. The first implementation target is a narrow end-to-end vertical slice:
-
-```text
-Phone upload
-  -> Inbox
-  -> Project
-  -> hook_overlay template
-  -> fast preview
-  -> approval
-  -> 1080x1920 NVENC render
-  -> QC
-  -> export
-```
-
-The complete staged plan is in [`ROADMAP.md`](ROADMAP.md).
-
 ## Documentation
 
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
@@ -98,6 +117,7 @@ The complete staged plan is in [`ROADMAP.md`](ROADMAP.md).
 - [`docs/providers.md`](docs/providers.md) — LLM, OCR, TTS, source, and future provider interfaces
 - [`docs/safety-and-provenance.md`](docs/safety-and-provenance.md) — source tracking, credits, permissions, platform risk
 - [`docs/v0.1-spec.md`](docs/v0.1-spec.md) — first implementation contract
+- [`docs/pr8-local-api.md`](docs/pr8-local-api.md) — authenticated local API and Inbox contract
 
 ## Repository hygiene
 
