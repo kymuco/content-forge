@@ -84,6 +84,7 @@ class RenderArtifactManifest(FrozenModel):
     template_version: str | None = Field(default=None, min_length=1, max_length=64)
     render_plan_digest: Digest
     command_manifest_digest: Digest
+    command_manifest_storage_key: str = Field(min_length=1, max_length=1024)
     output_sha256: Digest
     output_storage_key: str = Field(min_length=1, max_length=1024)
     manifest_storage_key: str = Field(min_length=1, max_length=1024)
@@ -118,7 +119,11 @@ class RenderArtifactManifest(FrozenModel):
             return require_entity_id(value, EntityKind.VARIANT)
         return value
 
-    @field_validator("output_storage_key", "manifest_storage_key")
+    @field_validator(
+        "command_manifest_storage_key",
+        "output_storage_key",
+        "manifest_storage_key",
+    )
     @classmethod
     def validate_storage_keys(cls, value: str) -> str:
         return _storage_key(value)
