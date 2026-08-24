@@ -9,7 +9,11 @@ import pytest
 from content_forge.core import AssetRef, MediaType, Project, Scene, TemplateRef, Variant
 from content_forge.orchestration import RenderJobIntegrityError, RenderOrchestrator
 from content_forge.profiles import shorts_preview_profile
-from content_forge.render.ffmpeg import probe_ffmpeg_runtime
+from content_forge.render.ffmpeg import (
+    RenderCommandManifest,
+    command_manifest_digest,
+    probe_ffmpeg_runtime,
+)
 from content_forge.storage import LocalLibrary, sha256_file
 from content_forge.templates import (
     HOOK_OVERLAY_TEMPLATE_ID,
@@ -72,6 +76,8 @@ def test_persisted_preview_job_renders_and_reloads_artifact_manifest(tmp_path: P
     stored = library.database.get_job(job.job_id)
     assert stored is not None
     assert stored.state == "succeeded"
+    assert stored.payload["command_manifest_digest"] == artifact.command_manifest_digest
+    assert isinstance(stored.payload.get("artifact_manifest_digest"), str)
     assert artifact.project_id == project.project_id
     assert artifact.profile_id == "shorts_preview"
     assert artifact.width == 540
@@ -110,4 +116,29 @@ def test_persisted_preview_job_renders_and_reloads_artifact_manifest(tmp_path: P
     command_payload["video_encoder"] = "tampered_encoder"
     command_path.write_text(json.dumps(command_payload), encoding="utf-8")
     with pytest.raises(RenderJobIntegrityError, match="command-manifest digest"):
+        orchestrator.load_artifact(job.job_id)
+
+    # Mutating both sidecars consistently still cannot replace the command receipt held
+    # in SQLite. This is the attack the terminal receipt is specifically meant to stop.
+    command_payload = json.loads(
+        json.dumps(
+            RenderCommandManifest.model_validate_json(
+                (library.paths.root / artifact.command_manifest_storage_key).read_text(
+                    encoding="utf-8"
+                )
+            ).model_dump(mode="json")
+        )
+    )
+    command_payload["video_encoder"] = artifact.video_encoder
+    command_payload["ffmpeg_path"] = "/tampered/ffmpeg"
+    tampered_command = RenderCommandManifest.model_validate(command_payload)
+    command_path.write_text(
+        json.dumps(tampered_command.model_dump(mode="json")),
+        encoding="utf-8",
+    )
+    artifact_payload = artifact.model_dump(mode="json")
+    artifact_payload["command_manifest_digest"] = command_manifest_digest(tampered_command)
+    manifest_path.write_text(json.dumps(artifact_payload), encoding="utf-8")
+
+    with pytest.raises(RenderJobIntegrityError, match="authoritative job receipt"):
         orchestrator.load_artifact(job.job_id)
