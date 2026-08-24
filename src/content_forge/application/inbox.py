@@ -58,12 +58,7 @@ def _public_failure_message(exc: BaseException) -> str:
 
 
 def _project_id_for_intake(intake: InboxIntake) -> str:
-    """Derive one canonical project identity from the intake UUID payload.
-
-    Recovery can run in more than one process. Deriving rather than randomly allocating
-    the project ID prevents two reconcilers from committing distinct projects before
-    either has linked the project back into the intake receipt.
-    """
+    """Derive one canonical project identity from the intake UUID payload."""
 
     return f"cf_project_{intake.intake_id.rsplit('_', 1)[1]}"
 
@@ -91,6 +86,37 @@ class InboxService:
 
     def get_intake(self, intake_id: str) -> InboxIntake | None:
         return self.repository.get_intake(intake_id)
+
+    def _staging_candidates(self, intake: InboxIntake) -> tuple[Path, ...]:
+        prefix = f"http-{intake.intake_id}-"
+        return tuple(
+            sorted(
+                path
+                for path in self.library.paths.incoming.iterdir()
+                if path.is_file() and path.name.startswith(prefix)
+            )
+        )
+
+    def _verified_staging_candidate(self, intake: InboxIntake) -> Path | None:
+        """Return the exact frozen staging file if it survived process interruption."""
+
+        candidates = self._staging_candidates(intake)
+        if not candidates:
+            return None
+        if len(candidates) != 1:
+            raise InboxError("multiple staging files claim one Inbox intake")
+        if intake.content_sha256 is None or intake.size_bytes is None:
+            return None
+        candidate = candidates[0]
+        if candidate.stat().st_size != intake.size_bytes:
+            raise InboxError("staging byte count disagrees with frozen Inbox receipt")
+        if sha256_file(candidate) != intake.content_sha256:
+            raise InboxError("staging digest disagrees with frozen Inbox receipt")
+        return candidate
+
+    def _discard_staging_candidates(self, intake: InboxIntake) -> None:
+        for path in self._staging_candidates(intake):
+            path.unlink(missing_ok=True)
 
     def _source_record_for_intake(self, intake: InboxIntake):
         if intake.source_id is None:
@@ -140,11 +166,11 @@ class InboxService:
         self,
         intake: InboxIntake,
     ) -> tuple[InboxIntake, Asset | None]:
-        """Recover the asset side of a receiving file intake.
+        """Recover the asset side of an accepted receiving file intake.
 
-        The receipt persists content SHA-256 and size before AssetStore publication. This
-        lets startup recover both the normal `asset row -> receipt` gap and the narrower
-        `canonical blob -> asset row` gap if the process dies between those commits.
+        `content_sha256 + size_bytes` is the byte-acceptance receipt. Once it exists,
+        recovery can resume from the verified staging file, canonical blob, asset row,
+        or already-linked asset without accepting bytes that disagree with that receipt.
         """
 
         if intake.asset_id is not None:
@@ -157,6 +183,7 @@ class InboxService:
                 raise InboxError("Inbox byte count disagrees with accepted asset")
             if not self.library.assets.verify(asset):
                 raise InboxError("accepted Inbox asset failed byte verification")
+            self._discard_staging_candidates(intake)
             return intake, asset
 
         if intake.content_sha256 is None or intake.size_bytes is None:
@@ -165,29 +192,42 @@ class InboxService:
         asset = self.library.database.get_asset_by_sha256(intake.content_sha256)
         if asset is None:
             blob_path = self.library.paths.blob_path_for_sha256(intake.content_sha256)
-            if not blob_path.is_file():
-                return intake, None
-            if blob_path.stat().st_size != intake.size_bytes:
-                raise InboxError("recovery blob size disagrees with Inbox receipt")
-            if sha256_file(blob_path) != intake.content_sha256:
-                raise InboxError("recovery blob digest disagrees with Inbox receipt")
-            asset = self.library.database.put_asset(
-                Asset(
-                    sha256=intake.content_sha256,
+            if blob_path.is_file():
+                if blob_path.stat().st_size != intake.size_bytes:
+                    raise InboxError("recovery blob size disagrees with Inbox receipt")
+                if sha256_file(blob_path) != intake.content_sha256:
+                    raise InboxError("recovery blob digest disagrees with Inbox receipt")
+                asset = self.library.database.put_asset(
+                    Asset(
+                        sha256=intake.content_sha256,
+                        media_type=MediaType.OTHER,
+                        mime_type="application/octet-stream",
+                        size_bytes=intake.size_bytes,
+                        storage_key=self.library.paths.storage_key_for_sha256(
+                            intake.content_sha256
+                        ),
+                    )
+                )
+            else:
+                staged = self._verified_staging_candidate(intake)
+                if staged is None:
+                    return intake, None
+                result = self.library.assets.ingest_file(
+                    staged,
+                    source=None,
                     media_type=MediaType.OTHER,
                     mime_type="application/octet-stream",
-                    size_bytes=intake.size_bytes,
-                    storage_key=self.library.paths.storage_key_for_sha256(
-                        intake.content_sha256
-                    ),
                 )
-            )
+                asset = result.asset
 
         if asset.sha256 != intake.content_sha256 or asset.size_bytes != intake.size_bytes:
             raise InboxError("recovered asset metadata disagrees with Inbox receipt")
         if not self.library.assets.verify(asset):
             raise InboxError("recovered Inbox asset failed byte verification")
 
+        # From this point the catalog/canonical blob is authoritative, so an old staging
+        # copy is no longer needed even if receipt linkage is interrupted again.
+        self._discard_staging_candidates(intake)
         intake = self.repository.transition_intake(
             intake.intake_id,
             expected_state=IntakeState.RECEIVING,
@@ -374,9 +414,9 @@ class InboxService:
                 os.fsync(handle.fileno())
 
             content_sha256 = digest.hexdigest()
-            # Freeze the recoverable byte identity before AssetStore publication. If the
-            # process dies after this commit, startup can distinguish a complete staged
-            # upload from one interrupted while HTTP bytes were still arriving.
+            # This is the byte-acceptance linearization point. Before this durable receipt
+            # exists, a crash may safely fail the intake. After it exists, the verified
+            # staging file/canonical blob/catalog row are all resumable representations.
             intake = self.repository.transition_intake(
                 intake.intake_id,
                 expected_state=IntakeState.RECEIVING,
@@ -390,7 +430,7 @@ class InboxService:
             # Client MIME/filename are provenance hints only. Shared immutable Asset
             # classification starts neutral and is promoted only by authoritative probe.
             # Provenance is deliberately attached after the asset receipt checkpoint so
-            # every cross-store crash window can be reconstructed idempotently.
+            # every post-acceptance cross-store crash window can be reconstructed.
             result = self.library.assets.ingest_file(
                 staged,
                 source=None,
@@ -484,12 +524,9 @@ class InboxService:
     def reconcile_receiving(self) -> tuple[InboxIntake, ...]:
         """Recover receipts left `receiving` by process/machine interruption.
 
-        File receipts freeze content digest, byte count, and a provenance ID before asset
-        publication. Startup can therefore recover from canonical-blob publication,
-        asset-catalog, provenance, project, and receipt-link interruptions without
-        manufacturing duplicate logical intake. Project identity is derived from the
-        intake ID so concurrent reconcilers converge on the same manifest. URL/note
-        intake only needs project linkage restored.
+        A file is accepted only once exact digest+size are durable. From that point,
+        startup can recover from durable staging, canonical-blob publication, asset
+        catalog, provenance, deterministic project, and receipt-link interruptions.
         """
 
         recovered: list[InboxIntake] = []
@@ -499,19 +536,19 @@ class InboxService:
                 if intake.kind is IntakeKind.FILE:
                     intake, asset = self._recover_asset_for_intake(intake)
                     if asset is None:
-                        recovered.append(
-                            self.repository.transition_intake(
-                                intake.intake_id,
-                                expected_state=IntakeState.RECEIVING,
-                                update={
-                                    "state": IntakeState.FAILED,
-                                    "probe_state": PreparationState.SKIPPED,
-                                    "thumbnail_state": PreparationState.SKIPPED,
-                                    "error_code": "interrupted_before_asset_acceptance",
-                                    "error_message": "upload interrupted before asset acceptance",
-                                },
-                            )
+                        failed = self.repository.transition_intake(
+                            intake.intake_id,
+                            expected_state=IntakeState.RECEIVING,
+                            update={
+                                "state": IntakeState.FAILED,
+                                "probe_state": PreparationState.SKIPPED,
+                                "thumbnail_state": PreparationState.SKIPPED,
+                                "error_code": "interrupted_before_asset_acceptance",
+                                "error_message": "upload interrupted before asset acceptance",
+                            },
                         )
+                        self._discard_staging_candidates(intake)
+                        recovered.append(failed)
                         continue
                     intake, _source_record = self._ensure_source_record(intake, asset)
                     intake, _project = self._ensure_project(intake)
@@ -529,19 +566,19 @@ class InboxService:
                 current = self.repository.get_intake(original.intake_id)
                 if current is not None and current.state is IntakeState.RECEIVING:
                     try:
-                        recovered.append(
-                            self.repository.transition_intake(
-                                current.intake_id,
-                                expected_state=IntakeState.RECEIVING,
-                                update={
-                                    "state": IntakeState.FAILED,
-                                    "probe_state": PreparationState.SKIPPED,
-                                    "thumbnail_state": PreparationState.SKIPPED,
-                                    "error_code": "interrupted_recovery_failed",
-                                    "error_message": "interrupted Inbox recovery failed",
-                                },
-                            )
+                        failed = self.repository.transition_intake(
+                            current.intake_id,
+                            expected_state=IntakeState.RECEIVING,
+                            update={
+                                "state": IntakeState.FAILED,
+                                "probe_state": PreparationState.SKIPPED,
+                                "thumbnail_state": PreparationState.SKIPPED,
+                                "error_code": "interrupted_recovery_failed",
+                                "error_message": "interrupted Inbox recovery failed",
+                            },
                         )
+                        self._discard_staging_candidates(current)
+                        recovered.append(failed)
                     except Exception:
                         pass
         return tuple(recovered)
