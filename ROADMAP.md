@@ -98,11 +98,30 @@ Deliverables:
 
 Exit condition: a local clip + headline produces a correct 1080x1920 Short.
 
+### PR7 — Preview/final render orchestration and artifact manifests
+
+PR6 proved the first complete render path. Before exposing that path through a phone-facing service, freeze one durable render-attempt contract so API, PWA, and later batch workers do not invoke FFmpeg directly or invent incompatible artifact metadata.
+
+Deliverables:
+
+- persistent render jobs backed by the existing SQLite job table;
+- immutable `RenderPlan` snapshots per submitted attempt;
+- explicit preview/final purpose bound to output-profile identity;
+- atomic queued-to-running job claims and terminal states;
+- runtime-relative artifact storage under project/job identity;
+- successful artifact sidecars with source, plan, command, output, encoder, and ffprobe fingerprints;
+- structured failed/cancelled sidecars;
+- output hash/dimension verification before success is published;
+- real FFmpeg integration coverage through the persisted job boundary;
+- no worker pool, batch scheduler, API/PWA surface, or publishing yet.
+
+Exit condition: a persisted preview/final render attempt can be executed and recovered as a verified MP4 plus reproducibility sidecar without depending on an in-memory project state.
+
 ---
 
 ## Milestone 2 — Phone-first production workflow
 
-### PR7 — FastAPI service and local Inbox
+### PR8 — FastAPI service and local Inbox
 
 Deliverables:
 
@@ -115,7 +134,7 @@ Deliverables:
 
 Exit condition: media sent over Wi-Fi reaches the desktop library without USB or manual folder work.
 
-### PR8 — PWA shell and share-to-Inbox flow
+### PR9 — PWA shell and share-to-Inbox flow
 
 Deliverables:
 
@@ -128,7 +147,7 @@ Deliverables:
 
 Exit condition: normal flow on Android is `Share -> Content Forge -> Inbox`.
 
-### PR9 — Review queue and proxy preview
+### PR10 — Review queue and proxy preview
 
 Deliverables:
 
@@ -145,7 +164,7 @@ Exit condition: a project can be completed without sitting at the desktop unless
 
 ## Milestone 3 — Template/component system and initial format coverage
 
-### PR10 — Template registry, skins, slots, and component contracts
+### PR11 — Template registry, skins, slots, and component contracts
 
 Deliverables:
 
@@ -158,7 +177,7 @@ Deliverables:
 
 Exit condition: adding a simple visual format no longer requires changes to core timeline or renderer code.
 
-### PR11 — Initial template pack
+### PR12 — Initial template pack
 
 Add the formats already identified during research:
 
@@ -173,7 +192,7 @@ Add the formats already identified during research:
 
 Exit condition: all initial non-voiced content families can be represented using the same runtime.
 
-### PR12 — Reusable overlay and motion components
+### PR13 — Reusable overlay and motion components
 
 Deliverables:
 
@@ -190,7 +209,7 @@ Deliverables:
 
 Exit condition: art/manga/meme formats can be composed from reusable components rather than bespoke scripts.
 
-### PR13 — Music and audio composition
+### PR14 — Music and audio composition
 
 Deliverables:
 
@@ -207,7 +226,7 @@ Exit condition: batch outputs have predictable audio without manual FFmpeg work.
 
 ## Milestone 4 — Optional intelligence and variants
 
-### PR14 — LLM provider boundary and `chatgpt-web-adapter`
+### PR15 — LLM provider boundary and `chatgpt-web-adapter`
 
 Deliverables:
 
@@ -223,7 +242,7 @@ Deliverables:
 
 Exit condition: language/semantic assistance is useful but never a hard dependency.
 
-### PR15 — Language variants and localized render metadata
+### PR16 — Language variants and localized render metadata
 
 Deliverables:
 
@@ -235,11 +254,11 @@ Deliverables:
 
 Exit condition: one source project can produce multiple language variants without duplication of media or timelines.
 
-### PR16 — Batch preparation, render queue, QC, and reproducibility
+### PR17 — Batch preparation, render queue, QC, and reproducibility
 
 Deliverables:
 
-- persistent SQLite render/job queue;
+- persistent SQLite render/job queue building on the PR7 render-attempt contract;
 - crash-safe resume;
 - batch preview/final render;
 - source-hash, template-version, renderer-version, accepted-text, and provider-parameter manifest;
@@ -271,7 +290,7 @@ v0.1 intentionally excludes automatic publishing, broad web scraping, full OCR a
 
 ## Milestone 5 — Voiced panels and persistent cast
 
-### PR17 — OCR provider and panel text extraction workflow
+### PR18 — OCR provider and panel text extraction workflow
 
 Deliverables:
 
@@ -282,7 +301,7 @@ Deliverables:
 - original OCR output retained alongside corrected text;
 - no automatic speaker guessing required for release.
 
-### PR18 — Dialogue scene model and speaker assignment
+### PR19 — Dialogue scene model and speaker assignment
 
 Deliverables:
 
@@ -293,7 +312,7 @@ Deliverables:
 - manual/assisted speaker assignment UI;
 - scene focus hints (`speaker`, `face`, explicit crop).
 
-### PR19 — TTS provider and Qwen TTS integration
+### PR20 — TTS provider and Qwen TTS integration
 
 Deliverables:
 
@@ -304,7 +323,7 @@ Deliverables:
 - duration extraction;
 - deterministic cache invalidation.
 
-### PR20 — Voice Cast registry
+### PR21 — Voice Cast registry
 
 Deliverables:
 
@@ -314,7 +333,7 @@ Deliverables:
 - project overrides without mutating global cast;
 - channel/profile-specific casts later.
 
-### PR21 — Voiced story review UI and timed text
+### PR22 — Voiced story review UI and timed text
 
 Deliverables:
 
@@ -326,7 +345,7 @@ Deliverables:
 - phrase-level timed text/ASS rendering;
 - optional forced alignment left for a later PR.
 
-### PR22 — Voiced scene audio mix and camera choreography
+### PR23 — Voiced scene audio mix and camera choreography
 
 Deliverables:
 
@@ -343,7 +362,7 @@ Exit condition: a panel sequence can become a polished voiced Short with only bo
 
 ## Milestone 6 — Long-form and reusable production assets
 
-### PR23 — Long-form output profiles
+### PR24 — Long-form output profiles
 
 Deliverables:
 
@@ -353,7 +372,7 @@ Deliverables:
 - long-form render caching;
 - no separate renderer architecture.
 
-### PR24 — Project/series/channel profiles
+### PR25 — Project/series/channel profiles
 
 Deliverables:
 
@@ -365,7 +384,7 @@ Deliverables:
 - output profiles;
 - music/reaction libraries.
 
-### PR25 — Production library search and tagging
+### PR26 — Production library search and tagging
 
 Deliverables:
 
