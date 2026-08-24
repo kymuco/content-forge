@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +36,16 @@ IMAGE_FORMAT_TOKENS = {
     "tiff_pipe",
     "gif",
 }
+
+# FastAPI executes synchronous upload handlers in a thread pool. Equal source bytes share
+# one canonical derivative path, so publication must be serialized even in the supported
+# single-process server. Fixed stripes avoid an unbounded lock registry while ensuring a
+# given storage key always maps to the same lock within the process.
+_THUMBNAIL_PUBLICATION_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+def _thumbnail_publication_lock(storage_key: str) -> threading.Lock:
+    return _THUMBNAIL_PUBLICATION_LOCKS[hash(storage_key) % len(_THUMBNAIL_PUBLICATION_LOCKS)]
 
 
 def authoritative_media_classification(probe: MediaProbe) -> tuple[MediaType, str]:
@@ -190,83 +201,88 @@ def generate_thumbnail(
     storage_key = thumbnail_storage_key(asset, width=width, height=height)
     output = library.paths.root / storage_key
     output.parent.mkdir(parents=True, exist_ok=True)
-    if _existing_thumbnail_is_authenticated(
-        library,
-        asset,
-        storage_key=storage_key,
-        output=output,
-    ):
-        return ThumbnailResult(
-            storage_key,
-            output,
-            sha256_file(output),
-            output.stat().st_size,
-        )
 
-    output.unlink(missing_ok=True)
-
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=output.parent,
-        prefix=f".{output.stem}-",
-        suffix=".jpg",
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    temporary.unlink(missing_ok=True)
-    filtergraph = (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
-        "force_divisible_by=2"
-    )
-    arguments = (
-        ffmpeg_path,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-y",
-        "-i",
-        str(Path(source_path)),
-        "-map",
-        "0:v:0",
-        "-vf",
-        filtergraph,
-        "-frames:v",
-        "1",
-        "-q:v",
-        "3",
-        str(temporary),
-    )
-    try:
-        completed = subprocess.run(
-            arguments,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            shell=False,
-        )
-        if completed.returncode != 0:
-            raise ThumbnailError(
-                f"ffmpeg thumbnail failed ({completed.returncode}): "
-                f"{completed.stderr.strip()[-4000:]}"
-            )
-        if not temporary.is_file() or temporary.stat().st_size == 0:
-            raise ThumbnailError("ffmpeg did not produce a non-empty thumbnail")
-        with temporary.open("r+b") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temporary, output)
-        return _record_thumbnail(
+    # The check must be repeated *inside* the publication lock. Otherwise two equal
+    # uploads can both observe a missing receipt, one publish, and the other unlink the
+    # just-published canonical file before its receipt is recorded.
+    with _thumbnail_publication_lock(storage_key):
+        if _existing_thumbnail_is_authenticated(
             library,
             asset,
             storage_key=storage_key,
             output=output,
-            width=width,
-            height=height,
+        ):
+            return ThumbnailResult(
+                storage_key,
+                output,
+                sha256_file(output),
+                output.stat().st_size,
+            )
+
+        output.unlink(missing_ok=True)
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=output.parent,
+            prefix=f".{output.stem}-",
+            suffix=".jpg",
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ThumbnailError(f"thumbnail execution failed: {exc}") from exc
-    finally:
+        os.close(descriptor)
+        temporary = Path(temporary_name)
         temporary.unlink(missing_ok=True)
+        filtergraph = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+            "force_divisible_by=2"
+        )
+        arguments = (
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(Path(source_path)),
+            "-map",
+            "0:v:0",
+            "-vf",
+            filtergraph,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(temporary),
+        )
+        try:
+            completed = subprocess.run(
+                arguments,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                shell=False,
+            )
+            if completed.returncode != 0:
+                raise ThumbnailError(
+                    f"ffmpeg thumbnail failed ({completed.returncode}): "
+                    f"{completed.stderr.strip()[-4000:]}"
+                )
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise ThumbnailError("ffmpeg did not produce a non-empty thumbnail")
+            with temporary.open("r+b") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, output)
+            return _record_thumbnail(
+                library,
+                asset,
+                storage_key=storage_key,
+                output=output,
+                width=width,
+                height=height,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ThumbnailError(f"thumbnail execution failed: {exc}") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
