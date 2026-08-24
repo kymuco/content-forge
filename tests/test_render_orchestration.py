@@ -70,6 +70,11 @@ def _capabilities() -> FFmpegCapabilities:
         ffprobe_version="ffprobe synthetic-test",
         encoders=("libx264",),
         filters=(
+            "aformat",
+            "amix",
+            "anullsrc",
+            "asetpts",
+            "atrim",
             "color",
             "concat",
             "crop",
@@ -80,6 +85,7 @@ def _capabilities() -> FFmpegCapabilities:
             "scale",
             "setpts",
             "trim",
+            "volume",
         ),
     )
 
