@@ -62,6 +62,13 @@ def test_post_acceptance_assetstore_failure_preserves_verified_staging_for_recov
     assert staged is not None
     assert staged.read_bytes() == payload
 
+    # A restart while storage pressure still exists must not convert accepted bytes into
+    # terminal failure or delete the only authenticated copy.
+    retry = service.reconcile_receiving()
+    assert len(retry) == 1
+    assert retry[0].state is IntakeState.RECEIVING
+    assert service._verified_staging_candidate(retry[0]) == staged
+
     monkeypatch.setattr(service.library.assets, "ingest_file", original_ingest)
     _install_audio_probe(monkeypatch)
     recovered = service.reconcile_receiving()
@@ -69,6 +76,31 @@ def test_post_acceptance_assetstore_failure_preserves_verified_staging_for_recov
     assert len(recovered) == 1
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].asset_id is not None
+    assert service._staging_candidates(recovered[0]) == ()
+
+
+def test_tampered_accepted_staging_fails_terminally_instead_of_retrying_forever(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+
+    def fail_ingest(*args, **kwargs):
+        raise OSError("ENOSPC during AssetStore publication")
+
+    monkeypatch.setattr(service.library.assets, "ingest_file", fail_ingest)
+    with pytest.raises(OSError, match="ENOSPC"):
+        service.ingest_upload(BytesIO(b"frozen-good-bytes"), filename="accepted.mp3")
+
+    intake = service.list_intakes()[0]
+    staged = service._verified_staging_candidate(intake)
+    assert staged is not None
+    staged.write_bytes(b"tampered-bytes")
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.FAILED
+    assert recovered[0].error_code == "interrupted_recovery_failed"
     assert service._staging_candidates(recovered[0]) == ()
 
 
