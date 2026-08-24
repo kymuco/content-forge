@@ -113,6 +113,38 @@ def test_preview_fails_if_final_pixel_rounding_would_overflow_same_layout() -> N
         )
 
 
+def test_codex_horizontal_rounding_case_fails_preview_closed_against_final() -> None:
+    asset = _image_asset()
+    project = _project(asset, hook="W")
+    config = HookOverlayConfig(
+        hook_region=NormalizedRect(x=0.06, y=0.06, width=0.07281, height=0.19)
+    )
+
+    with pytest.raises(HookOverlayTemplateError, match=SHORTS_FINAL_PROFILE_ID):
+        resolve_hook_overlay(
+            project,
+            {asset.asset_id: asset},
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            config=config,
+        )
+
+
+def test_codex_vertical_rounding_case_fails_preview_closed_against_final() -> None:
+    asset = _image_asset()
+    project = _project(asset, hook="W")
+    config = HookOverlayConfig(
+        hook_region=NormalizedRect(x=0.06, y=0.06, width=0.80, height=0.052)
+    )
+
+    with pytest.raises(HookOverlayTemplateError, match=SHORTS_FINAL_PROFILE_ID):
+        resolve_hook_overlay(
+            project,
+            {asset.asset_id: asset},
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            config=config,
+        )
+
+
 def test_text_decoration_expansion_cannot_enter_touching_safe_zone() -> None:
     asset = _image_asset()
     project = _project(asset, hook="Safe hook")
