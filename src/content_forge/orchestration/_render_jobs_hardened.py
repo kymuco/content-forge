@@ -113,10 +113,23 @@ class RenderOrchestrator(_BaseRenderOrchestrator):
                 "render plan carries variant identity for a project without variants"
             )
 
+        project_sources = {
+            record.source_id: record.asset_id for record in project.source_records
+        }
         for asset_id, source_id in _plan_source_pairs(plan):
             if asset_id is None:
                 raise RenderJobIntegrityError(
                     "render plan source reference has no corresponding asset"
+                )
+            project_asset_id = project_sources.get(source_id)
+            if project_asset_id is None:
+                raise RenderJobIntegrityError(
+                    "render plan provenance source is not declared by the stored project: "
+                    f"{source_id}"
+                )
+            if project_asset_id != asset_id:
+                raise RenderJobIntegrityError(
+                    "render plan provenance source does not match project asset reference"
                 )
             source = self.library.database.get_source(source_id)
             if source is None:
