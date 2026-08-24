@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .models import AuthSession, PairingChallenge, new_app_id
 from .repository import ApplicationRepository
+
+PAIRING_CODE_RE = re.compile(r"^[0-9]{8}$")
+PAIRING_ID_RE = re.compile(r"^cf_pair_[0-9a-f]{32}$")
 
 
 class AuthenticationError(RuntimeError):
@@ -83,6 +87,10 @@ class AuthManager:
         *,
         label: str | None = None,
     ) -> IssuedSession:
+        if not PAIRING_ID_RE.fullmatch(challenge_id):
+            raise AuthenticationError("invalid_pairing_challenge")
+        if not PAIRING_CODE_RE.fullmatch(code):
+            raise AuthenticationError("invalid_pairing_code")
         now = datetime.now(timezone.utc)
         failure: str | None = None
         issued: IssuedSession | None = None
@@ -156,7 +164,7 @@ class AuthManager:
         return issued
 
     def authenticate(self, token: str) -> AuthSession:
-        if not token.startswith("cf_session_") or len(token) < 40:
+        if not token.startswith("cf_session_") or len(token) < 40 or len(token) > 256:
             raise AuthenticationError("invalid_session_token")
         now = datetime.now(timezone.utc)
         with self.repository.database.connection() as connection:
@@ -179,6 +187,8 @@ class AuthManager:
         )
 
     def revoke(self, token: str) -> None:
+        if not token.startswith("cf_session_") or len(token) < 40 or len(token) > 256:
+            raise AuthenticationError("invalid_session_token")
         now = datetime.now(timezone.utc)
         with self.repository.database.transaction() as connection:
             changed = connection.execute(

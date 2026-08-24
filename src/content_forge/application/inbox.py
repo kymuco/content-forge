@@ -9,9 +9,9 @@ from typing import BinaryIO
 
 from content_forge.core import AssetRef, MediaType, Project, ProjectState
 from content_forge.render.ffmpeg import MediaProbeError, apply_probe_to_asset, probe_media
-from content_forge.storage import LocalLibrary, SourceInput
+from content_forge.storage import LocalLibrary, SourceInput, sha256_file
 
-from .media import ThumbnailError, generate_thumbnail
+from .media import ThumbnailError, generate_thumbnail, thumbnail_storage_key
 from .models import (
     InboxIntake,
     IntakeKind,
@@ -116,6 +116,47 @@ class InboxService:
                 mime_type=ingest_mime,
             )
             asset = result.asset
+            source_id = (
+                None if result.source_record is None else result.source_record.source_id
+            )
+
+            # First durable checkpoint: immutable bytes and provenance already exist.
+            self.repository.transition_intake(
+                intake.intake_id,
+                expected_state=IntakeState.RECEIVING,
+                update={
+                    "state": IntakeState.RECEIVING,
+                    "size_bytes": size_bytes,
+                    "asset_id": asset.asset_id,
+                    "source_id": source_id,
+                },
+            )
+
+            ref = AssetRef(asset_id=asset.asset_id, source_id=source_id)
+            project = Project(
+                content_kind=content_kind_hint or "unclassified",
+                state=ProjectState.INBOX,
+                source_refs=(ref,),
+                source_records=(
+                    () if result.source_record is None else (result.source_record,)
+                ),
+                metadata={
+                    "inbox_intake_id": intake.intake_id,
+                    "original_filename": filename,
+                },
+            )
+            self.library.save_project(project)
+
+            # Second durable checkpoint: later preparation failures retain project link.
+            self.repository.transition_intake(
+                intake.intake_id,
+                expected_state=IntakeState.RECEIVING,
+                update={
+                    "state": IntakeState.RECEIVING,
+                    "project_id": project.project_id,
+                },
+            )
+
             probe_state = PreparationState.PENDING
             thumbnail_state = PreparationState.PENDING
             error_code: str | None = None
@@ -149,23 +190,6 @@ class InboxService:
                 else:
                     thumbnail_state = PreparationState.SKIPPED
 
-            source_id = (
-                None if result.source_record is None else result.source_record.source_id
-            )
-            ref = AssetRef(asset_id=asset.asset_id, source_id=source_id)
-            project = Project(
-                content_kind=content_kind_hint or "unclassified",
-                state=ProjectState.INBOX,
-                source_refs=(ref,),
-                source_records=(
-                    () if result.source_record is None else (result.source_record,)
-                ),
-                metadata={
-                    "inbox_intake_id": intake.intake_id,
-                    "original_filename": filename,
-                },
-            )
-            self.library.save_project(project)
             state = (
                 IntakeState.PREPARED
                 if error_code is None
@@ -176,10 +200,6 @@ class InboxService:
                 expected_state=IntakeState.RECEIVING,
                 update={
                     "state": state,
-                    "size_bytes": size_bytes,
-                    "asset_id": asset.asset_id,
-                    "source_id": source_id,
-                    "project_id": project.project_id,
                     "probe_state": probe_state,
                     "thumbnail_state": thumbnail_state,
                     "error_code": error_code,
@@ -271,13 +291,27 @@ class InboxService:
             raise
 
     def thumbnail_path(self, asset_id: str) -> Path | None:
+        asset = self.library.database.get_asset(asset_id)
+        if asset is None:
+            return None
         slot = self.library.database.get_derivative_slot(asset_id, "thumbnail.default")
         if slot is None or slot.storage_key is None:
             return None
-        candidate = (self.library.paths.root / slot.storage_key).resolve()
+        expected_key = thumbnail_storage_key(asset)
+        if slot.storage_key != expected_key:
+            raise InboxError("thumbnail derivative key is not canonical")
+        metadata = slot.metadata
+        if metadata.get("source_sha256") != asset.sha256:
+            raise InboxError("thumbnail source receipt does not match asset")
+        expected_digest = metadata.get("sha256")
+        if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+            raise InboxError("thumbnail receipt has no valid output digest")
+        candidate = (self.library.paths.root / expected_key).resolve()
         root = self.library.paths.root.resolve()
         if candidate != root and root not in candidate.parents:
             raise InboxError("thumbnail storage key escapes runtime root")
         if not candidate.is_file():
             return None
+        if sha256_file(candidate) != expected_digest:
+            raise InboxError("thumbnail bytes do not match derivative receipt")
         return candidate

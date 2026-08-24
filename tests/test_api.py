@@ -23,10 +23,15 @@ def _paired_client(tmp_path) -> tuple[TestClient, dict[str, str]]:
     return client, {"Authorization": f"Bearer {token}"}
 
 
-def test_sensitive_reads_require_authentication(tmp_path) -> None:
+def test_sensitive_reads_and_uploads_require_authentication(tmp_path) -> None:
     client = TestClient(create_app(root=tmp_path))
     assert client.get("/health").status_code == 200
     assert client.get("/api/v1/inbox").status_code == 401
+    blocked_upload = client.post(
+        "/api/v1/inbox/files",
+        files={"file": ("x.bin", b"x", "application/octet-stream")},
+    )
+    assert blocked_upload.status_code == 401
 
 
 def test_url_note_round_trip_and_session_revocation(tmp_path) -> None:

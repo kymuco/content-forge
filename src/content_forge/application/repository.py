@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 
 from content_forge.core import Asset, dump_json, load_json
-from content_forge.storage import LibraryDatabase, StorageConflictError, StorageError
+from content_forge.storage import (
+    LibraryDatabase,
+    StorageConflictError,
+    StorageError,
+    StorageSchemaError,
+)
 
 from .models import InboxIntake, IntakeState
+
+APPLICATION_SCHEMA_VERSION = 1
+APPLICATION_SCHEMA_COMPONENT = "application"
 
 
 class ApplicationRepository:
@@ -18,7 +27,31 @@ class ApplicationRepository:
 
     def initialize(self) -> "ApplicationRepository":
         with self.database.transaction() as connection:
-            connection.executescript(
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS application_schema (
+                    component TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL
+                )
+                """
+            )
+            row = connection.execute(
+                "SELECT version FROM application_schema WHERE component = ?",
+                (APPLICATION_SCHEMA_COMPONENT,),
+            ).fetchone()
+            version = 0 if row is None else int(row["version"])
+            if version > APPLICATION_SCHEMA_VERSION:
+                raise StorageSchemaError(
+                    f"application schema {version} is newer than supported "
+                    f"{APPLICATION_SCHEMA_VERSION}"
+                )
+            if version not in {0, APPLICATION_SCHEMA_VERSION}:
+                raise StorageSchemaError(
+                    f"unsupported application schema migration: {version} -> "
+                    f"{APPLICATION_SCHEMA_VERSION}"
+                )
+
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inbox_intakes (
                     intake_id TEXT PRIMARY KEY,
@@ -27,10 +60,17 @@ class ApplicationRepository:
                     manifest_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_inbox_intakes_state_created
-                    ON inbox_intakes(state, created_at DESC);
-
+                ON inbox_intakes(state, created_at DESC)
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS pairing_challenges (
                     challenge_id TEXT PRIMARY KEY,
                     salt TEXT NOT NULL,
@@ -39,8 +79,11 @@ class ApplicationRepository:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     consumed_at TEXT
-                );
-
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS auth_sessions (
                     session_id TEXT PRIMARY KEY,
                     token_digest TEXT NOT NULL UNIQUE,
@@ -48,11 +91,23 @@ class ApplicationRepository:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     revoked_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
-                    ON auth_sessions(token_digest);
+                )
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
+                ON auth_sessions(token_digest)
+                """
+            )
+            if version == 0:
+                connection.execute(
+                    """
+                    INSERT INTO application_schema(component, version)
+                    VALUES (?, ?)
+                    """,
+                    (APPLICATION_SCHEMA_COMPONENT, APPLICATION_SCHEMA_VERSION),
+                )
         return self
 
     def create_intake(self, intake: InboxIntake) -> InboxIntake:
@@ -73,7 +128,7 @@ class ApplicationRepository:
                         intake.updated_at.isoformat(),
                     ),
                 )
-            except Exception as exc:
+            except sqlite3.IntegrityError as exc:
                 raise StorageConflictError(
                     f"intake ID already exists: {intake.intake_id}"
                 ) from exc

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
-from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from content_forge.application import (
@@ -15,6 +14,7 @@ from content_forge.application import (
     AuthManager,
     AuthenticationError,
     AuthSession,
+    InboxError,
     InboxIntake,
     InboxService,
     UploadTooLargeError,
@@ -22,11 +22,23 @@ from content_forge.application import (
 from content_forge.core import RegistryKey
 from content_forge.storage import LocalLibrary
 
+PAIRING_ID_PATTERN = r"^cf_pair_[0-9a-f]{32}$"
+PAIRING_CODE_PATTERN = r"^[0-9]{8}$"
+MULTIPART_OVERHEAD_BUDGET = 1024 * 1024
+
 
 class PairExchangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    challenge_id: str
-    code: str = Field(min_length=8, max_length=8)
+    challenge_id: str = Field(
+        min_length=40,
+        max_length=40,
+        pattern=PAIRING_ID_PATTERN,
+    )
+    code: str = Field(
+        min_length=8,
+        max_length=8,
+        pattern=PAIRING_CODE_PATTERN,
+    )
     label: str | None = Field(default=None, max_length=256)
 
 
@@ -66,6 +78,15 @@ def _is_loopback(request: Request) -> bool:
         return host == "localhost"
 
 
+def _authorization_token(value: str | None) -> str:
+    if value is None or not value.startswith("Bearer "):
+        raise AuthenticationError("bearer token required")
+    token = value[7:].strip()
+    if not token:
+        raise AuthenticationError("bearer token required")
+    return token
+
+
 def create_app(
     *,
     root: str | Path | None = None,
@@ -96,17 +117,54 @@ def create_app(
     app.state.auth = auth
     app.state.inbox = inbox
 
-    def bearer_token(
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> str:
-        if authorization is None or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="bearer token required")
-        token = authorization[7:].strip()
-        if not token:
-            raise HTTPException(status_code=401, detail="bearer token required")
-        return token
+    @app.middleware("http")
+    async def protect_upload_body(request: Request, call_next):
+        """Reject unauthorized/oversized multipart uploads before form parsing.
 
-    def require_session(token: Annotated[str, Depends(bearer_token)]) -> AuthSession:
+        Starlette parses `UploadFile` before entering the endpoint. Guarding the one
+        large-body route here ensures an unauthenticated LAN peer cannot force multipart
+        spooling, and requires a bounded Content-Length before body consumption.
+        """
+
+        if request.method == "POST" and request.url.path == "/api/v1/inbox/files":
+            try:
+                token = _authorization_token(request.headers.get("authorization"))
+                auth.authenticate(token)
+            except AuthenticationError as exc:
+                return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+            raw_length = request.headers.get("content-length")
+            if raw_length is None:
+                return JSONResponse(
+                    status_code=411,
+                    content={"detail": "Content-Length is required for file uploads"},
+                )
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "invalid Content-Length"},
+                )
+            if content_length < 0:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "invalid Content-Length"},
+                )
+            if content_length > max_upload_bytes + MULTIPART_OVERHEAD_BUDGET:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "multipart request exceeds upload limit"},
+                )
+        return await call_next(request)
+
+    def bearer_token(authorization: str | None = Header(default=None)) -> str:
+        try:
+            return _authorization_token(authorization)
+        except AuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def require_session(token: str = Depends(bearer_token)) -> AuthSession:
         try:
             return auth.authenticate(token)
         except AuthenticationError as exc:
@@ -144,8 +202,8 @@ def create_app(
 
     @app.delete("/api/v1/sessions/current", status_code=204)
     def revoke_current_session(
-        token: Annotated[str, Depends(bearer_token)],
-        _session: Annotated[AuthSession, Depends(require_session)],
+        token: str = Depends(bearer_token),
+        _session: AuthSession = Depends(require_session),
     ) -> None:
         try:
             auth.revoke(token)
@@ -154,8 +212,8 @@ def create_app(
 
     @app.get("/api/v1/inbox")
     def list_inbox(
-        _session: Annotated[AuthSession, Depends(require_session)],
-        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        _session: AuthSession = Depends(require_session),
+        limit: int = Query(default=100, ge=1, le=500),
     ) -> dict[str, object]:
         items = inbox.list_intakes(limit=limit)
         return {"items": [_intake_payload(item) for item in items]}
@@ -163,7 +221,7 @@ def create_app(
     @app.get("/api/v1/inbox/{intake_id}")
     def get_inbox_item(
         intake_id: str,
-        _session: Annotated[AuthSession, Depends(require_session)],
+        _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         intake = inbox.get_intake(intake_id)
         if intake is None:
@@ -173,7 +231,7 @@ def create_app(
     @app.post("/api/v1/inbox/url-note", status_code=201)
     def capture_url_note(
         payload: URLNoteRequest,
-        _session: Annotated[AuthSession, Depends(require_session)],
+        _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         intake = inbox.capture_url_note(
             source_url=payload.source_url,
@@ -185,12 +243,12 @@ def create_app(
 
     @app.post("/api/v1/inbox/files", status_code=201)
     def upload_file(
-        _session: Annotated[AuthSession, Depends(require_session)],
-        file: Annotated[UploadFile, File()],
-        source_url: Annotated[str | None, Form(max_length=4096)] = None,
-        note: Annotated[str | None, Form(max_length=8192)] = None,
-        creator_hint: Annotated[str | None, Form(max_length=512)] = None,
-        content_kind_hint: Annotated[RegistryKey | None, Form()] = None,
+        file: UploadFile = File(...),
+        source_url: str | None = Form(default=None, max_length=4096),
+        note: str | None = Form(default=None, max_length=8192),
+        creator_hint: str | None = Form(default=None, max_length=512),
+        content_kind_hint: RegistryKey | None = Form(default=None),
+        _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         filename = file.filename or "upload.bin"
         if len(filename) > 1024:
@@ -214,9 +272,15 @@ def create_app(
     @app.get("/api/v1/assets/{asset_id}/thumbnail")
     def thumbnail(
         asset_id: str,
-        _session: Annotated[AuthSession, Depends(require_session)],
+        _session: AuthSession = Depends(require_session),
     ) -> FileResponse:
-        path = inbox.thumbnail_path(asset_id)
+        try:
+            path = inbox.thumbnail_path(asset_id)
+        except InboxError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="thumbnail integrity check failed",
+            ) from exc
         if path is None:
             raise HTTPException(status_code=404, detail="thumbnail not found")
         return FileResponse(path, media_type="image/jpeg", filename="thumbnail.jpg")
