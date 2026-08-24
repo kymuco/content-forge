@@ -21,7 +21,13 @@ from content_forge.render.ffmpeg import (
     execute_ffmpeg,
     probe_media,
 )
-from content_forge.storage import LocalLibrary, StoredJob, sha256_file
+from content_forge.storage import (
+    LocalLibrary,
+    StorageConflictError,
+    StoredJob,
+    sha256_file,
+    transition_job_state,
+)
 from content_forge.timeline import RenderPlan, render_plan_digest
 
 from .models import (
@@ -144,11 +150,21 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError(
                 "render purpose must match output profile properties['purpose']"
             )
-        if plan.output_profile.profile_id not in {
-            profile.profile_id for profile in project.output_profiles
-        }:
+        stored_profile = next(
+            (
+                profile
+                for profile in project.output_profiles
+                if profile.profile_id == plan.output_profile.profile_id
+            ),
+            None,
+        )
+        if stored_profile is None:
             raise RenderJobIntegrityError(
                 "render plan output profile is not present in the stored project"
+            )
+        if stored_profile != plan.output_profile:
+            raise RenderJobIntegrityError(
+                "render plan output profile differs from the stored project profile"
             )
         if plan.variant_id is not None and plan.variant_id not in {
             variant.variant_id for variant in project.variants
@@ -208,12 +224,15 @@ class RenderOrchestrator:
         job = job.validated_copy(update={"payload": payload})
 
         directory = self.library.paths.root / paths.directory_key
+        created_directory = False
         try:
             directory.mkdir(parents=True, exist_ok=False)
+            created_directory = True
             _atomic_write_json(directory / "plan.json", plan.model_dump(mode="json"))
             self.library.database.create_job(job)
         except BaseException:
-            shutil.rmtree(directory, ignore_errors=True)
+            if created_directory:
+                shutil.rmtree(directory, ignore_errors=True)
             raise
         return job
 
@@ -330,15 +349,23 @@ class RenderOrchestrator:
         cancellation: CancellationToken | None = None,
         timeout: float | None = None,
     ) -> RenderArtifactManifest:
-        """Execute one queued render job exactly once in the current process."""
+        """Atomically claim and execute one queued render job."""
 
         job = self._job(job_id)
-        if job.state != "queued":
-            raise RenderJobStateError(
-                f"render job must be queued before execution, got {job.state!r}"
-            )
         paths = self._paths_from_job(job)
-        self.library.database.update_job_state(job.job_id, "running")
+        try:
+            transition_job_state(
+                self.library.database,
+                job.job_id,
+                expected_state="queued",
+                state="running",
+            )
+        except StorageConflictError as exc:
+            current = self.library.database.get_job(job.job_id)
+            current_state = None if current is None else current.state
+            raise RenderJobStateError(
+                f"render job must be queued before execution, got {current_state!r}"
+            ) from exc
 
         output_path = self.library.paths.root / paths.output_key
         manifest_path = self.library.paths.root / paths.manifest_key
@@ -412,7 +439,12 @@ class RenderOrchestrator:
             )
             _atomic_write_model(manifest_path, artifact)
             failure_path.unlink(missing_ok=True)
-            self.library.database.update_job_state(job.job_id, "succeeded")
+            transition_job_state(
+                self.library.database,
+                job.job_id,
+                expected_state="running",
+                state="succeeded",
+            )
             return artifact
         except BaseException as exc:
             output_path.unlink(missing_ok=True)
@@ -424,9 +456,12 @@ class RenderOrchestrator:
             except BaseException:
                 pass
             try:
-                current = self.library.database.get_job(job.job_id)
-                if current is not None and current.state == "running":
-                    self.library.database.update_job_state(job.job_id, terminal_state)
+                transition_job_state(
+                    self.library.database,
+                    job.job_id,
+                    expected_state="running",
+                    state=terminal_state,
+                )
             except BaseException:
                 pass
             raise
@@ -441,6 +476,7 @@ class RenderOrchestrator:
         if job.state != "succeeded":
             return None
         paths = self._paths_from_job(job)
+        plan = self._load_plan(job, paths)
         path = self.library.paths.root / paths.manifest_key
         try:
             artifact = RenderArtifactManifest.model_validate_json(
@@ -454,9 +490,37 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError("artifact manifest storage key does not match job")
         if artifact.output_storage_key != paths.output_key:
             raise RenderJobIntegrityError("artifact output storage key does not match job")
+        if artifact.purpose != _payload_string(job.payload, "purpose"):
+            raise RenderJobIntegrityError("artifact purpose does not match job")
+        if artifact.profile_id != plan.output_profile.profile_id:
+            raise RenderJobIntegrityError("artifact profile does not match persisted plan")
+        if artifact.render_plan_digest != render_plan_digest(plan):
+            raise RenderJobIntegrityError("artifact render-plan digest does not match persisted plan")
+        if (artifact.variant_id, artifact.variant_language) != (
+            plan.variant_id,
+            plan.variant_language,
+        ):
+            raise RenderJobIntegrityError("artifact variant identity does not match persisted plan")
+        if (artifact.template_id, artifact.template_version) != (
+            plan.template_id,
+            plan.template_version,
+        ):
+            raise RenderJobIntegrityError("artifact template identity does not match persisted plan")
+        expected_sources = tuple(
+            RenderSourceFingerprint(
+                asset_id=asset.asset_id,
+                sha256=asset.sha256,
+                storage_key=asset.storage_key,
+            )
+            for asset in sorted(plan.assets, key=lambda item: item.asset_id)
+        )
+        if artifact.source_assets != expected_sources:
+            raise RenderJobIntegrityError("artifact source fingerprints do not match persisted plan")
         output_path = self.library.paths.root / paths.output_key
         if not output_path.is_file():
             raise RenderJobIntegrityError("successful render artifact is missing")
+        if output_path.stat().st_size != artifact.bytes_written:
+            raise RenderJobIntegrityError("successful render artifact size changed")
         if sha256_file(output_path) != artifact.output_sha256:
             raise RenderJobIntegrityError("successful render artifact digest changed")
         return artifact
@@ -477,4 +541,14 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError(f"failed to load failure manifest: {exc}") from exc
         if failure.job_id != job.job_id or failure.project_id != job.project_id:
             raise RenderJobIntegrityError("failure manifest identity does not match job")
+        if failure.failure_storage_key != paths.failure_key:
+            raise RenderJobIntegrityError("failure manifest storage key does not match job")
+        if failure.state != job.state:
+            raise RenderJobIntegrityError("failure manifest state does not match job")
+        if failure.purpose != _payload_string(job.payload, "purpose"):
+            raise RenderJobIntegrityError("failure manifest purpose does not match job")
+        if failure.profile_id != _payload_string(job.payload, "profile_id"):
+            raise RenderJobIntegrityError("failure manifest profile does not match job")
+        if failure.render_plan_digest != _payload_string(job.payload, "render_plan_digest"):
+            raise RenderJobIntegrityError("failure manifest render-plan digest does not match job")
         return failure
