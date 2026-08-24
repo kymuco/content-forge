@@ -63,7 +63,13 @@ def transition_job_state(
                 f"found {current.state!r}"
             )
 
-        payload = dict(current.payload)
+        # FrozenModel recursively freezes JSON containers. Re-serialize through JSON
+        # mode before applying receipt fields so nested payload objects are ordinary
+        # JSON-compatible dict/list values for full Pydantic revalidation.
+        payload_value = current.model_dump(mode="json")["payload"]
+        if not isinstance(payload_value, dict):
+            raise StorageConflictError("job payload did not serialize to an object")
+        payload = payload_value
         if payload_additions:
             for key, value in payload_additions.items():
                 if not isinstance(key, str) or not key:
