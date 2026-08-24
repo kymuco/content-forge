@@ -2,11 +2,17 @@
 
 This roadmap is intentionally organized as small reviewable pull requests. The architecture should become useful early and remain replaceable at the edges: providers, templates, components, and workflows can evolve without destabilizing the project model or renderer core.
 
+## Current implementation status
+
+- PR1–PR7: **complete** on `main`.
+- PR8: **in progress** — authenticated local FastAPI, durable Inbox ingest, media preparation, and application-service boundary.
+- Current milestone: **Milestone 2 — Phone-first production workflow**.
+
 ## Milestone 0 — Foundation
 
 ### PR1 — Architecture, taxonomy, workflow, and v0.1 contract
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
@@ -121,18 +127,23 @@ Exit condition: a persisted preview/final render attempt can be executed and rec
 
 ## Milestone 2 — Phone-first production workflow
 
-### PR8 — FastAPI service and local Inbox
+### PR8 — Authenticated local FastAPI, durable Inbox ingest, and media preparation
+
+Status: **in progress**
 
 Deliverables:
 
-- FastAPI server;
-- multipart upload from phone/desktop;
+- thin FastAPI transport over an explicit application-service boundary;
+- multipart upload from phone/desktop with pre-parse authentication and bounded request size;
 - URL/note intake records even when downloading is not automated;
-- automatic asset ingest, ffprobe, thumbnail generation, and draft-project creation;
-- local-network access controls;
-- no public-internet exposure by default.
+- automatic content-addressed asset ingest, authoritative ffprobe classification, thumbnail generation, and `INBOX` project creation;
+- durable receiving/prepared/partial/failed intake records and restart reconciliation;
+- loopback pairing bootstrap plus revocable bearer sessions;
+- TLS required for non-loopback/LAN binding;
+- no public-internet exposure by default;
+- no PWA, worker pool, automatic downloading, publishing, or direct FFmpeg execution from HTTP routes.
 
-Exit condition: media sent over Wi-Fi reaches the desktop library without USB or manual folder work.
+Exit condition: authenticated media sent over a protected local connection reaches the desktop library and becomes a recoverable Inbox project without USB or manual folder work.
 
 ### PR9 — PWA shell and share-to-Inbox flow
 
