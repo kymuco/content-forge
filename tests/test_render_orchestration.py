@@ -167,7 +167,21 @@ def test_submit_rejects_asset_metadata_that_no_longer_matches_library(tmp_path: 
     changed_asset = plan.assets[0].validated_copy(update={"sha256": "f" * 64})
     changed_plan = plan.validated_copy(update={"assets": (changed_asset,)})
 
-    with pytest.raises(RenderJobIntegrityError, match="digest differs"):
+    with pytest.raises(RenderJobIntegrityError, match="asset metadata differs"):
+        RenderOrchestrator(library).submit(changed_plan, purpose="preview")
+
+
+def test_submit_rejects_non_digest_planned_asset_metadata_drift(tmp_path: Path) -> None:
+    library, project, _ = _fixture(tmp_path)
+    plan = compile_hook_overlay(
+        project,
+        library.database,
+        profile_id=SHORTS_PREVIEW_PROFILE_ID,
+    )
+    changed_asset = plan.assets[0].validated_copy(update={"media_type": MediaType.VIDEO})
+    changed_plan = plan.validated_copy(update={"assets": (changed_asset,)})
+
+    with pytest.raises(RenderJobIntegrityError, match="asset metadata differs"):
         RenderOrchestrator(library).submit(changed_plan, purpose="preview")
 
 
@@ -191,6 +205,59 @@ def test_plan_snapshot_digest_detects_tampering(tmp_path: Path) -> None:
         orchestrator.load_plan(job.job_id)
 
     assert library.database.get_job(job.job_id).state == "queued"  # type: ignore[union-attr]
+
+
+def test_run_job_rejects_tampered_content_addressed_source_bytes(tmp_path: Path) -> None:
+    library, project, asset_id = _fixture(tmp_path)
+    plan = compile_hook_overlay(
+        project,
+        library.database,
+        profile_id=SHORTS_PREVIEW_PROFILE_ID,
+    )
+    orchestrator = RenderOrchestrator(library)
+    job = orchestrator.submit(plan, purpose="preview")
+    asset = library.database.get_asset(asset_id)
+    assert asset is not None
+    blob_path = library.assets.resolve(asset)
+    blob_path.write_text("tampered after ingest\n", encoding="utf-8")
+
+    with pytest.raises(RenderJobIntegrityError, match="source bytes"):
+        orchestrator.run_job(job.job_id, _capabilities(), prefer_nvenc=False)
+
+    stored = library.database.get_job(job.job_id)
+    assert stored is not None
+    assert stored.state == "failed"
+    assert not (
+        library.paths.root / str(job.payload["command_manifest_storage_key"])
+    ).exists()
+
+
+def test_run_job_rejects_custom_asset_path_with_wrong_bytes(tmp_path: Path) -> None:
+    library, project, asset_id = _fixture(tmp_path)
+    plan = compile_hook_overlay(
+        project,
+        library.database,
+        profile_id=SHORTS_PREVIEW_PROFILE_ID,
+    )
+    orchestrator = RenderOrchestrator(library)
+    job = orchestrator.submit(plan, purpose="preview")
+    alternate = tmp_path / "alternate.ppm"
+    alternate.write_text(
+        "P3\n4 6\n255\n" + "\n".join(["255 255 255"] * 24) + "\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(RenderJobIntegrityError, match="source bytes"):
+        orchestrator.run_job(
+            job.job_id,
+            _capabilities(),
+            asset_paths={asset_id: alternate},
+            prefer_nvenc=False,
+        )
+
+    stored = library.database.get_job(job.job_id)
+    assert stored is not None
+    assert stored.state == "failed"
 
 
 def test_backend_start_failure_is_persisted_without_partial_artifact(tmp_path: Path) -> None:
