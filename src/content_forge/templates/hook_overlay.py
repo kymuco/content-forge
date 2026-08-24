@@ -390,6 +390,48 @@ def _validate_vertical_layout(
     return region_height, line_height, required_height
 
 
+def _layout_metrics_for_profile(
+    profile: OutputProfile,
+    config: HookOverlayConfig,
+    *,
+    wrapped_hook: str,
+    line_count: int,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    """Validate one output profile and return its concrete text-layout metrics."""
+
+    font_size = _scaled_integer(config.font_size_ratio, profile.width, minimum=1)
+    border_width = _scaled_integer(
+        config.border_width_ratio,
+        profile.width,
+        minimum=0,
+    )
+    region_width, region_height = _validate_profile(profile, config)
+    _, available_width, required_width = _validate_horizontal_layout(
+        config,
+        region_width=region_width,
+        wrapped_hook=wrapped_hook,
+        font_size=font_size,
+        border_width=border_width,
+    )
+    _, line_height, required_height = _validate_vertical_layout(
+        config,
+        region_height=region_height,
+        line_count=line_count,
+        font_size=font_size,
+        border_width=border_width,
+    )
+    return (
+        font_size,
+        border_width,
+        region_width,
+        available_width,
+        required_width,
+        region_height,
+        line_height,
+        required_height,
+    )
+
+
 def _generated_id_collides(project: Project, generated_id: str) -> bool:
     for overlay in project.overlays:
         if overlay.overlay_id == generated_id:
@@ -417,23 +459,44 @@ def _resolve_selected(
     if not project.scenes:
         raise HookOverlayTemplateError("hook_overlay requires at least one source scene")
 
-    # Keep typography proportional to output width. The previous absolute 12px floor
-    # made preview/final wrapping diverge for small-but-valid font_size_ratio values.
-    font_size = _scaled_integer(config.font_size_ratio, profile.width, minimum=1)
-    border_width = _scaled_integer(
-        config.border_width_ratio,
-        profile.width,
-        minimum=0,
-    )
-    region_width, region_height = _validate_profile(profile, config)
     wrapped_hook, wrap_width, line_count = _wrap_hook(_hook_text(variant), config)
-    region_width, available_width, required_width = _validate_horizontal_layout(
-        config,
-        region_width=region_width,
-        wrapped_hook=wrapped_hook,
-        font_size=font_size,
-        border_width=border_width,
-    )
+
+    # A preview is only trustworthy if the exact same semantic layout is renderable by
+    # every output profile configured on the project. Integer font/border/edge rounding
+    # can otherwise make preview pass while final fails. Preflight all project outputs
+    # and keep the selected profile's concrete metrics for the emitted overlay.
+    selected_metrics: tuple[int, int, int, int, int, int, int, int] | None = None
+    for candidate_profile in project.output_profiles:
+        try:
+            metrics = _layout_metrics_for_profile(
+                candidate_profile,
+                config,
+                wrapped_hook=wrapped_hook,
+                line_count=line_count,
+            )
+        except HookOverlayTemplateError as exc:
+            if candidate_profile.profile_id != profile.profile_id:
+                raise HookOverlayTemplateError(
+                    "hook_overlay layout is not valid for project output profile "
+                    f"{candidate_profile.profile_id}: {exc}"
+                ) from exc
+            raise
+        if candidate_profile.profile_id == profile.profile_id:
+            selected_metrics = metrics
+
+    if selected_metrics is None:
+        raise HookOverlayTemplateError("selected output profile is missing from project outputs")
+
+    (
+        font_size,
+        border_width,
+        region_width,
+        available_width,
+        required_width,
+        region_height,
+        line_height,
+        required_height,
+    ) = selected_metrics
 
     hook_overlay_id = _derived_id(
         EntityKind.OVERLAY,
@@ -504,13 +567,6 @@ def _resolve_selected(
             )
         )
 
-    region_height, line_height, required_height = _validate_vertical_layout(
-        config,
-        region_height=region_height,
-        line_count=line_count,
-        font_size=font_size,
-        border_width=border_width,
-    )
     hook_overlay = Overlay(
         overlay_id=hook_overlay_id,
         component_type="text",
