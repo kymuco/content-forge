@@ -15,6 +15,7 @@ from content_forge.render.ffmpeg import (
     CancellationToken,
     FFmpegBackendError,
     FFmpegCapabilities,
+    RenderCommandManifest,
     RuntimeStorageResolver,
     command_manifest_digest,
     compile_ffmpeg_command,
@@ -54,6 +55,7 @@ class RenderJobIntegrityError(RenderOrchestrationError):
 class _RenderJobPaths:
     directory_key: str
     plan_key: str
+    command_key: str
     output_key: str
     manifest_key: str
     failure_key: str
@@ -64,6 +66,7 @@ class _RenderJobPaths:
         return cls(
             directory_key=directory,
             plan_key=f"{directory}/plan.json",
+            command_key=f"{directory}/command-manifest.json",
             output_key=f"{directory}/artifact.{container}",
             manifest_key=f"{directory}/artifact-manifest.json",
             failure_key=f"{directory}/failure-manifest.json",
@@ -217,6 +220,7 @@ class RenderOrchestrator:
             "template_version": plan.template_version,
             "render_plan_digest": digest,
             "plan_storage_key": paths.plan_key,
+            "command_manifest_storage_key": paths.command_key,
             "output_storage_key": paths.output_key,
             "manifest_storage_key": paths.manifest_key,
             "failure_storage_key": paths.failure_key,
@@ -253,6 +257,7 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError("render job purpose is invalid")
         profile_id = _payload_string(payload, "profile_id")
         plan_key = _payload_string(payload, "plan_storage_key")
+        command_key = _payload_string(payload, "command_manifest_storage_key")
         output_key = _payload_string(payload, "output_storage_key")
         manifest_key = _payload_string(payload, "manifest_storage_key")
         failure_key = _payload_string(payload, "failure_storage_key")
@@ -264,6 +269,7 @@ class RenderOrchestrator:
         expected = _RenderJobPaths.for_job(job.project_id or "", job.job_id, container)
         if (
             plan_key != expected.plan_key
+            or command_key != expected.command_key
             or output_key != expected.output_key
             or manifest_key != expected.manifest_key
             or failure_key != expected.failure_key
@@ -299,6 +305,37 @@ class RenderOrchestrator:
         if plan.output_profile.properties.get("purpose") != _payload_string(payload, "purpose"):
             raise RenderJobIntegrityError("persisted render plan purpose changed")
         return plan
+
+    def _load_command_manifest(
+        self,
+        job: StoredJob,
+        paths: _RenderJobPaths,
+        plan: RenderPlan,
+    ) -> RenderCommandManifest:
+        path = self.library.paths.root / paths.command_key
+        try:
+            command = RenderCommandManifest.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            raise RenderJobIntegrityError(
+                f"failed to load persisted command manifest: {exc}"
+            ) from exc
+        if command.render_plan_digest != render_plan_digest(plan):
+            raise RenderJobIntegrityError(
+                "persisted command manifest render-plan digest does not match persisted plan"
+            )
+        expected_output = (self.library.paths.root / paths.output_key).expanduser().resolve()
+        if Path(command.output_path).expanduser().resolve() != expected_output:
+            raise RenderJobIntegrityError(
+                "persisted command manifest output path does not match render job"
+            )
+        planned_asset_ids = {asset.asset_id for asset in plan.assets}
+        if any(item.asset_id not in planned_asset_ids for item in command.inputs):
+            raise RenderJobIntegrityError(
+                "persisted command manifest references an asset outside the render plan"
+            )
+        return command
 
     def _write_failure(
         self,
@@ -367,6 +404,7 @@ class RenderOrchestrator:
                 f"render job must be queued before execution, got {current_state!r}"
             ) from exc
 
+        command_path = self.library.paths.root / paths.command_key
         output_path = self.library.paths.root / paths.output_key
         manifest_path = self.library.paths.root / paths.manifest_key
         failure_path = self.library.paths.root / paths.failure_key
@@ -384,6 +422,8 @@ class RenderOrchestrator:
                 output_path,
                 prefer_nvenc=prefer_nvenc,
             )
+            command_digest = command_manifest_digest(command)
+            _atomic_write_model(command_path, command)
             result = execute_ffmpeg(
                 command,
                 cancellation=cancellation,
@@ -420,7 +460,8 @@ class RenderOrchestrator:
                 template_id=plan.template_id,
                 template_version=plan.template_version,
                 render_plan_digest=render_plan_digest(plan),
-                command_manifest_digest=command_manifest_digest(command),
+                command_manifest_digest=command_digest,
+                command_manifest_storage_key=paths.command_key,
                 output_sha256=sha256_file(output_path),
                 output_storage_key=paths.output_key,
                 manifest_storage_key=paths.manifest_key,
@@ -488,6 +529,8 @@ class RenderOrchestrator:
             raise RenderJobIntegrityError("artifact manifest identity does not match job")
         if artifact.manifest_storage_key != paths.manifest_key:
             raise RenderJobIntegrityError("artifact manifest storage key does not match job")
+        if artifact.command_manifest_storage_key != paths.command_key:
+            raise RenderJobIntegrityError("artifact command-manifest storage key does not match job")
         if artifact.output_storage_key != paths.output_key:
             raise RenderJobIntegrityError("artifact output storage key does not match job")
         if artifact.purpose != _payload_string(job.payload, "purpose"):
@@ -516,6 +559,22 @@ class RenderOrchestrator:
         )
         if artifact.source_assets != expected_sources:
             raise RenderJobIntegrityError("artifact source fingerprints do not match persisted plan")
+        command = self._load_command_manifest(job, paths, plan)
+        if artifact.command_manifest_digest != command_manifest_digest(command):
+            raise RenderJobIntegrityError(
+                "artifact command-manifest digest does not match persisted command"
+            )
+        if artifact.video_encoder != command.video_encoder:
+            raise RenderJobIntegrityError(
+                "artifact video encoder does not match persisted command"
+            )
+        if (artifact.width, artifact.height) != (
+            plan.output_profile.width,
+            plan.output_profile.height,
+        ):
+            raise RenderJobIntegrityError(
+                "artifact dimensions do not match persisted output profile"
+            )
         output_path = self.library.paths.root / paths.output_key
         if not output_path.is_file():
             raise RenderJobIntegrityError("successful render artifact is missing")
