@@ -10,6 +10,7 @@ from .capabilities import (
     select_h264_encoder,
 )
 from .compiler import (
+    AssetPathSource,
     FFmpegCompileError,
     MissingRenderAssetError,
     RuntimeStorageResolver,
@@ -31,6 +32,7 @@ from .probe import MediaProbeError, apply_probe_to_asset, probe_media
 from .runner import CancellationToken, FFmpegBackendError, execute_ffmpeg
 
 __all__ = [
+    "AssetPathSource",
     "CancellationToken",
     "FFmpegBackend",
     "FFmpegBackendError",

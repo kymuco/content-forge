@@ -45,7 +45,7 @@ This means a developer/CI machine without NVIDIA hardware uses the CPU path whil
 - video/audio stream presence;
 - first video/audio codec names.
 
-`apply_probe_to_asset()` returns a fully revalidated copy of the PR2 `Asset` contract. It does not write to SQLite itself. PR7 can decide when automatic probing becomes part of Inbox ingest.
+`apply_probe_to_asset()` returns a fully revalidated copy of the PR2 `Asset` contract. It does not write to SQLite itself. PR8 can decide when automatic probing becomes part of Inbox ingest.
 
 ## Pixel geometry
 

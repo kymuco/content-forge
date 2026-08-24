@@ -55,4 +55,5 @@ jobs:
             tests/test_ffmpeg_compiler.py \
             tests/test_ffmpeg_runner.py \
             tests/test_ffmpeg_integration.py \
-            tests/test_hook_overlay_integration.py
+            tests/test_hook_overlay_integration.py \
+            tests/test_render_orchestration_integration.py
