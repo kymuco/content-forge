@@ -34,6 +34,17 @@ def _fps(value: object) -> float | None:
     return parsed if parsed > 0.0 else None
 
 
+def _is_attached_picture(stream: object) -> bool:
+    """Return whether an ffprobe video stream is embedded artwork, not video content."""
+
+    if not isinstance(stream, dict):
+        return False
+    disposition = stream.get("disposition")
+    if not isinstance(disposition, dict):
+        return False
+    return disposition.get("attached_pic") in {1, True, "1"}
+
+
 def probe_media(
     path: str | Path,
     *,
@@ -83,8 +94,17 @@ def probe_media(
     streams = payload.get("streams")
     if not isinstance(streams, list):
         streams = []
+    # Audio containers commonly expose embedded album art as a video stream with
+    # disposition.attached_pic=1. It is metadata, not timeline video, and must not turn
+    # MP3/M4A assets into VIDEO or leak artwork dimensions into shared media metadata.
     video_stream = next(
-        (item for item in streams if isinstance(item, dict) and item.get("codec_type") == "video"),
+        (
+            item
+            for item in streams
+            if isinstance(item, dict)
+            and item.get("codec_type") == "video"
+            and not _is_attached_picture(item)
+        ),
         None,
     )
     audio_stream = next(
