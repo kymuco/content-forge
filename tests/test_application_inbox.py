@@ -185,8 +185,6 @@ def test_project_identity_converges_before_receipt_link(tmp_path) -> None:
         )
     )
 
-    # Model two reconcilers that both observed the same unlinked receipt before either
-    # committed a Project. They must independently construct byte-identical manifests.
     project_a = service._build_url_project(intake)
     project_b = service._build_url_project(intake)
     assert project_a == project_b
@@ -197,6 +195,46 @@ def test_project_identity_converges_before_receipt_link(tmp_path) -> None:
     service.library.save_project(project_a)
     service.library.save_project(project_b)
     assert service.repository.find_project_for_intake(intake.intake_id) == project_a
+
+
+def test_startup_reconciliation_recovers_frozen_staging_before_blob_publish(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_video_preparation(monkeypatch)
+    payload = b"frozen-staging-before-asset-store"
+    digest = hashlib.sha256(payload).hexdigest()
+    source_id = new_entity_id(EntityKind.SOURCE)
+    intake = service.repository.create_intake(
+        InboxIntake(
+            kind=IntakeKind.FILE,
+            original_name="staging-only.mp4",
+            size_bytes=len(payload),
+            content_sha256=digest,
+            source_id=source_id,
+        )
+    )
+    staged = service.library.paths.incoming / f"http-{intake.intake_id}-deadbeef.mp4"
+    staged.write_bytes(payload)
+    assert service.library.database.get_asset_by_sha256(digest) is None
+    assert not service.library.paths.blob_path_for_sha256(digest).exists()
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    item = recovered[0]
+    assert item.state is IntakeState.PREPARED
+    assert item.asset_id is not None
+    assert item.source_id == source_id
+    assert not staged.exists()
+    asset = service.library.database.get_asset(item.asset_id)
+    assert asset is not None
+    assert asset.sha256 == digest
+    assert asset.size_bytes == len(payload)
+    assert service.library.assets.verify(asset)
+    assert service.library.paths.blob_path_for_sha256(digest).is_file()
+    assert service.library.database.get_source(source_id) is not None
+    assert item.project_id is not None
 
 
 def test_startup_reconciliation_recovers_asset_row_before_receipt_link(
