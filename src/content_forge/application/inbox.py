@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from content_forge.core import Asset, AssetRef, MediaType, Project, ProjectState
+from content_forge.core import (
+    Asset,
+    AssetRef,
+    EntityKind,
+    MediaType,
+    Project,
+    ProjectState,
+    SourceRecord,
+    new_entity_id,
+)
 from content_forge.render.ffmpeg import MediaProbeError, probe_media
-from content_forge.storage import LocalLibrary, SourceInput, sha256_file
+from content_forge.storage import LocalLibrary, sha256_file
 
 from .media import (
     ThumbnailError,
@@ -78,6 +88,104 @@ class InboxService:
         if record is None or record.asset_id != intake.asset_id:
             raise InboxError("Inbox provenance linkage is missing or inconsistent")
         return record
+
+    def _ensure_source_record(
+        self,
+        intake: InboxIntake,
+        asset: Asset,
+    ) -> tuple[InboxIntake, SourceRecord]:
+        """Create/recover provenance under an intake-reserved stable source ID."""
+
+        if intake.source_id is None:
+            intake = self.repository.transition_intake(
+                intake.intake_id,
+                expected_state=IntakeState.RECEIVING,
+                update={
+                    "state": IntakeState.RECEIVING,
+                    "source_id": new_entity_id(EntityKind.SOURCE),
+                },
+            )
+        assert intake.source_id is not None
+
+        existing = self.library.database.get_source(intake.source_id)
+        if existing is not None:
+            if existing.asset_id != asset.asset_id:
+                raise InboxError("Inbox source ID belongs to a different asset")
+            return intake, existing
+
+        record = SourceRecord(
+            source_id=intake.source_id,
+            asset_id=asset.asset_id,
+            source_url=intake.source_url,
+            creator_name=intake.creator_hint,
+            original_title=intake.original_name,
+            collected_at=intake.created_at,
+            notes=intake.note,
+        )
+        self.library.database.add_source(record)
+        return intake, record
+
+    def _recover_asset_for_intake(
+        self,
+        intake: InboxIntake,
+    ) -> tuple[InboxIntake, Asset | None]:
+        """Recover the asset side of a receiving file intake.
+
+        The receipt persists content SHA-256 and size before AssetStore publication. This
+        lets startup recover both the normal `asset row -> receipt` gap and the narrower
+        `canonical blob -> asset row` gap if the process dies between those commits.
+        """
+
+        if intake.asset_id is not None:
+            asset = self.library.database.get_asset(intake.asset_id)
+            if asset is None:
+                raise InboxError("accepted Inbox asset is missing")
+            if intake.content_sha256 is not None and asset.sha256 != intake.content_sha256:
+                raise InboxError("Inbox content digest disagrees with accepted asset")
+            if intake.size_bytes is not None and asset.size_bytes != intake.size_bytes:
+                raise InboxError("Inbox byte count disagrees with accepted asset")
+            if not self.library.assets.verify(asset):
+                raise InboxError("accepted Inbox asset failed byte verification")
+            return intake, asset
+
+        if intake.content_sha256 is None or intake.size_bytes is None:
+            return intake, None
+
+        asset = self.library.database.get_asset_by_sha256(intake.content_sha256)
+        if asset is None:
+            blob_path = self.library.paths.blob_path_for_sha256(intake.content_sha256)
+            if not blob_path.is_file():
+                return intake, None
+            if blob_path.stat().st_size != intake.size_bytes:
+                raise InboxError("recovery blob size disagrees with Inbox receipt")
+            if sha256_file(blob_path) != intake.content_sha256:
+                raise InboxError("recovery blob digest disagrees with Inbox receipt")
+            asset = self.library.database.put_asset(
+                Asset(
+                    sha256=intake.content_sha256,
+                    media_type=MediaType.OTHER,
+                    mime_type="application/octet-stream",
+                    size_bytes=intake.size_bytes,
+                    storage_key=self.library.paths.storage_key_for_sha256(
+                        intake.content_sha256
+                    ),
+                )
+            )
+
+        if asset.sha256 != intake.content_sha256 or asset.size_bytes != intake.size_bytes:
+            raise InboxError("recovered asset metadata disagrees with Inbox receipt")
+        if not self.library.assets.verify(asset):
+            raise InboxError("recovered Inbox asset failed byte verification")
+
+        intake = self.repository.transition_intake(
+            intake.intake_id,
+            expected_state=IntakeState.RECEIVING,
+            update={
+                "state": IntakeState.RECEIVING,
+                "asset_id": asset.asset_id,
+            },
+        )
+        return intake, asset
 
     def _build_file_project(self, intake: InboxIntake) -> Project:
         if intake.asset_id is None:
@@ -204,11 +312,13 @@ class InboxService:
                 note=note,
                 creator_hint=creator_hint,
                 content_kind_hint=content_kind_hint,
+                source_id=new_entity_id(EntityKind.SOURCE),
             )
         )
         descriptor: int | None = None
         staged: Path | None = None
         size_bytes = 0
+        digest = hashlib.sha256()
         try:
             descriptor, temporary_name = tempfile.mkstemp(
                 dir=self.library.paths.incoming,
@@ -228,39 +338,48 @@ class InboxService:
                         raise UploadTooLargeError(
                             f"upload exceeds {self.max_upload_bytes} bytes"
                         )
+                    digest.update(chunk)
                     handle.write(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
 
-            source = SourceInput(
-                source_url=source_url,
-                creator_name=creator_hint,
-                original_title=filename,
-                notes=note,
-            )
-            # Client MIME/filename are provenance hints only. Shared immutable Asset
-            # classification starts neutral and is promoted only by authoritative probe.
-            result = self.library.assets.ingest_file(
-                staged,
-                source=source,
-                media_type=MediaType.OTHER,
-                mime_type="application/octet-stream",
-            )
-            asset = result.asset
-            source_id = (
-                None if result.source_record is None else result.source_record.source_id
-            )
-
+            content_sha256 = digest.hexdigest()
+            # Freeze the recoverable byte identity before AssetStore publication. If the
+            # process dies after this commit, startup can distinguish a complete staged
+            # upload from one interrupted while HTTP bytes were still arriving.
             intake = self.repository.transition_intake(
                 intake.intake_id,
                 expected_state=IntakeState.RECEIVING,
                 update={
                     "state": IntakeState.RECEIVING,
                     "size_bytes": size_bytes,
-                    "asset_id": asset.asset_id,
-                    "source_id": source_id,
+                    "content_sha256": content_sha256,
                 },
             )
+
+            # Client MIME/filename are provenance hints only. Shared immutable Asset
+            # classification starts neutral and is promoted only by authoritative probe.
+            # Provenance is deliberately attached after the asset receipt checkpoint so
+            # every cross-store crash window can be reconstructed idempotently.
+            result = self.library.assets.ingest_file(
+                staged,
+                source=None,
+                media_type=MediaType.OTHER,
+                mime_type="application/octet-stream",
+            )
+            asset = result.asset
+            if asset.sha256 != content_sha256 or asset.size_bytes != size_bytes:
+                raise InboxError("AssetStore result disagrees with frozen upload receipt")
+
+            intake = self.repository.transition_intake(
+                intake.intake_id,
+                expected_state=IntakeState.RECEIVING,
+                update={
+                    "state": IntakeState.RECEIVING,
+                    "asset_id": asset.asset_id,
+                },
+            )
+            intake, _source_record = self._ensure_source_record(intake, asset)
             intake, _project = self._ensure_project(intake)
             return self._prepare_receiving_file(intake, asset)
         except BaseException as exc:
@@ -335,10 +454,11 @@ class InboxService:
     def reconcile_receiving(self) -> tuple[InboxIntake, ...]:
         """Recover receipts left `receiving` by process/machine interruption.
 
-        Project manifests carry `metadata.inbox_intake_id`, so a project committed in the
-        small save-project -> receipt-link crash window is discoverable without creating a
-        duplicate. File preparation is resumed from immutable asset bytes; URL/note intake
-        only needs project linkage restored.
+        File receipts freeze content digest, byte count, and a provenance ID before asset
+        publication. Startup can therefore recover from canonical-blob publication,
+        asset-catalog, provenance, project, and receipt-link interruptions without
+        manufacturing duplicate logical intake. URL/note intake only needs project
+        linkage restored.
         """
 
         recovered: list[InboxIntake] = []
@@ -346,7 +466,8 @@ class InboxService:
             try:
                 intake = original
                 if intake.kind is IntakeKind.FILE:
-                    if intake.asset_id is None:
+                    intake, asset = self._recover_asset_for_intake(intake)
+                    if asset is None:
                         recovered.append(
                             self.repository.transition_intake(
                                 intake.intake_id,
@@ -361,9 +482,7 @@ class InboxService:
                             )
                         )
                         continue
-                    asset = self.library.database.get_asset(intake.asset_id)
-                    if asset is None:
-                        raise InboxError("accepted Inbox asset is missing")
+                    intake, _source_record = self._ensure_source_record(intake, asset)
                     intake, _project = self._ensure_project(intake)
                     recovered.append(self._prepare_receiving_file(intake, asset))
                 else:
