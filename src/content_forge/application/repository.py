@@ -233,11 +233,14 @@ class ApplicationRepository:
         return updated
 
     def enrich_asset(self, enriched: Asset) -> Asset:
-        """Persist authoritative probe metadata without changing byte identity.
+        """Persist authoritative media-probe metadata without changing byte identity.
 
-        PR8 initially stores uploaded bytes with neutral OTHER/octet-stream classification.
-        The first successful authoritative ffprobe may promote that neutral classification.
-        An already classified shared asset cannot be reclassified by a later intake.
+        Asset rows predating PR8 may contain media type/MIME inferred from a filename or
+        caller-supplied header. Those fields were never authoritative. A successful
+        ffprobe is allowed to repair all media-derived fields on such a deduplicated
+        asset, while byte identity and storage identity remain immutable. Re-probing the
+        same bytes is therefore an idempotent authoritative refresh rather than a client
+        reclassification path.
         """
 
         with self.database.transaction() as connection:
@@ -261,24 +264,17 @@ class ApplicationRepository:
                     raise StorageConflictError(
                         f"asset enrichment attempted to change immutable {field}"
                     )
-            if (current.media_type, current.mime_type) != (
-                enriched.media_type,
-                enriched.mime_type,
-            ):
-                neutral = (
-                    current.media_type.value == "other"
-                    and current.mime_type == "application/octet-stream"
-                )
-                if not neutral:
-                    raise StorageConflictError(
-                        "authoritative probe disagrees with existing asset classification"
-                    )
+
+            enriched_json = dump_json(enriched)
+            if enriched_json == current_json:
+                return current
+
             changed = connection.execute(
                 """
                 UPDATE assets SET manifest_json = ?
                 WHERE asset_id = ? AND manifest_json = ?
                 """,
-                (dump_json(enriched), enriched.asset_id, current_json),
+                (enriched_json, enriched.asset_id, current_json),
             ).rowcount
             if changed != 1:
                 raise StorageConflictError(
