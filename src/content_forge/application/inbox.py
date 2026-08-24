@@ -606,7 +606,7 @@ class InboxService:
                             update={"state": IntakeState.PREPARED},
                         )
                     )
-            except BaseException:
+            except BaseException as exc:
                 current = self.repository.get_intake(original.intake_id)
                 if current is not None and current.state is IntakeState.RECEIVING:
                     accepted_unlinked_file = (
@@ -615,10 +615,11 @@ class InboxService:
                         and current.size_bytes is not None
                         and current.project_id is None
                     )
-                    if accepted_unlinked_file:
-                        # A transient storage failure during recovery must not destroy the
-                        # only authenticated copy of already-accepted bytes. Keep the
-                        # receipt resumable; a later exclusive startup can retry.
+                    if accepted_unlinked_file and isinstance(exc, OSError):
+                        # A transient filesystem/storage failure during recovery must not
+                        # destroy the only authenticated copy of already-accepted bytes.
+                        # Integrity/linkage failures are not retried indefinitely: they
+                        # fall through to the explicit terminal failure path below.
                         recovered.append(current)
                         continue
                     try:
