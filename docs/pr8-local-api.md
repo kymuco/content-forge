@@ -55,7 +55,7 @@ pre-parse bearer authentication + Content-Length bound
 -> existing AssetStore bytes ingest + SHA-256 deduplication
 -> durable asset linkage checkpoint
 -> idempotent source/provenance record
--> Project(state=INBOX)
+-> deterministic Project(state=INBOX)
 -> ffprobe
 -> authoritative media classification + metadata enrichment
 -> thumbnail derivative for visual media
@@ -74,7 +74,9 @@ A probe or thumbnail failure does not delete an already accepted immutable asset
 
 Application startup reconciles any intake left in `receiving` by process termination or power loss. For file intake, the durable pre-ingest digest/size lets recovery search the asset catalog by SHA-256. If the process died in the even narrower window after the canonical content-addressed blob was atomically published but before its `assets` row committed, recovery verifies the canonical blob's path, size, and SHA-256 and reconstructs the neutral Asset metadata row. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
 
-Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is also recoverable: an already-committed project is rediscovered instead of duplicated. URL/note intake restores or creates its project and finishes. A file receipt with neither an accepted/recoverable asset nor a complete frozen byte identity becomes explicitly failed rather than remaining permanently `receiving`.
+Project identity is deterministically derived from the intake's UUID payload and project timestamps are frozen to the intake creation time. Therefore two reconcilers that both observe the same unlinked intake before either commits a project independently construct the same canonical project ID and manifest instead of allocating duplicate projects. SQLite receipt transitions remain serialized/CAS-checked, while pre-existing PR8 receipts with an older randomly allocated project are still discoverable through `metadata.inbox_intake_id`.
+
+Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is recoverable: an already-committed project is rediscovered instead of duplicated. URL/note intake restores or creates its project and finishes. A file receipt with neither an accepted/recoverable asset nor a complete frozen byte identity becomes explicitly failed rather than remaining permanently `receiving`.
 
 ## URL/note capture
 
