@@ -20,6 +20,7 @@ from content_forge.application import (
     InboxService,
     UploadTooLargeError,
 )
+from content_forge.application.runtime_lock import RuntimeLease
 from content_forge.core import RegistryKey
 from content_forge.storage import LocalLibrary
 
@@ -139,28 +140,39 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
 ) -> FastAPI:
     library = LocalLibrary(root)
-    repository = ApplicationRepository(library.database).initialize()
-    auth = AuthManager(repository)
-    inbox = InboxService(
-        library,
-        repository,
-        ffprobe_path=ffprobe_path,
-        ffmpeg_path=ffmpeg_path,
-        max_upload_bytes=max_upload_bytes,
-    )
-    inbox.reconcile_receiving()
+    runtime_lease = RuntimeLease.acquire(library.paths.root / ".api-runtime.lock")
+    try:
+        repository = ApplicationRepository(library.database).initialize()
+        auth = AuthManager(repository)
+        inbox = InboxService(
+            library,
+            repository,
+            ffprobe_path=ffprobe_path,
+            ffmpeg_path=ffmpeg_path,
+            max_upload_bytes=max_upload_bytes,
+        )
+        # Reconciliation runs only after exclusive ownership of this runtime root has
+        # been established. A second live API process therefore cannot mistake an active
+        # uploader's RECEIVING receipt for an interrupted operation.
+        inbox.reconcile_receiving()
 
-    app = FastAPI(
-        title="Content Forge Local API",
-        version="0.0.1",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
-    )
+        app = FastAPI(
+            title="Content Forge Local API",
+            version="0.0.1",
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+    except BaseException:
+        runtime_lease.close()
+        raise
+
     app.state.library = library
     app.state.application_repository = repository
     app.state.auth = auth
     app.state.inbox = inbox
+    app.state.runtime_lease = runtime_lease
+    app.add_event_handler("shutdown", runtime_lease.close)
 
     @app.middleware("http")
     async def protect_upload_body(request: Request, call_next):
