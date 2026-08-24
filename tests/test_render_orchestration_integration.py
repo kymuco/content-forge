@@ -97,6 +97,16 @@ def test_persisted_preview_job_renders_and_reloads_artifact_manifest(tmp_path: P
     assert reloaded == artifact
     assert orchestrator.load_failure(job.job_id) is None
 
+    artifact_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifact_payload["duration_seconds"] = artifact.duration_seconds + 0.25
+    manifest_path.write_text(json.dumps(artifact_payload), encoding="utf-8")
+    with pytest.raises(RenderJobIntegrityError, match="probe duration"):
+        orchestrator.load_artifact(job.job_id)
+
+    manifest_path.write_text(
+        json.dumps(artifact.model_dump(mode="json")),
+        encoding="utf-8",
+    )
     command_payload["video_encoder"] = "tampered_encoder"
     command_path.write_text(json.dumps(command_payload), encoding="utf-8")
     with pytest.raises(RenderJobIntegrityError, match="command-manifest digest"):
