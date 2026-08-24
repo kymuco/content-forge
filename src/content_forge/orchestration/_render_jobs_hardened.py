@@ -332,12 +332,16 @@ class RenderOrchestrator(_BaseRenderOrchestrator):
         return artifact
 
     def load_failure(self, job_id: str) -> RenderFailureManifest | None:
-        failure = super().load_failure(job_id)
-        if failure is None:
-            return None
-
         job = self._job(job_id)
         trusted_failure_digest = job.payload.get("failure_manifest_digest")
+        failure = super().load_failure(job_id)
+        if failure is None:
+            if isinstance(trusted_failure_digest, str) and trusted_failure_digest:
+                raise RenderJobIntegrityError(
+                    "authenticated failure manifest is missing from persistent storage"
+                )
+            return None
+
         if not isinstance(trusted_failure_digest, str) or not trusted_failure_digest:
             raise RenderJobIntegrityError(
                 "failure manifest is not authenticated by authoritative job state"
