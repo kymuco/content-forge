@@ -96,6 +96,23 @@ def test_small_font_ratio_keeps_preview_and_final_wrapping_identical() -> None:
     ]
 
 
+def test_preview_fails_if_final_pixel_rounding_would_overflow_same_layout() -> None:
+    asset = _image_asset()
+    project = _project(asset, hook="W" * 60)
+    config = HookOverlayConfig(
+        font_size_ratio=0.0127,
+        border_width_ratio=0.0064,
+    )
+
+    with pytest.raises(HookOverlayTemplateError, match=SHORTS_FINAL_PROFILE_ID):
+        resolve_hook_overlay(
+            project,
+            {asset.asset_id: asset},
+            profile_id=SHORTS_PREVIEW_PROFILE_ID,
+            config=config,
+        )
+
+
 def test_text_decoration_expansion_cannot_enter_touching_safe_zone() -> None:
     asset = _image_asset()
     project = _project(asset, hook="Safe hook")
