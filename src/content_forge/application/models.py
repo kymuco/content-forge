@@ -20,6 +20,16 @@ APP_ID = Annotated[
         pattern=r"^cf_(?:intake|pair|session)_[0-9a-f]{32}$",
     ),
 ]
+CONTENT_SHA256 = Annotated[
+    str,
+    StringConstraints(
+        to_lower=True,
+        strip_whitespace=True,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    ),
+]
 
 
 def utc_now() -> datetime:
@@ -64,6 +74,7 @@ class InboxIntake(FrozenModel):
     original_name: str | None = Field(default=None, max_length=1024)
     mime_type: str | None = Field(default=None, max_length=255)
     size_bytes: int | None = Field(default=None, ge=0)
+    content_sha256: CONTENT_SHA256 | None = None
     source_url: str | None = Field(default=None, max_length=4096)
     note: str | None = Field(default=None, max_length=8192)
     creator_hint: str | None = Field(default=None, max_length=512)
