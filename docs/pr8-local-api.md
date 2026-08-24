@@ -49,11 +49,13 @@ A multipart upload follows this boundary:
 
 ```text
 pre-parse bearer authentication + Content-Length bound
--> create durable intake receipt
+-> create durable intake receipt with reserved provenance ID
 -> bounded/fsynced application staging
--> existing AssetStore ingest + SHA-256 deduplication
--> source/provenance record
--> durable asset/project linkage checkpoint
+-> freeze exact size + SHA-256 in the intake receipt
+-> existing AssetStore bytes ingest + SHA-256 deduplication
+-> durable asset linkage checkpoint
+-> idempotent source/provenance record
+-> Project(state=INBOX)
 -> ffprobe
 -> authoritative media classification + metadata enrichment
 -> thumbnail derivative for visual media
@@ -62,13 +64,17 @@ pre-parse bearer authentication + Content-Length bound
 
 FastAPI/Starlette would normally parse/spool `UploadFile` before endpoint dependencies. PR8 therefore guards the upload route in middleware before multipart parsing: authentication is checked first, `Content-Length` is mandatory, and the complete multipart body is capped before Starlette consumes it. The application staging copy independently enforces the actual file-byte limit.
 
+The application computes SHA-256 while copying the bounded upload and persists that digest plus the exact byte count before AssetStore publication. Provenance receives a stable source ID in the initial intake receipt. AssetStore is then used for immutable bytes/deduplication without creating provenance inside the same opaque call; after the asset checkpoint, the reserved provenance record and Inbox project are attached idempotently. This ordering makes every cross-store handoff recoverable.
+
 Client-provided multipart MIME type and filename remain provenance/UI hints only. A new uploaded Asset begins with neutral `OTHER` / `application/octet-stream` classification; a successful ffprobe is the authority allowed to promote those shared fields. A later intake cannot reclassify an already-classified deduplicated asset.
 
 A probe or thumbnail failure does not delete an already accepted immutable asset. The intake becomes `partial`, retains the project/asset identity, and records a path-safe diagnostic. Unexpected failures preserve durable links and fail closed without publishing raw subprocess/storage exception text.
 
 ## Interruption recovery
 
-Application startup reconciles any intake left in `receiving` by process termination or power loss. Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is recoverable: an already-committed project is rediscovered instead of duplicated. File preparation resumes from immutable content-addressed bytes; URL/note intake restores or creates its project and finishes. A receipt interrupted before asset acceptance becomes explicitly failed rather than remaining permanently `receiving`.
+Application startup reconciles any intake left in `receiving` by process termination or power loss. For file intake, the durable pre-ingest digest/size lets recovery search the asset catalog by SHA-256. If the process died in the even narrower window after the canonical content-addressed blob was atomically published but before its `assets` row committed, recovery verifies the canonical blob's path, size, and SHA-256 and reconstructs the neutral Asset metadata row. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
+
+Projects carry `metadata.inbox_intake_id`, so the save-project -> receipt-link crash window is also recoverable: an already-committed project is rediscovered instead of duplicated. URL/note intake restores or creates its project and finishes. A file receipt with neither an accepted/recoverable asset nor a complete frozen byte identity becomes explicitly failed rather than remaining permanently `receiving`.
 
 ## URL/note capture
 
