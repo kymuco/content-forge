@@ -57,6 +57,17 @@ def _public_failure_message(exc: BaseException) -> str:
     return "operation failed"
 
 
+def _project_id_for_intake(intake: InboxIntake) -> str:
+    """Derive one canonical project identity from the intake UUID payload.
+
+    Recovery can run in more than one process. Deriving rather than randomly allocating
+    the project ID prevents two reconcilers from committing distinct projects before
+    either has linked the project back into the intake receipt.
+    """
+
+    return f"cf_project_{intake.intake_id.rsplit('_', 1)[1]}"
+
+
 class InboxService:
     def __init__(
         self,
@@ -196,6 +207,7 @@ class InboxService:
             source_id=None if source_record is None else source_record.source_id,
         )
         return Project(
+            project_id=_project_id_for_intake(intake),
             content_kind=intake.content_kind_hint or "unclassified",
             state=ProjectState.INBOX,
             source_refs=(ref,),
@@ -204,6 +216,8 @@ class InboxService:
                 "inbox_intake_id": intake.intake_id,
                 "original_filename": intake.original_name or "upload.bin",
             },
+            created_at=intake.created_at,
+            updated_at=intake.created_at,
         )
 
     def _build_url_project(self, intake: InboxIntake) -> Project:
@@ -215,16 +229,30 @@ class InboxService:
         if intake.creator_hint is not None:
             metadata["creator_hint"] = intake.creator_hint
         return Project(
+            project_id=_project_id_for_intake(intake),
             content_kind=intake.content_kind_hint or "unclassified",
             state=ProjectState.INBOX,
             metadata=metadata,
+            created_at=intake.created_at,
+            updated_at=intake.created_at,
         )
 
     def _ensure_project(self, intake: InboxIntake) -> tuple[InboxIntake, Project]:
         project = None
         if intake.project_id is not None:
             project = self.library.load_project(intake.project_id)
+
+        canonical_id = _project_id_for_intake(intake)
         if project is None:
+            canonical = self.library.load_project(canonical_id)
+            if canonical is not None:
+                if canonical.metadata.get("inbox_intake_id") != intake.intake_id:
+                    raise InboxError("canonical Inbox project ID is already claimed")
+                project = canonical
+
+        if project is None:
+            # Backward compatibility for receipts created by pre-hardening PR8 snapshots
+            # whose project ID was randomly allocated before deterministic recovery.
             project = self.repository.find_project_for_intake(intake.intake_id)
         if project is None:
             project = (
@@ -233,6 +261,8 @@ class InboxService:
                 else self._build_url_project(intake)
             )
             self.library.save_project(project)
+        if project.metadata.get("inbox_intake_id") != intake.intake_id:
+            raise InboxError("Inbox project linkage is inconsistent")
         if intake.project_id != project.project_id:
             intake = self.repository.transition_intake(
                 intake.intake_id,
@@ -457,8 +487,9 @@ class InboxService:
         File receipts freeze content digest, byte count, and a provenance ID before asset
         publication. Startup can therefore recover from canonical-blob publication,
         asset-catalog, provenance, project, and receipt-link interruptions without
-        manufacturing duplicate logical intake. URL/note intake only needs project
-        linkage restored.
+        manufacturing duplicate logical intake. Project identity is derived from the
+        intake ID so concurrent reconcilers converge on the same manifest. URL/note
+        intake only needs project linkage restored.
         """
 
         recovered: list[InboxIntake] = []
