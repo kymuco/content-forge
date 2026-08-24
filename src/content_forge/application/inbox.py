@@ -63,6 +63,25 @@ def _project_id_for_intake(intake: InboxIntake) -> str:
     return f"cf_project_{intake.intake_id.rsplit('_', 1)[1]}"
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist a newly-created directory entry before publishing its receipt.
+
+    POSIX requires syncing the containing directory in addition to the file itself if a
+    power-loss boundary is meant to guarantee that a new filename survives. Windows does
+    not expose a portable Python directory-fsync equivalent, so the file handle flush is
+    the strongest portable primitive used there.
+    """
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 class InboxService:
     def __init__(
         self,
@@ -387,6 +406,7 @@ class InboxService:
         )
         descriptor: int | None = None
         staged: Path | None = None
+        retain_staging = False
         size_bytes = 0
         digest = hashlib.sha256()
         try:
@@ -413,6 +433,9 @@ class InboxService:
                 handle.flush()
                 os.fsync(handle.fileno())
 
+            # File fsync alone does not make a newly-created filename durable on POSIX.
+            # Persist the incoming-directory entry before publishing the byte receipt.
+            _fsync_directory(staged.parent)
             content_sha256 = digest.hexdigest()
             # This is the byte-acceptance linearization point. Before this durable receipt
             # exists, a crash may safely fail the intake. After it exists, the verified
@@ -455,21 +478,42 @@ class InboxService:
         except BaseException as exc:
             current = self.repository.get_intake(intake.intake_id)
             if current is not None and current.state is IntakeState.RECEIVING:
-                try:
-                    self.repository.transition_intake(
-                        intake.intake_id,
-                        expected_state=IntakeState.RECEIVING,
-                        update={
-                            "state": IntakeState.FAILED,
-                            "size_bytes": size_bytes,
-                            "probe_state": PreparationState.SKIPPED,
-                            "thumbnail_state": PreparationState.SKIPPED,
-                            "error_code": type(exc).__name__,
-                            "error_message": _public_failure_message(exc),
-                        },
-                    )
-                except Exception:
-                    pass
+                accepted = current.content_sha256 is not None and current.size_bytes is not None
+                project_checkpointed = current.project_id is not None
+                if accepted and not project_checkpointed:
+                    # Accepted bytes and incomplete cross-store linkage are resumable, not
+                    # terminal. Preserve the receipt in RECEIVING so startup can finish
+                    # AssetStore/provenance/project publication. If no Asset is catalogued
+                    # yet, the verified staging file remains the recovery authority.
+                    retain_staging = current.asset_id is None
+                    try:
+                        self.repository.transition_intake(
+                            current.intake_id,
+                            expected_state=IntakeState.RECEIVING,
+                            update={
+                                "state": IntakeState.RECEIVING,
+                                "error_code": "post_acceptance_retryable",
+                                "error_message": "accepted upload awaits recovery",
+                            },
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.repository.transition_intake(
+                            current.intake_id,
+                            expected_state=IntakeState.RECEIVING,
+                            update={
+                                "state": IntakeState.FAILED,
+                                "size_bytes": size_bytes,
+                                "probe_state": PreparationState.SKIPPED,
+                                "thumbnail_state": PreparationState.SKIPPED,
+                                "error_code": type(exc).__name__,
+                                "error_message": _public_failure_message(exc),
+                            },
+                        )
+                    except Exception:
+                        pass
             raise
         finally:
             if descriptor is not None:
@@ -477,7 +521,7 @@ class InboxService:
                     os.close(descriptor)
                 except OSError:
                     pass
-            if staged is not None:
+            if staged is not None and not retain_staging:
                 staged.unlink(missing_ok=True)
 
     def capture_url_note(
@@ -565,6 +609,18 @@ class InboxService:
             except BaseException:
                 current = self.repository.get_intake(original.intake_id)
                 if current is not None and current.state is IntakeState.RECEIVING:
+                    accepted_unlinked_file = (
+                        current.kind is IntakeKind.FILE
+                        and current.content_sha256 is not None
+                        and current.size_bytes is not None
+                        and current.project_id is None
+                    )
+                    if accepted_unlinked_file:
+                        # A transient storage failure during recovery must not destroy the
+                        # only authenticated copy of already-accepted bytes. Keep the
+                        # receipt resumable; a later exclusive startup can retry.
+                        recovered.append(current)
+                        continue
                     try:
                         failed = self.repository.transition_intake(
                             current.intake_id,
