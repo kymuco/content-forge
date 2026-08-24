@@ -111,7 +111,11 @@ def test_submit_persists_immutable_plan_snapshot_and_job_metadata(tmp_path: Path
     assert stored.payload["plan_storage_key"].startswith(
         f"renders/{project.project_id}/{job.job_id}/"
     )
+    assert stored.payload["command_manifest_storage_key"].endswith(
+        "/command-manifest.json"
+    )
     assert str(library.paths.root) not in stored.payload["plan_storage_key"]
+    assert str(library.paths.root) not in stored.payload["command_manifest_storage_key"]
     assert orchestrator.load_plan(job.job_id) == plan
 
 
@@ -210,6 +214,8 @@ def test_backend_start_failure_is_persisted_without_partial_artifact(tmp_path: P
     assert failure is not None
     assert failure.code == "ffmpeg_start_failed"
     assert failure.state == "failed"
+    command_path = library.paths.root / str(job.payload["command_manifest_storage_key"])
+    assert command_path.is_file()
     assert not (library.paths.root / str(job.payload["output_storage_key"])).exists()
     assert not (library.paths.root / str(job.payload["manifest_storage_key"])).exists()
 
