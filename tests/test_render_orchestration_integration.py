@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from content_forge.core import AssetRef, MediaType, Project, Scene, TemplateRef, Variant
-from content_forge.orchestration import RenderOrchestrator
+from content_forge.orchestration import RenderJobIntegrityError, RenderOrchestrator
 from content_forge.profiles import shorts_preview_profile
 from content_forge.render.ffmpeg import probe_ffmpeg_runtime
 from content_forge.storage import LocalLibrary, sha256_file
@@ -81,11 +82,22 @@ def test_persisted_preview_job_renders_and_reloads_artifact_manifest(tmp_path: P
     assert artifact.source_assets[0].sha256 == ingest.asset.sha256
 
     output_path = library.paths.root / artifact.output_storage_key
+    command_path = library.paths.root / artifact.command_manifest_storage_key
     manifest_path = library.paths.root / artifact.manifest_storage_key
     assert output_path.is_file()
+    assert command_path.is_file()
     assert manifest_path.is_file()
     assert sha256_file(output_path) == artifact.output_sha256
+
+    command_payload = json.loads(command_path.read_text(encoding="utf-8"))
+    assert command_payload["render_plan_digest"] == artifact.render_plan_digest
+    assert command_payload["video_encoder"] == artifact.video_encoder
 
     reloaded = orchestrator.load_artifact(job.job_id)
     assert reloaded == artifact
     assert orchestrator.load_failure(job.job_id) is None
+
+    command_payload["video_encoder"] = "tampered_encoder"
+    command_path.write_text(json.dumps(command_payload), encoding="utf-8")
+    with pytest.raises(RenderJobIntegrityError, match="command-manifest digest"):
+        orchestrator.load_artifact(job.job_id)
