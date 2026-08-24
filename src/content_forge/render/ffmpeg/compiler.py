@@ -394,6 +394,15 @@ def compile_ffmpeg_command(
                 name="border_width",
                 default=0,
             )
+            font_value = overlay.properties.get("font")
+            font_option = ""
+            if font_value is not None:
+                font = _style_value(
+                    font_value,
+                    name="font",
+                    default="sans-serif",
+                )
+                font_option = f":font={font}"
             font_color = _style_value(
                 overlay.properties.get("font_color"),
                 name="font_color",
@@ -416,7 +425,7 @@ def compile_ffmpeg_command(
             output = f"video_text_{overlay_index}"
             draw = (
                 f"drawtext=text={quoted_text}:expansion=none:x={placement.x}:y={placement.y}:"
-                f"fontsize={font_size}:fontcolor={font_color}:borderw={border_width}:"
+                f"fontsize={font_size}{font_option}:fontcolor={font_color}:borderw={border_width}:"
                 f"bordercolor={border_color}:box={1 if box else 0}:boxcolor={box_color}:"
                 f"enable='{enable}'"
             )
