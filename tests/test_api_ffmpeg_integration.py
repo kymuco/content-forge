@@ -39,7 +39,10 @@ def test_authenticated_upload_prepares_real_video_and_thumbnail(tmp_path) -> Non
 
     runtime = tmp_path / "runtime"
     client = TestClient(create_app(root=runtime))
-    challenge = client.post("/api/v1/pairing/challenges").json()
+    challenge = client.post(
+        "/api/v1/pairing/challenges",
+        headers={"Host": "localhost"},
+    ).json()
     exchange = client.post(
         "/api/v1/pairing/exchange",
         json={"challenge_id": challenge["challenge_id"], "code": challenge["code"]},
@@ -51,7 +54,7 @@ def test_authenticated_upload_prepares_real_video_and_thumbnail(tmp_path) -> Non
         response = client.post(
             "/api/v1/inbox/files",
             headers=headers,
-            files={"file": ("source.mp4", handle, "video/mp4")},
+            files={"file": ("misleading.txt", handle, "text/plain")},
             data={"note": "real ffmpeg boundary"},
         )
     assert response.status_code == 201, response.text
@@ -59,6 +62,11 @@ def test_authenticated_upload_prepares_real_video_and_thumbnail(tmp_path) -> Non
     assert intake["state"] == "prepared"
     assert intake["probe_state"] == "succeeded"
     assert intake["thumbnail_state"] == "succeeded"
+
+    asset = client.app.state.library.database.get_asset(intake["asset_id"])
+    assert asset is not None
+    assert asset.media_type.value == "video"
+    assert asset.mime_type == "video/mp4"
 
     thumbnail = client.get(
         f"/api/v1/assets/{intake['asset_id']}/thumbnail",

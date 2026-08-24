@@ -79,13 +79,17 @@ Install the project and run the API on loopback by default:
 content-forge-api
 ```
 
-Phone access must be enabled explicitly:
+Plain HTTP is accepted only on loopback. Phone/LAN binding is intentionally fail-closed unless TLS is configured:
 
 ```text
-content-forge-api --lan
+content-forge-api --lan \
+  --ssl-certfile /path/to/content-forge.crt \
+  --ssl-keyfile /path/to/content-forge.key
 ```
 
-Sensitive reads and writes require a paired bearer session. Pairing challenges can only be created from a loopback client on the desktop; the phone exchanges the short-lived challenge for a revocable session token. The API never returns raw runtime filesystem paths or stored token digests.
+The certificate must be trusted by the phone and valid for the hostname/IP used to connect. PR9 can improve certificate/onboarding UX; PR8 does not send bearer credentials over plaintext LAN HTTP.
+
+Sensitive reads and writes require a paired bearer session. Pairing challenge creation additionally requires a loopback peer plus loopback `Host` and browser `Origin` (when present), closing the browser/DNS-rebinding bootstrap path. The API never returns raw runtime filesystem paths or stored token digests.
 
 See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the current PR8 contract.
 

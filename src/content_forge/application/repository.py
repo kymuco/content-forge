@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
-from content_forge.core import Asset, dump_json, load_json
+from content_forge.core import Asset, Project, dump_json, load_json
 from content_forge.storage import (
     LibraryDatabase,
     StorageConflictError,
@@ -156,6 +156,35 @@ class ApplicationRepository:
             ).fetchall()
         return tuple(load_json(InboxIntake, row["manifest_json"]) for row in rows)
 
+    def list_intakes_in_state(self, state: IntakeState) -> tuple[InboxIntake, ...]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT manifest_json FROM inbox_intakes
+                WHERE state = ? ORDER BY created_at, intake_id
+                """,
+                (state.value,),
+            ).fetchall()
+        return tuple(load_json(InboxIntake, row["manifest_json"]) for row in rows)
+
+    def find_project_for_intake(self, intake_id: str) -> Project | None:
+        """Recover a project committed before its intake receipt linkage."""
+
+        matches: list[Project] = []
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT manifest_json FROM projects ORDER BY created_at, project_id"
+            ).fetchall()
+        for row in rows:
+            project = load_json(Project, row["manifest_json"])
+            if project.metadata.get("inbox_intake_id") == intake_id:
+                matches.append(project)
+        if len(matches) > 1:
+            raise StorageConflictError(
+                f"multiple projects claim Inbox intake {intake_id}"
+            )
+        return None if not matches else matches[0]
+
     def transition_intake(
         self,
         intake_id: str,
@@ -204,7 +233,12 @@ class ApplicationRepository:
         return updated
 
     def enrich_asset(self, enriched: Asset) -> Asset:
-        """Persist probe metadata while preserving immutable asset byte identity."""
+        """Persist authoritative probe metadata without changing byte identity.
+
+        PR8 initially stores uploaded bytes with neutral OTHER/octet-stream classification.
+        The first successful authoritative ffprobe may promote that neutral classification.
+        An already classified shared asset cannot be reclassified by a later intake.
+        """
 
         with self.database.transaction() as connection:
             row = connection.execute(
@@ -218,8 +252,6 @@ class ApplicationRepository:
             immutable_fields = (
                 "asset_id",
                 "sha256",
-                "media_type",
-                "mime_type",
                 "size_bytes",
                 "storage_key",
                 "created_at",
@@ -228,6 +260,18 @@ class ApplicationRepository:
                 if getattr(current, field) != getattr(enriched, field):
                     raise StorageConflictError(
                         f"asset enrichment attempted to change immutable {field}"
+                    )
+            if (current.media_type, current.mime_type) != (
+                enriched.media_type,
+                enriched.mime_type,
+            ):
+                neutral = (
+                    current.media_type.value == "other"
+                    and current.mime_type == "application/octet-stream"
+                )
+                if not neutral:
+                    raise StorageConflictError(
+                        "authoritative probe disagrees with existing asset classification"
                     )
             changed = connection.execute(
                 """

@@ -4,10 +4,15 @@ from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
 
+LOOPBACK_HEADERS = {"Host": "localhost"}
+
 
 def _paired_client(tmp_path) -> tuple[TestClient, dict[str, str]]:
     client = TestClient(create_app(root=tmp_path))
-    challenge = client.post("/api/v1/pairing/challenges")
+    challenge = client.post(
+        "/api/v1/pairing/challenges",
+        headers=LOOPBACK_HEADERS,
+    )
     assert challenge.status_code == 201
     payload = challenge.json()
     exchanged = client.post(
@@ -21,6 +26,22 @@ def _paired_client(tmp_path) -> tuple[TestClient, dict[str, str]]:
     assert exchanged.status_code == 200
     token = exchanged.json()["token"]
     return client, {"Authorization": f"Bearer {token}"}
+
+
+def test_pairing_challenge_rejects_nonloopback_browser_authority(tmp_path) -> None:
+    client = TestClient(create_app(root=tmp_path))
+    assert client.post(
+        "/api/v1/pairing/challenges",
+        headers={"Host": "attacker.example"},
+    ).status_code == 403
+    assert client.post(
+        "/api/v1/pairing/challenges",
+        headers={"Host": "localhost", "Origin": "https://attacker.example"},
+    ).status_code == 403
+    assert client.post(
+        "/api/v1/pairing/challenges",
+        headers={"Host": "localhost", "Origin": "http://127.0.0.1:8765"},
+    ).status_code == 201
 
 
 def test_sensitive_reads_and_uploads_require_authentication(tmp_path) -> None:

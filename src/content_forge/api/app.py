@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -66,16 +67,59 @@ def _intake_payload(intake: InboxIntake) -> dict[str, object]:
     return intake.model_dump(mode="json")
 
 
-def _is_loopback(request: Request) -> bool:
+def _is_loopback_hostname(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_loopback_client(request: Request) -> bool:
     if request.client is None:
         return False
     host = request.client.host
     if host == "testclient":
         return True
+    return _is_loopback_hostname(host)
+
+
+def _host_header_is_loopback(value: str | None) -> bool:
+    if not value or "@" in value or "/" in value or "\\" in value:
+        return False
     try:
-        return ipaddress.ip_address(host).is_loopback
+        hostname = urlsplit(f"//{value}").hostname
     except ValueError:
-        return host == "localhost"
+        return False
+    return _is_loopback_hostname(hostname)
+
+
+def _origin_is_loopback(value: str | None) -> bool:
+    if value is None:
+        return True
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and _is_loopback_hostname(parsed.hostname)
+
+
+def _pairing_bootstrap_allowed(request: Request) -> bool:
+    """Require socket loopback plus browser-visible loopback authority.
+
+    The peer address alone is insufficient because browsers can reach loopback and DNS
+    rebinding can preserve a hostile origin while the hostname resolves to 127.0.0.1.
+    Host and (when present) Origin must therefore also identify loopback authority.
+    """
+
+    return (
+        _is_loopback_client(request)
+        and _host_header_is_loopback(request.headers.get("host"))
+        and _origin_is_loopback(request.headers.get("origin"))
+    )
 
 
 def _authorization_token(value: str | None) -> str:
@@ -104,6 +148,7 @@ def create_app(
         ffmpeg_path=ffmpeg_path,
         max_upload_bytes=max_upload_bytes,
     )
+    inbox.reconcile_receiving()
 
     app = FastAPI(
         title="Content Forge Local API",
@@ -119,12 +164,7 @@ def create_app(
 
     @app.middleware("http")
     async def protect_upload_body(request: Request, call_next):
-        """Reject unauthorized/oversized multipart uploads before form parsing.
-
-        Starlette parses `UploadFile` before entering the endpoint. Guarding the one
-        large-body route here ensures an unauthenticated LAN peer cannot force multipart
-        spooling, and requires a bounded Content-Length before body consumption.
-        """
+        """Reject unauthorized/oversized multipart uploads before form parsing."""
 
         if request.method == "POST" and request.url.path == "/api/v1/inbox/files":
             try:
@@ -176,10 +216,10 @@ def create_app(
 
     @app.post("/api/v1/pairing/challenges", status_code=201)
     def create_pairing_challenge(request: Request) -> dict[str, object]:
-        if not _is_loopback(request):
+        if not _pairing_bootstrap_allowed(request):
             raise HTTPException(
                 status_code=403,
-                detail="pairing challenges may only be created from loopback",
+                detail="pairing challenges require loopback client, Host, and Origin",
             )
         challenge = auth.create_challenge()
         return challenge.model_dump(mode="json")

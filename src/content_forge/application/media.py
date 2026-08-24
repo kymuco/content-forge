@@ -1,4 +1,4 @@
-"""Small deterministic media-preparation helpers used by Inbox ingest."""
+"""Deterministic media-preparation helpers used by Inbox ingest."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from content_forge.core import Asset, MediaType
+from content_forge.render.ffmpeg import MediaProbe, apply_probe_to_asset
 from content_forge.storage import DerivativeSlot, LocalLibrary, sha256_file
 
 
@@ -22,6 +23,89 @@ class ThumbnailResult:
     path: Path
     sha256: str
     size_bytes: int
+
+
+IMAGE_FORMAT_TOKENS = {
+    "image2",
+    "image2pipe",
+    "png_pipe",
+    "jpeg_pipe",
+    "webp_pipe",
+    "bmp_pipe",
+    "tiff_pipe",
+    "gif",
+}
+
+
+def authoritative_media_classification(probe: MediaProbe) -> tuple[MediaType, str]:
+    """Classify shared Asset metadata from ffprobe facts, never client headers."""
+
+    tokens = {
+        token.strip().lower()
+        for token in (probe.format_name or "").split(",")
+        if token.strip()
+    }
+    codec = (probe.video_codec or "").lower()
+
+    if tokens & IMAGE_FORMAT_TOKENS:
+        media_type = MediaType.IMAGE
+    elif probe.has_video:
+        media_type = MediaType.VIDEO
+    elif probe.has_audio:
+        media_type = MediaType.AUDIO
+    else:
+        media_type = MediaType.OTHER
+
+    if media_type is MediaType.IMAGE:
+        if codec == "png" or "png_pipe" in tokens:
+            return media_type, "image/png"
+        if codec in {"mjpeg", "jpeg"} or "jpeg_pipe" in tokens:
+            return media_type, "image/jpeg"
+        if codec == "webp" or "webp_pipe" in tokens:
+            return media_type, "image/webp"
+        if codec == "gif" or "gif" in tokens:
+            return media_type, "image/gif"
+        if codec == "bmp" or "bmp_pipe" in tokens:
+            return media_type, "image/bmp"
+        if codec.startswith("tiff") or "tiff_pipe" in tokens:
+            return media_type, "image/tiff"
+        return media_type, "application/octet-stream"
+
+    if media_type is MediaType.VIDEO:
+        if tokens & {"mp4", "mov", "m4a", "3gp", "3g2", "mj2"}:
+            return media_type, "video/mp4"
+        if "webm" in tokens:
+            return media_type, "video/webm"
+        if "matroska" in tokens:
+            return media_type, "video/x-matroska"
+        if "avi" in tokens:
+            return media_type, "video/x-msvideo"
+        if "mpegts" in tokens:
+            return media_type, "video/mp2t"
+        return media_type, "application/octet-stream"
+
+    if media_type is MediaType.AUDIO:
+        if "mp3" in tokens:
+            return media_type, "audio/mpeg"
+        if "wav" in tokens:
+            return media_type, "audio/wav"
+        if "flac" in tokens:
+            return media_type, "audio/flac"
+        if "ogg" in tokens:
+            return media_type, "audio/ogg"
+        if tokens & {"mp4", "mov", "m4a"}:
+            return media_type, "audio/mp4"
+        return media_type, "application/octet-stream"
+
+    return MediaType.OTHER, "application/octet-stream"
+
+
+def apply_authoritative_probe(asset: Asset, probe: MediaProbe) -> Asset:
+    media_type, mime_type = authoritative_media_classification(probe)
+    classified = asset.validated_copy(
+        update={"media_type": media_type, "mime_type": mime_type}
+    )
+    return apply_probe_to_asset(classified, probe)
 
 
 def thumbnail_storage_key(
@@ -119,8 +203,6 @@ def generate_thumbnail(
             output.stat().st_size,
         )
 
-    # An unreceipted or mismatched file at the deterministic derivative location has no
-    # reuse authority. Remove it and regenerate from the immutable source bytes.
     output.unlink(missing_ok=True)
 
     descriptor, temporary_name = tempfile.mkstemp(
