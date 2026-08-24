@@ -10,6 +10,7 @@ from .database import (
     StorageError,
     StorageSchemaError,
 )
+from .job_state import transition_job_state
 from .library import LocalLibrary
 from .paths import RuntimePaths, default_runtime_root
 from .records import DerivativeSlot, SourceInput, StoredJob
@@ -32,4 +33,5 @@ __all__ = [
     "StoredJob",
     "default_runtime_root",
     "sha256_file",
+    "transition_job_state",
 ]
