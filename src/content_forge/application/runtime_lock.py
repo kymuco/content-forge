@@ -75,6 +75,12 @@ class RuntimeLease:
         finally:
             handle.close()
 
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def __enter__(self) -> "RuntimeLease":
         return self
 
