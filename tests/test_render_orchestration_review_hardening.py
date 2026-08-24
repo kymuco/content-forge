@@ -157,6 +157,26 @@ def test_failure_manifest_tamper_is_rejected_by_sqlite_receipt(tmp_path: Path) -
         orchestrator.load_failure(job.job_id)
 
 
+def test_missing_authenticated_failure_manifest_is_rejected(tmp_path: Path) -> None:
+    library, project, _ = _fixture(tmp_path)
+    plan = compile_hook_overlay(project, library.database)
+    orchestrator = RenderOrchestrator(library)
+    job = orchestrator.submit(plan, purpose="preview")
+
+    with pytest.raises(FFmpegBackendError):
+        orchestrator.run_job(job.job_id, _capabilities(), prefer_nvenc=False)
+
+    stored = library.database.get_job(job.job_id)
+    assert stored is not None
+    assert isinstance(stored.payload.get("failure_manifest_digest"), str)
+
+    failure_path = library.paths.root / str(job.payload["failure_storage_key"])
+    failure_path.unlink()
+
+    with pytest.raises(RenderJobIntegrityError, match="authenticated failure manifest is missing"):
+        orchestrator.load_failure(job.job_id)
+
+
 def test_command_receipt_requires_successful_manifest_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
