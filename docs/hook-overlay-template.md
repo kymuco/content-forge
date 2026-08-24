@@ -50,6 +50,8 @@ Both use the same normalized protected UI regions. Preview and final therefore k
 
 Protected regions are currently modeled for top system UI, right-side engagement controls, and bottom channel/title UI. `hook_overlay` fails resolution when its important hook region intersects a profile-provided protected safe zone.
 
+A selected profile is not validated in isolation. Before emitting a `ResolvedTemplate`, the resolver preflights the same semantic hook layout against every output profile configured on the project using each profile's actual integer font, border, safe-zone, and edge-rounding geometry. This deliberately makes preview fail closed if a configured final output would overflow or collapse after pixel resolution, so an approved preview cannot represent a final render that the same project cannot produce safely.
+
 ## Default composition
 
 The default composition is deliberately narrow:
@@ -84,7 +86,7 @@ A later richer text component may pin an actual font asset and measure exact gly
 
 Template-generated overlay/audio IDs are derived from project/template/scene identity with a domain-separated SHA-256 construction. Re-resolving the same project produces the same generated IDs and the same semantic render-plan digest.
 
-Preview and final use the same generated IDs and wrapped line breaks. Pixel typography values scale with profile width, so the two profiles remain presentation-equivalent without storing final-only pixel geometry in the canonical project.
+Preview and final use the same generated IDs and wrapped line breaks. Pixel typography values scale with profile width, and project-wide output preflight catches integer-rounding cases that could otherwise make preview pass while final fails. The profiles therefore remain presentation-equivalent without storing final-only pixel geometry in the canonical project.
 
 The v1 script boundary and conservative width budget make layout acceptance deterministic. The requested drawtext font family is explicit in template output; exact cross-machine font-file pinning remains a deliberate future capability rather than being implied by this PR.
 
@@ -108,6 +110,8 @@ Resolution rejects, among other cases:
 - ambiguous variant/profile selection;
 - horizontal output profiles;
 - hook/safe-zone overlap;
+- hook regions that collapse after output-profile pixel edge rounding;
+- layouts that fit the selected profile but fail any other output profile configured on the project;
 - missing source assets;
 - non-image/video scene media;
 - empty hook text or NUL input;
