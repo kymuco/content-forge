@@ -16,6 +16,7 @@ Project + template resolver
  RenderOrchestrator
   | submit snapshot
   | persistent job state
+  | persist exact FFmpeg command manifest
   | execute FFmpeg
   | verify artifact
   | write sidecar manifest
@@ -62,12 +63,15 @@ renders/
   <project_id>/
     <job_id>/
       plan.json
+      command-manifest.json
       artifact.<container>
       artifact-manifest.json
       failure-manifest.json   # only for failed/cancelled attempts
 ```
 
-Storage keys persisted in SQLite and manifests are relative to `CONTENT_FORGE_HOME`; absolute machine paths are not used as artifact identity.
+`command-manifest.json` is written atomically after generic FFmpeg command compilation and before process execution. It records the exact validated `RenderCommandManifest` for that attempt. It is retained when backend execution later fails so the failed attempt still has reproducible command evidence.
+
+Storage keys persisted in SQLite and manifests are relative to `CONTENT_FORGE_HOME`; absolute machine paths are not used as artifact identity. The FFmpeg command manifest may contain absolute runtime paths because it is an execution record, but its own relative storage key is fixed by the render job.
 
 ## Preview/final purpose
 
@@ -84,7 +88,7 @@ A successful render writes a validated sidecar containing:
 - manifest version;
 - job/project/purpose/profile/variant/template identity;
 - render-plan digest;
-- FFmpeg command-manifest digest;
+- FFmpeg command-manifest storage key and digest;
 - source asset IDs and SHA-256 digests from the plan;
 - output storage key and SHA-256 digest;
 - encoder and FFmpeg version;
@@ -92,7 +96,7 @@ A successful render writes a validated sidecar containing:
 - ffprobe-confirmed dimensions, duration, frame rate, codecs, and audio presence;
 - completion timestamp.
 
-Before the job becomes `succeeded`, PR7 verifies that the published file is non-empty, hashes it, probes it, and checks the probed width/height against the selected output profile. If post-render verification or manifest publication fails, the output is removed and the job does not become successful.
+Before the job becomes `succeeded`, PR7 verifies that the published file is non-empty, hashes it, probes it, and checks the probed width/height against the selected output profile. If post-render verification or artifact-manifest publication fails, the output and successful artifact sidecar are removed and the job does not become successful. The already-written command manifest is deliberately retained as attempt evidence.
 
 ## Failure manifest
 
@@ -110,7 +114,17 @@ A failure sidecar is diagnostic state, not a successful artifact. Successful exe
 - runtime storage keys exactly match the canonical job directory;
 - source assets resolve through the existing content-addressed runtime storage policy by default.
 
-This makes the unit of work restartable without introducing a scheduler yet.
+A successful `load_artifact(job_id)` additionally fails closed unless:
+
+- artifact identity, purpose, profile, variant, template, source fingerprints, and render-plan digest still match the persisted job/plan;
+- the artifact points to the job's canonical `command-manifest.json`;
+- the persisted command manifest validates, references the same render-plan digest and output path, and does not reference assets outside the plan;
+- the artifact's command-manifest digest exactly matches the persisted command manifest;
+- the artifact encoder matches the persisted command;
+- artifact dimensions match the persisted output profile;
+- the output still exists with the recorded size and SHA-256 digest.
+
+This makes the unit of work restartable and independently inspectable without introducing a scheduler yet.
 
 ## Deliberate limits
 
