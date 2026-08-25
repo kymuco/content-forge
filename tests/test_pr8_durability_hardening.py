@@ -227,6 +227,14 @@ def test_blob_only_recovery_reestablishes_directory_durability_before_cataloging
         "fsync_directory_chain",
         mark_recovery_directory_sync,
     )
+    # The recovery phase models the operational EIO being cleared. Both the direct
+    # blob-only recovery barrier and AssetStore's independent verification/reuse barrier
+    # must therefore be allowed to complete before the intake can become PREPARED.
+    monkeypatch.setattr(
+        asset_store_module,
+        "fsync_directory_chain",
+        mark_recovery_directory_sync,
+    )
     monkeypatch.setattr(service.library.database, "put_asset", checked_put_asset)
     _install_audio_probe(monkeypatch)
 
