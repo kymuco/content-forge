@@ -247,6 +247,77 @@ def test_url_note_sqlite_operational_after_project_linkage_returns_same_recovera
     assert project.metadata["inbox_intake_id"] == recovered[0].intake_id
 
 
+def test_url_note_operational_failure_returns_local_identity_when_receipt_reread_fails(
+    tmp_path, monkeypatch
+) -> None:
+    library = LocalLibrary(tmp_path)
+    repository = ApplicationRepository(library.database).initialize()
+    service = InboxService(library, repository, max_upload_bytes=1024)
+    original_transition = repository.transition_intake
+    original_get_intake = repository.get_intake
+    final_failed = False
+    reread_failed = False
+
+    def fail_final_once(
+        intake_id,
+        *,
+        expected_state,
+        update,
+        durable=False,
+    ):
+        nonlocal final_failed
+        if not final_failed and update.get("state") is IntakeState.PREPARED:
+            final_failed = True
+            raise sqlite3.OperationalError("database is locked")
+        return original_transition(
+            intake_id,
+            expected_state=expected_state,
+            update=update,
+            durable=durable,
+        )
+
+    def fail_immediate_reread_once(intake_id):
+        nonlocal reread_failed
+        if final_failed and not reread_failed:
+            reread_failed = True
+            raise sqlite3.OperationalError("database is locked")
+        return original_get_intake(intake_id)
+
+    monkeypatch.setattr(repository, "transition_intake", fail_final_once)
+    monkeypatch.setattr(repository, "get_intake", fail_immediate_reread_once)
+
+    retryable = service.capture_url_note(
+        source_url="https://example.com/double-outage",
+        note="preserve this identity",
+    )
+
+    assert final_failed
+    assert reread_failed
+    assert retryable.state is IntakeState.RECEIVING
+    assert retryable.project_id is not None
+    assert retryable.error_code is None
+    project_id = retryable.project_id
+
+    monkeypatch.setattr(repository, "transition_intake", original_transition)
+    monkeypatch.setattr(repository, "get_intake", original_get_intake)
+
+    items = service.list_intakes()
+    assert len(items) == 1
+    assert items[0].intake_id == retryable.intake_id
+    assert items[0].project_id == project_id
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].intake_id == retryable.intake_id
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].project_id == project_id
+    assert len(service.list_intakes()) == 1
+    project = service.library.load_project(project_id)
+    assert project is not None
+    assert project.metadata["inbox_intake_id"] == retryable.intake_id
+
+
 def test_upload_staging_uses_fixed_suffix_for_pathological_filename(
     tmp_path, monkeypatch
 ) -> None:
