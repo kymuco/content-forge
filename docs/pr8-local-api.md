@@ -55,7 +55,7 @@ pre-parse bearer authentication + Content-Length bound
 -> bounded application staging
 -> flush + fsync staging file
 -> fsync containing staging directory where supported
--> freeze exact size + SHA-256 in the intake receipt   [byte acceptance]
+-> FULL-synchronous SQLite commit of exact size + SHA-256   [byte acceptance]
 -> AssetStore content-addressed ingest + SHA-256 deduplication
 -> atomic canonical-blob publish
 -> fsync canonical blob directory chain where supported
@@ -70,7 +70,7 @@ pre-parse bearer authentication + Content-Length bound
 
 FastAPI/Starlette would normally parse/spool `UploadFile` before endpoint dependencies. PR8 therefore guards the upload route in middleware before multipart parsing: authentication is checked first, `Content-Length` is mandatory, and the complete multipart body is capped before Starlette consumes it. The application staging copy independently enforces the actual file-byte limit.
 
-The application computes SHA-256 while copying the bounded upload. The complete staging file is flushed and fsynced; on POSIX, the containing incoming directory is also fsynced so the newly created filename is durable across the acceptance boundary. Only then are the exact byte count and SHA-256 committed to the intake receipt. That receipt transition is the byte-acceptance linearization point: before it, interruption may safely fail the intake and discard staging; after it, recovery must preserve or reproduce exactly those accepted bytes.
+The application computes SHA-256 while copying the bounded upload. The complete staging file is flushed and fsynced; on POSIX, the containing incoming directory is also fsynced so the newly created filename is durable across the acceptance boundary. Only then are the exact byte count and SHA-256 committed to the intake receipt using a dedicated SQLite transaction configured with `PRAGMA synchronous = FULL` before `BEGIN IMMEDIATE`. That FULL-synchronous receipt transition is the byte-acceptance linearization point: before it, interruption may safely fail the intake and discard staging; after it returns, recovery must preserve or reproduce exactly those accepted bytes even across process or machine power loss. Ordinary reconstructible application/catalog checkpoints remain on the database's normal WAL `synchronous=NORMAL` policy; FULL is reserved for this acceptance boundary rather than imposed on every write.
 
 AssetStore publishes a new canonical content-addressed blob with an atomic rename. On POSIX it then fsyncs the canonical shard-directory chain through the established runtime root before a new asset catalog row can commit. A committed new asset row therefore cannot intentionally outrun durability of the canonical blob directory entry. Windows uses the strongest portable file-fsync behavior available because Python does not expose a portable directory-fsync primitive there.
 
@@ -86,7 +86,7 @@ A probe or thumbnail failure does not delete an already accepted immutable asset
 
 ## Interruption recovery
 
-Application startup reconciles an intake left in `receiving` by process termination or power loss only after obtaining exclusive ownership of the runtime root. A file is considered accepted for interruption recovery only if its intake contains both the frozen SHA-256 and exact byte count.
+Application startup reconciles an intake left in `receiving` by process termination or power loss only after obtaining exclusive ownership of the runtime root. A file is considered accepted for interruption recovery only if its intake contains both the frozen SHA-256 and exact byte count from the FULL-synchronous acceptance transition.
 
 After that acceptance point, recovery can resume from progressively later durable representations:
 
@@ -97,7 +97,7 @@ After that acceptance point, recovery can resume from progressively later durabl
 
 A verified staging file is re-ingested through the existing AssetStore rather than promoted by path manipulation. If a catalog row exists but its canonical blob is missing, recovery may use exactly one authenticated surviving staging file to republish that same byte identity through AssetStore and requires convergence to the same catalog asset. This additionally repairs interrupted pre-hardening PR8 states from before canonical-directory durability was enforced. If no authenticated staging copy exists for a missing cataloged blob, recovery fails closed rather than retrying the contradiction indefinitely.
 
-If more than one staging file claims the intake, or its size/digest disagrees with the frozen receipt, recovery fails closed and does not accept those bytes. If AssetStore or SQLite publication is temporarily unavailable, for example because storage is still full or the catalog is temporarily locked, the accepted receipt and authenticated staging file remain resumable rather than being destroyed. Once a canonical/catalog Asset is established and verified, obsolete staging for that intake is discarded.
+If more than one staging file claims the intake, or its size/digest disagrees with the frozen receipt, recovery fails closed and does not accept those bytes. If AssetStore or SQLite publication is temporarily unavailable, for example because storage is still full or the catalog is temporarily locked, the accepted receipt and authenticated staging file remain resumable rather than being destroyed. Once a canonical/catalog Asset is established and verified, obsolete staging is no longer authoritative and cleanup becomes best-effort: an `EACCES`, `EIO`, or similar failure while deleting that obsolete copy cannot overturn an already completed `prepared`/`partial` upload or change its durable asset/project identity. A later maintenance pass may remove such residue.
 
 If the process died after the canonical content-addressed blob was atomically and durably published but before its `assets` row committed, recovery reconstructs only the neutral Asset metadata row after verifying the canonical blob against the frozen receipt. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
 
