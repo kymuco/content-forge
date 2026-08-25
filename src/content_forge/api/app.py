@@ -27,6 +27,19 @@ from content_forge.storage import LocalLibrary
 PAIRING_ID_PATTERN = r"^cf_pair_[0-9a-f]{32}$"
 PAIRING_CODE_PATTERN = r"^[0-9]{8}$"
 MULTIPART_OVERHEAD_BUDGET = 1024 * 1024
+PARSED_BODY_LIMIT = 128 * 1024
+_PREPARSE_AUTH_POST_ROUTES = frozenset(
+    {
+        "/api/v1/inbox/files",
+        "/api/v1/inbox/url-note",
+    }
+)
+_BOUNDED_PARSED_POST_ROUTES = frozenset(
+    {
+        "/api/v1/pairing/exchange",
+        "/api/v1/inbox/url-note",
+    }
+)
 
 
 class PairExchangeRequest(BaseModel):
@@ -212,8 +225,8 @@ def create_app(
     app.state.runtime_lease = runtime_lease
 
     @app.middleware("http")
-    async def protect_transport_and_upload_body(request: Request, call_next):
-        """Enforce LAN encryption and guard upload bodies before form parsing."""
+    async def protect_transport_and_request_bodies(request: Request, call_next):
+        """Enforce transport, pre-parser auth, and bounded parsed request bodies."""
 
         if not _transport_is_secure(request):
             return JSONResponse(
@@ -221,36 +234,54 @@ def create_app(
                 content={"detail": "non-loopback requests require HTTPS"},
             )
 
-        if request.method == "POST" and _route_relative_path(request) == "/api/v1/inbox/files":
-            try:
-                token = _authorization_token(request.headers.get("authorization"))
-                auth.authenticate(token)
-            except AuthenticationError as exc:
-                return JSONResponse(status_code=401, content={"detail": str(exc)})
+        route_path = _route_relative_path(request)
+        if request.method == "POST":
+            # Any authenticated route with a body must authenticate before FastAPI/
+            # Starlette parses or buffers that body. This prevents an unauthenticated
+            # caller from consuming multipart temp space or JSON body memory first.
+            if route_path in _PREPARSE_AUTH_POST_ROUTES:
+                try:
+                    token = _authorization_token(request.headers.get("authorization"))
+                    auth.authenticate(token)
+                except AuthenticationError as exc:
+                    return JSONResponse(status_code=401, content={"detail": str(exc)})
 
-            raw_length = request.headers.get("content-length")
-            if raw_length is None:
-                return JSONResponse(
-                    status_code=411,
-                    content={"detail": "Content-Length is required for file uploads"},
-                )
-            try:
-                content_length = int(raw_length)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "invalid Content-Length"},
-                )
-            if content_length < 0:
-                return JSONResponse(
-                    status_code=400,
-                    content={"detail": "invalid Content-Length"},
-                )
-            if content_length > max_upload_bytes + MULTIPART_OVERHEAD_BUDGET:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "multipart request exceeds upload limit"},
-                )
+            body_limit: int | None = None
+            body_kind = "request"
+            if route_path == "/api/v1/inbox/files":
+                body_limit = max_upload_bytes + MULTIPART_OVERHEAD_BUDGET
+                body_kind = "multipart request"
+            elif route_path in _BOUNDED_PARSED_POST_ROUTES:
+                # Pairing exchange is intentionally unauthenticated, while URL/note is
+                # authenticated above. Both are Pydantic parsed-body routes, so bound
+                # them before call_next rather than after Starlette has buffered JSON.
+                body_limit = PARSED_BODY_LIMIT
+                body_kind = "request body"
+
+            if body_limit is not None:
+                raw_length = request.headers.get("content-length")
+                if raw_length is None:
+                    return JSONResponse(
+                        status_code=411,
+                        content={"detail": "Content-Length is required for request bodies"},
+                    )
+                try:
+                    content_length = int(raw_length)
+                except ValueError:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "invalid Content-Length"},
+                    )
+                if content_length < 0:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "invalid Content-Length"},
+                    )
+                if content_length > body_limit:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": f"{body_kind} exceeds request limit"},
+                    )
         return await call_next(request)
 
     def bearer_token(authorization: str | None = Header(default=None)) -> str:
