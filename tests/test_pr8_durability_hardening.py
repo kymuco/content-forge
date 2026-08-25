@@ -66,8 +66,6 @@ def test_post_acceptance_assetstore_failure_preserves_verified_staging_for_recov
     assert staged is not None
     assert staged.read_bytes() == payload
 
-    # A restart while storage pressure still exists must not convert accepted bytes into
-    # terminal failure or delete the only authenticated copy.
     retry = service.reconcile_receiving()
     assert len(retry) == 1
     assert retry[0].state is IntakeState.RECEIVING
@@ -200,12 +198,13 @@ def test_tampered_accepted_staging_fails_terminally_instead_of_retrying_forever(
     assert service._staging_candidates(recovered[0]) == ()
 
 
-def test_staging_directory_is_synced_before_byte_acceptance_receipt(
+def test_staging_directory_and_full_sqlite_sync_precede_byte_acceptance_receipt(
     tmp_path, monkeypatch
 ) -> None:
     service = _service(tmp_path)
     _install_audio_probe(monkeypatch)
     directory_synced = False
+    saw_durable_acceptance = False
     original_transition = service.repository.transition_intake
 
     def mark_directory_sync(path):
@@ -213,13 +212,23 @@ def test_staging_directory_is_synced_before_byte_acceptance_receipt(
         assert path == service.library.paths.incoming
         directory_synced = True
 
-    def checked_transition(intake_id, *, expected_state, update):
+    def checked_transition(
+        intake_id,
+        *,
+        expected_state,
+        update,
+        durable=False,
+    ):
+        nonlocal saw_durable_acceptance
         if update.get("content_sha256") is not None:
             assert directory_synced, "byte receipt committed before incoming directory fsync"
+            assert durable is True, "byte acceptance must request FULL-synchronous commit"
+            saw_durable_acceptance = True
         return original_transition(
             intake_id,
             expected_state=expected_state,
             update=update,
+            durable=durable,
         )
 
     monkeypatch.setattr(inbox_module, "_fsync_directory", mark_directory_sync)
@@ -227,7 +236,54 @@ def test_staging_directory_is_synced_before_byte_acceptance_receipt(
 
     intake = service.ingest_upload(BytesIO(b"directory-durable"), filename="x.mp3")
     assert directory_synced
+    assert saw_durable_acceptance
     assert intake.state is IntakeState.PREPARED
+
+
+def test_durable_application_transaction_uses_sqlite_full_synchronous(tmp_path) -> None:
+    service = _service(tmp_path)
+
+    with service.repository._transaction(durable=True) as connection:
+        synchronous = int(connection.execute("PRAGMA synchronous").fetchone()[0])
+        assert synchronous == 2  # SQLite FULL
+
+
+def test_obsolete_staging_cleanup_failure_does_not_overturn_completed_upload(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_audio_probe(monkeypatch)
+    original_unlink = Path.unlink
+    cleanup_attempted = False
+
+    def fail_only_http_staging(path: Path, *args, **kwargs):
+        nonlocal cleanup_attempted
+        if (
+            path.parent == service.library.paths.incoming
+            and path.name.startswith("http-")
+        ):
+            cleanup_attempted = True
+            raise PermissionError("simulated EACCES removing obsolete staging")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_only_http_staging)
+
+    intake = service.ingest_upload(
+        BytesIO(b"cleanup-failure-must-not-overturn-success"),
+        filename="cleanup.mp3",
+    )
+
+    assert cleanup_attempted
+    assert intake.state is IntakeState.PREPARED
+    assert intake.asset_id is not None
+    assert intake.project_id is not None
+    asset = service.library.database.get_asset(intake.asset_id)
+    assert asset is not None
+    assert service.library.assets.verify(asset)
+    assert service.library.load_project(intake.project_id) is not None
+    persisted = service.get_intake(intake.intake_id)
+    assert persisted is not None
+    assert persisted.state is IntakeState.PREPARED
 
 
 def test_assetstore_syncs_blob_directory_chain_before_first_catalog_receipt(
