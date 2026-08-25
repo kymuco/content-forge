@@ -75,7 +75,23 @@ class RuntimePaths:
         )
 
     def ensure(self) -> "RuntimePaths":
+        # On POSIX, remember the nearest already-existing ancestor before recursive
+        # creation. Fsyncing only ``root`` after mkdir does not persist ``root``'s own
+        # directory entry, which belongs to its parent; when parents=True creates more
+        # than one directory, each newly-created entry must be covered through the first
+        # pre-existing ancestor. Windows has no portable Python directory-fsync primitive.
+        durability_boundary = self.root
+        if os.name != "nt":
+            while not durability_boundary.exists():
+                parent = durability_boundary.parent
+                if parent == durability_boundary:
+                    break
+                durability_boundary = parent
+
         self.root.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            fsync_directory_chain(self.root, stop_at=durability_boundary)
+
         self.assets.mkdir(parents=True, exist_ok=True)
         self.incoming.mkdir(parents=True, exist_ok=True)
         return self
