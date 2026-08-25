@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from content_forge.core import Asset, MediaType, OutputProfile, NormalizedRect
+import content_forge.render.ffmpeg.probe as probe_module
+from content_forge.core import Asset, MediaType, NormalizedRect, OutputProfile
 from content_forge.render.ffmpeg import (
     FFmpegCapabilities,
+    MediaProbeError,
     apply_probe_to_asset,
     parse_encoders,
     parse_filters,
@@ -73,6 +78,80 @@ def test_normalized_rect_resolves_from_edges_without_preview_drift() -> None:
     assert pixels.y == 96
     assert pixels.width == 180
     assert pixels.height == 480
+
+
+@pytest.mark.parametrize("stream_name", ["stdout", "stderr"])
+def test_ffprobe_capture_rejects_output_beyond_hard_byte_budget(stream_name: str) -> None:
+    limit = 8 * 1024
+    script = (
+        "import sys; "
+        f"stream = sys.{stream_name}.buffer; "
+        f"stream.write(b'x' * {limit + 1}); "
+        "stream.flush()"
+    )
+
+    with pytest.raises(MediaProbeError, match="output exceeded safe limit"):
+        probe_module._run_ffprobe_bounded(
+            (sys.executable, "-c", script),
+            timeout=5.0,
+            stdout_limit=limit,
+            stderr_limit=limit,
+        )
+
+
+def test_probe_media_requests_only_consumed_ffprobe_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "fixture.bin"
+    source.write_bytes(b"probe fixture")
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        arguments: tuple[str, ...],
+        *,
+        timeout: float,
+        stdout_limit: int = probe_module.FFPROBE_STDOUT_LIMIT_BYTES,
+        stderr_limit: int = probe_module.FFPROBE_STDERR_LIMIT_BYTES,
+    ) -> subprocess.CompletedProcess[str]:
+        captured["arguments"] = arguments
+        captured["timeout"] = timeout
+        captured["stdout_limit"] = stdout_limit
+        captured["stderr_limit"] = stderr_limit
+        payload = {
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "duration": "1.25",
+                }
+            ],
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "1.25"},
+        }
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    monkeypatch.setattr(probe_module, "_run_ffprobe_bounded", fake_run)
+
+    probe = probe_media(source, ffprobe_path="synthetic-ffprobe", timeout=3.0)
+
+    arguments = captured["arguments"]
+    assert isinstance(arguments, tuple)
+    assert "-show_entries" in arguments
+    entries = arguments[arguments.index("-show_entries") + 1]
+    assert entries == probe_module._FFPROBE_SHOW_ENTRIES
+    assert "tag" not in entries.lower()
+    assert "-show_streams" not in arguments
+    assert "-show_format" not in arguments
+    assert captured["timeout"] == 3.0
+    assert probe.has_audio is True
+    assert probe.has_video is False
+    assert probe.audio_codec == "aac"
+    assert probe.duration_seconds == 1.25
 
 
 def test_ffprobe_can_read_synthetic_ppm_and_enrich_asset(tmp_path: Path) -> None:
