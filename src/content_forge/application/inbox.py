@@ -541,8 +541,24 @@ class InboxService:
             intake, _project = self._ensure_project(intake)
             return self._prepare_receiving_file(intake, asset)
         except BaseException as exc:
-            current = self.repository.get_intake(intake.intake_id)
-            if current is not None and current.state is IntakeState.RECEIVING:
+            # Failure handling must not depend on being able to read the receipt again.
+            # Under the same disk/SQLite pressure that caused the primary failure,
+            # `get_intake()` may itself fail. In that case preserve any staging file
+            # conservatively and re-raise the original application failure; exclusive
+            # startup reconciliation can later decide from the durable receipt whether
+            # those bytes were accepted or are merely pre-acceptance garbage.
+            lookup_failed = False
+            try:
+                current = self.repository.get_intake(intake.intake_id)
+            except Exception:
+                retain_staging = staged is not None
+                lookup_failed = True
+                current = None
+            except BaseException:
+                retain_staging = staged is not None
+                raise
+
+            if not lookup_failed and current is not None and current.state is IntakeState.RECEIVING:
                 accepted = current.content_sha256 is not None and current.size_bytes is not None
                 if not isinstance(exc, Exception):
                     # Shutdown/control-flow signals are not application failures. Once the
