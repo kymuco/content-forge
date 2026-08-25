@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
@@ -112,3 +113,58 @@ def test_url_note_round_trip_and_session_revocation(tmp_path) -> None:
     revoked = client.delete("/api/v1/sessions/current", headers=headers)
     assert revoked.status_code == 204
     assert client.get("/api/v1/inbox", headers=headers).status_code == 401
+
+
+def test_mounted_upload_keeps_preparse_auth_and_length_guard(tmp_path) -> None:
+    child = create_app(root=tmp_path, max_upload_bytes=32)
+    parent = FastAPI()
+    parent.mount("/content-forge", child)
+    client = TestClient(parent)
+    try:
+        # This deliberately malformed multipart body would reach Starlette's parser if
+        # the child middleware matched the externally-prefixed URL instead of the
+        # route-relative ASGI path. Authentication must win before parsing.
+        blocked = client.post(
+            "/content-forge/api/v1/inbox/files",
+            content=b"not-valid-multipart",
+            headers={
+                "Host": "localhost",
+                "Content-Type": "multipart/form-data; boundary=cf-broken",
+            },
+        )
+        assert blocked.status_code == 401
+        assert child.state.inbox.list_intakes() == ()
+
+        challenge = client.post(
+            "/content-forge/api/v1/pairing/challenges",
+            headers=LOOPBACK_HEADERS,
+        )
+        assert challenge.status_code == 201
+        payload = challenge.json()
+        exchanged = client.post(
+            "/content-forge/api/v1/pairing/exchange",
+            headers=LOOPBACK_HEADERS,
+            json={
+                "challenge_id": payload["challenge_id"],
+                "code": payload["code"],
+                "label": "mounted-pytest",
+            },
+        )
+        assert exchanged.status_code == 200
+
+        request = client.build_request(
+            "POST",
+            "/content-forge/api/v1/inbox/files",
+            content=b"--cf--\r\n",
+            headers={
+                "Host": "localhost",
+                "Authorization": f"Bearer {exchanged.json()['token']}",
+                "Content-Type": "multipart/form-data; boundary=cf",
+            },
+        )
+        del request.headers["content-length"]
+        missing_length = client.send(request)
+        assert missing_length.status_code == 411
+        assert child.state.inbox.list_intakes() == ()
+    finally:
+        child.state.runtime_lease.close()
