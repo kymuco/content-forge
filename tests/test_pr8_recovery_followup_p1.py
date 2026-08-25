@@ -201,7 +201,7 @@ def test_url_note_shutdown_signal_remains_recoverable(tmp_path, monkeypatch) -> 
     assert recovered[0].project_id is not None
 
 
-def test_live_upload_operational_failure_after_project_linkage_is_retryable(
+def test_live_upload_operational_failure_after_project_linkage_returns_same_retryable_intake(
     tmp_path, monkeypatch
 ) -> None:
     service = _service(tmp_path)
@@ -221,16 +221,17 @@ def test_live_upload_operational_failure_after_project_linkage_is_retryable(
 
     monkeypatch.setattr(service, "_prepare_receiving_file", fail_once)
 
-    with pytest.raises(sqlite3.OperationalError):
-        service.ingest_upload(BytesIO(payload), filename="linked-retry.mp3")
+    retryable = service.ingest_upload(BytesIO(payload), filename="linked-retry.mp3")
 
-    items = service.list_intakes()
-    assert len(items) == 1
-    retryable = items[0]
     assert retryable.state is IntakeState.RECEIVING
     assert retryable.asset_id is not None
     assert retryable.project_id is not None
     assert retryable.error_code == "post_acceptance_retryable"
+    items = service.list_intakes()
+    assert len(items) == 1
+    assert items[0].intake_id == retryable.intake_id
+    assert items[0].asset_id == retryable.asset_id
+    assert items[0].project_id == retryable.project_id
     # AssetStore is already authoritative at this checkpoint, so obsolete staging need
     # not survive merely to make the receipt resumable.
     assert service._staging_candidates(retryable) == ()
@@ -238,9 +239,11 @@ def test_live_upload_operational_failure_after_project_linkage_is_retryable(
     recovered = service.reconcile_receiving()
 
     assert len(recovered) == 1
+    assert recovered[0].intake_id == retryable.intake_id
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].asset_id == retryable.asset_id
     assert recovered[0].project_id == retryable.project_id
+    assert len(service.list_intakes()) == 1
 
 
 def test_live_upload_retains_staging_when_failure_receipt_lookup_also_fails(
