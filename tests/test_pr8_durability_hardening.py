@@ -130,6 +130,51 @@ def test_sqlite_operational_storage_pressure_after_acceptance_remains_resumable(
     assert service._staging_candidates(recovered[0]) == ()
 
 
+def test_catalog_row_with_missing_blob_recovers_from_authenticated_staging(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    payload = b"catalog-row-survives-missing-blob"
+    original_ingest = service.library.assets.ingest_file
+
+    def publish_row_then_lose_blob(*args, **kwargs):
+        result = original_ingest(*args, **kwargs)
+        result.blob_path.unlink()
+        raise OSError("simulated pre-hardening unsynced blob loss")
+
+    monkeypatch.setattr(
+        service.library.assets,
+        "ingest_file",
+        publish_row_then_lose_blob,
+    )
+    with pytest.raises(OSError, match="unsynced blob loss"):
+        service.ingest_upload(BytesIO(payload), filename="legacy-window.mp3")
+
+    intake = service.list_intakes()[0]
+    assert intake.state is IntakeState.RECEIVING
+    assert intake.asset_id is None
+    assert intake.content_sha256 is not None
+    cataloged = service.library.database.get_asset_by_sha256(intake.content_sha256)
+    assert cataloged is not None
+    assert not service.library.paths.blob_path_for_sha256(intake.content_sha256).exists()
+    staged = service._verified_staging_candidate(intake)
+    assert staged is not None
+    assert staged.read_bytes() == payload
+
+    monkeypatch.setattr(service.library.assets, "ingest_file", original_ingest)
+    _install_audio_probe(monkeypatch)
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].asset_id == cataloged.asset_id
+    repaired = service.library.database.get_asset(cataloged.asset_id)
+    assert repaired is not None
+    assert service.library.assets.verify(repaired)
+    assert service.library.assets.resolve(repaired).read_bytes() == payload
+    assert service._staging_candidates(recovered[0]) == ()
+
+
 def test_tampered_accepted_staging_fails_terminally_instead_of_retrying_forever(
     tmp_path, monkeypatch
 ) -> None:
