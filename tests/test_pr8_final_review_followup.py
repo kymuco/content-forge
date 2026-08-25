@@ -160,7 +160,7 @@ def test_thumbnail_ffmpeg_launch_oserror_is_partial_generation_failure(
     assert service.reconcile_receiving() == ()
 
 
-def test_url_note_sqlite_operational_after_project_linkage_remains_recoverable(
+def test_url_note_sqlite_operational_after_project_linkage_returns_same_recoverable_intake(
     tmp_path, monkeypatch
 ) -> None:
     library = LocalLibrary(tmp_path)
@@ -189,24 +189,28 @@ def test_url_note_sqlite_operational_after_project_linkage_remains_recoverable(
 
     monkeypatch.setattr(repository, "transition_intake", fail_final_once)
 
-    with pytest.raises(sqlite3.OperationalError, match="locked"):
-        service.capture_url_note(
-            source_url="https://example.com/item",
-            note="retry me",
-        )
+    retryable = service.capture_url_note(
+        source_url="https://example.com/item",
+        note="retry me",
+    )
 
-    current = service.list_intakes()[0]
-    assert current.state is IntakeState.RECEIVING
-    assert current.project_id is not None
-    assert current.error_code == "capture_retryable"
-    project_id = current.project_id
+    assert retryable.state is IntakeState.RECEIVING
+    assert retryable.project_id is not None
+    assert retryable.error_code == "capture_retryable"
+    items = service.list_intakes()
+    assert len(items) == 1
+    assert items[0].intake_id == retryable.intake_id
+    assert items[0].project_id == retryable.project_id
+    project_id = retryable.project_id
 
     monkeypatch.setattr(repository, "transition_intake", original_transition)
     recovered = service.reconcile_receiving()
 
     assert len(recovered) == 1
+    assert recovered[0].intake_id == retryable.intake_id
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].project_id == project_id
+    assert len(service.list_intakes()) == 1
     project = service.library.load_project(project_id)
     assert project is not None
     assert project.metadata["inbox_intake_id"] == recovered[0].intake_id
