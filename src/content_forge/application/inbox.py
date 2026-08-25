@@ -21,6 +21,7 @@ from content_forge.core import (
 )
 from content_forge.render.ffmpeg import MediaProbeError, probe_media
 from content_forge.storage import LocalLibrary, sha256_file
+from content_forge.storage.paths import fsync_directory_chain
 
 from .media import (
     ThumbnailError,
@@ -268,6 +269,12 @@ class InboxService:
                     raise InboxError("recovery blob size disagrees with Inbox receipt")
                 if sha256_file(blob_path) != intake.content_sha256:
                     raise InboxError("recovery blob digest disagrees with Inbox receipt")
+                # A canonical pathname can survive a process interruption even when the
+                # AssetStore directory-fsync step itself failed. Re-establish that
+                # durability barrier before the first catalog row is allowed to commit.
+                # If this raises an operational OSError, reconciliation leaves the FULL-
+                # accepted receipt/staging resumable and retries on a later startup.
+                fsync_directory_chain(blob_path.parent, stop_at=self.library.paths.root)
                 asset = self.library.database.put_asset(
                     Asset(
                         sha256=intake.content_sha256,
@@ -625,6 +632,8 @@ class InboxService:
         A file is accepted only once exact digest+size are durable. From that point,
         startup can recover from durable staging, canonical-blob publication, asset
         catalog, provenance, deterministic project, and receipt-link interruptions.
+        Control-flow exceptions such as KeyboardInterrupt/SystemExit are never recovery
+        failures: they propagate without mutating the receipt or deleting staging.
         """
 
         recovered: list[InboxIntake] = []
@@ -660,7 +669,7 @@ class InboxService:
                             update={"state": IntakeState.PREPARED},
                         )
                     )
-            except BaseException as exc:
+            except Exception as exc:
                 current = self.repository.get_intake(original.intake_id)
                 if current is not None and current.state is IntakeState.RECEIVING:
                     accepted_unlinked_file = (
