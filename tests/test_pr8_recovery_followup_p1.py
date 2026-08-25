@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 
 import content_forge.application.inbox as inbox_module
 import content_forge.storage.asset_store as asset_store_module
+import content_forge.storage.paths as paths_module
 from content_forge.application import ApplicationRepository, InboxService, IntakeState
 from content_forge.render.ffmpeg import MediaProbe
 from content_forge.storage import LocalLibrary
@@ -239,3 +241,66 @@ def test_live_upload_operational_failure_after_project_linkage_is_retryable(
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].asset_id == retryable.asset_id
     assert recovered[0].project_id == retryable.project_id
+
+
+def test_live_upload_retains_staging_when_failure_receipt_lookup_also_fails(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_audio_probe(monkeypatch)
+    payload = b"accepted-staging-must-survive-secondary-receipt-read-failure"
+    original_ingest = service.library.assets.ingest_file
+    original_get_intake = service.repository.get_intake
+
+    def fail_asset_publish(*args, **kwargs):
+        raise OSError("simulated AssetStore ENOSPC")
+
+    def fail_receipt_lookup(*args, **kwargs):
+        raise sqlite3.OperationalError("simulated SQLite pressure during failure lookup")
+
+    monkeypatch.setattr(service.library.assets, "ingest_file", fail_asset_publish)
+    monkeypatch.setattr(service.repository, "get_intake", fail_receipt_lookup)
+
+    with pytest.raises(OSError, match="AssetStore ENOSPC"):
+        service.ingest_upload(BytesIO(payload), filename="lookup-failure.mp3")
+
+    # Use the original bound method to inspect the durable receipt while the simulated
+    # repository read failure remains installed on the service object.
+    interrupted = next(iter(service.repository.list_intakes_in_state(IntakeState.RECEIVING)))
+    assert original_get_intake(interrupted.intake_id) == interrupted
+    assert interrupted.content_sha256 is not None
+    assert interrupted.size_bytes == len(payload)
+    assert interrupted.asset_id is None
+    staged = service._verified_staging_candidate(interrupted)
+    assert staged is not None
+    assert staged.read_bytes() == payload
+
+    monkeypatch.setattr(service.repository, "get_intake", original_get_intake)
+    monkeypatch.setattr(service.library.assets, "ingest_file", original_ingest)
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].asset_id is not None
+    assert service._staging_candidates(recovered[0]) == ()
+
+
+def test_fresh_runtime_root_is_synced_through_preexisting_parent(
+    tmp_path, monkeypatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("portable directory fsync is unavailable on Windows")
+
+    root = tmp_path / "new-parent" / "runtime"
+    calls: list[tuple[Path, Path]] = []
+
+    def record_chain(path, *, stop_at):
+        calls.append((Path(path).resolve(), Path(stop_at).resolve()))
+
+    monkeypatch.setattr(paths_module, "fsync_directory_chain", record_chain)
+
+    paths = paths_module.RuntimePaths.from_root(root).ensure()
+
+    assert paths.root == root
+    assert root.is_dir()
+    assert calls == [(root.resolve(), tmp_path.resolve())]
