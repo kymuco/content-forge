@@ -132,3 +132,67 @@ def test_project_linked_canonical_repair_eio_preserves_receipt_and_staging(
     repaired = service.library.database.get_asset(prepared.asset_id)
     assert repaired is not None
     assert service.library.assets.verify(repaired)
+
+
+def test_live_upload_shutdown_after_full_acceptance_preserves_receipt_and_staging(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    _install_audio_probe(monkeypatch)
+    payload = b"accepted-live-upload-must-survive-shutdown"
+    original_ingest = service.library.assets.ingest_file
+
+    def interrupt_ingest(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service.library.assets, "ingest_file", interrupt_ingest)
+
+    with pytest.raises(KeyboardInterrupt):
+        service.ingest_upload(BytesIO(payload), filename="shutdown.mp3")
+
+    items = service.list_intakes()
+    assert len(items) == 1
+    interrupted = items[0]
+    assert interrupted.state is IntakeState.RECEIVING
+    assert interrupted.content_sha256 is not None
+    assert interrupted.size_bytes == len(payload)
+    assert interrupted.asset_id is None
+    staged = service._verified_staging_candidate(interrupted)
+    assert staged is not None
+    assert staged.read_bytes() == payload
+
+    monkeypatch.setattr(service.library.assets, "ingest_file", original_ingest)
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].asset_id is not None
+    assert service._staging_candidates(recovered[0]) == ()
+
+
+def test_url_note_shutdown_signal_remains_recoverable(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path)
+    original_ensure_project = service._ensure_project
+
+    def interrupt_project(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service, "_ensure_project", interrupt_project)
+
+    with pytest.raises(KeyboardInterrupt):
+        service.capture_url_note(
+            source_url="https://example.invalid/shutdown",
+            note="recover after shutdown",
+        )
+
+    items = service.list_intakes()
+    assert len(items) == 1
+    assert items[0].state is IntakeState.RECEIVING
+    assert items[0].project_id is None
+
+    monkeypatch.setattr(service, "_ensure_project", original_ensure_project)
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].project_id is not None
