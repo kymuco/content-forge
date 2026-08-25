@@ -8,6 +8,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from content_forge.core import Asset, MediaType
 from content_forge.render.ffmpeg import MediaProbe, apply_probe_to_asset
@@ -38,6 +39,9 @@ IMAGE_FORMAT_TOKENS = {
     "gif",
 }
 
+THUMBNAIL_STDERR_LIMIT_BYTES = 256 * 1024
+_THUMBNAIL_STDERR_READ_CHUNK_BYTES = 64 * 1024
+
 # FastAPI executes synchronous upload handlers in a thread pool. Equal source bytes share
 # one canonical derivative path, so publication must be serialized even in the supported
 # single-process server. Fixed stripes avoid an unbounded lock registry while ensuring a
@@ -47,6 +51,101 @@ _THUMBNAIL_PUBLICATION_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 def _thumbnail_publication_lock(storage_key: str) -> threading.Lock:
     return _THUMBNAIL_PUBLICATION_LOCKS[hash(storage_key) % len(_THUMBNAIL_PUBLICATION_LOCKS)]
+
+
+def _kill_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _run_thumbnail_ffmpeg_bounded(
+    arguments: tuple[str, ...],
+    *,
+    timeout: float,
+    stderr_limit: int = THUMBNAIL_STDERR_LIMIT_BYTES,
+) -> subprocess.CompletedProcess[str]:
+    """Run thumbnail FFmpeg without buffering attacker-controlled diagnostics.
+
+    Thumbnail generation never consumes stdout, so it is sent directly to DEVNULL. FFmpeg
+    stderr can grow rapidly for malformed media even under a wall-clock timeout, therefore
+    one reader drains it concurrently while retaining only a hard byte budget. Crossing the
+    budget terminates FFmpeg immediately and is classified as a bounded generation failure.
+    """
+
+    if stderr_limit < 1:
+        raise ValueError("thumbnail stderr limit must be positive")
+
+    try:
+        process = subprocess.Popen(
+            arguments,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+    except OSError as exc:
+        # Keep launch/configuration failures distinct from later filesystem publication
+        # failures. Callers intentionally treat this as a terminal thumbnail outcome.
+        raise ThumbnailError("thumbnail execution could not start") from exc
+
+    assert process.stderr is not None
+    output_exceeded = threading.Event()
+    reader_errors: list[Exception] = []
+    stderr_chunks: list[bytes] = []
+
+    def drain_stderr(stream: BinaryIO) -> None:
+        total = 0
+        try:
+            while True:
+                chunk = stream.read(_THUMBNAIL_STDERR_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                remaining = stderr_limit - total
+                if remaining > 0:
+                    stderr_chunks.append(chunk[:remaining])
+                total += len(chunk)
+                if total > stderr_limit:
+                    output_exceeded.set()
+                    _kill_process(process)
+                    # Continue draining until EOF while process termination is delivered.
+        except Exception as exc:  # pragma: no cover - defensive OS/pipe boundary
+            reader_errors.append(exc)
+            _kill_process(process)
+
+    stderr_reader = threading.Thread(
+        target=drain_stderr,
+        args=(process.stderr,),
+        name="content-forge-thumbnail-stderr",
+        daemon=True,
+    )
+    stderr_reader.start()
+
+    timed_out = False
+    try:
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process(process)
+            returncode = process.wait()
+    finally:
+        stderr_reader.join()
+        process.stderr.close()
+
+    if timed_out:
+        raise ThumbnailError("thumbnail execution timed out")
+    if reader_errors:
+        raise ThumbnailError("thumbnail output capture failed") from reader_errors[0]
+    if output_exceeded.is_set():
+        raise ThumbnailError("thumbnail output exceeded safe limit")
+
+    return subprocess.CompletedProcess(
+        arguments,
+        returncode,
+        stdout="",
+        stderr=b"".join(stderr_chunks).decode("utf-8", errors="replace"),
+    )
 
 
 def authoritative_media_classification(probe: MediaProbe) -> tuple[MediaType, str]:
@@ -257,25 +356,7 @@ def generate_thumbnail(
             str(temporary),
         )
         try:
-            try:
-                completed = subprocess.run(
-                    arguments,
-                    check=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=timeout,
-                    shell=False,
-                )
-            except OSError as exc:
-                # Failure to launch the configured FFmpeg binary is a media-preparation
-                # configuration/generation failure, not evidence that thumbnail storage
-                # itself is temporarily unavailable. Keep this catch scoped strictly to
-                # subprocess launch so publication/fsync OSError still propagates to the
-                # caller's post-acceptance operational retry policy.
-                raise ThumbnailError("thumbnail execution could not start") from exc
+            completed = _run_thumbnail_ffmpeg_bounded(arguments, timeout=timeout)
             if completed.returncode != 0:
                 raise ThumbnailError(
                     f"ffmpeg thumbnail failed ({completed.returncode}): "
@@ -297,11 +378,7 @@ def generate_thumbnail(
                 width=width,
                 height=height,
             )
-        except subprocess.TimeoutExpired as exc:
-            # A bounded FFmpeg execution/content-generation failure is a terminal media
-            # preparation outcome for this intake. Filesystem/database OSError is
-            # intentionally *not* converted here: the caller classifies those failures
-            # as operational and keeps the FULL-accepted intake RECEIVING for retry.
-            raise ThumbnailError(f"thumbnail execution timed out: {exc}") from exc
         finally:
+            # Publication/storage OSError intentionally remains unwrapped so the caller's
+            # post-acceptance operational policy can preserve RECEIVING and retry later.
             temporary.unlink(missing_ok=True)
