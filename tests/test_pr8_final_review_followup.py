@@ -108,20 +108,22 @@ def test_thumbnail_directory_sync_oserror_keeps_intake_retryable(tmp_path, monke
 
     monkeypatch.setattr(media_module, "fsync_directory_chain", fail_once)
 
-    with pytest.raises(OSError, match="thumbnail directory fsync EIO"):
-        service.ingest_upload(BytesIO(payload), filename="visual.mp4")
+    retryable = service.ingest_upload(BytesIO(payload), filename="visual.mp4")
 
-    items = service.list_intakes()
-    assert len(items) == 1
-    retryable = items[0]
     assert retryable.state is IntakeState.RECEIVING
     assert retryable.asset_id is not None
     assert retryable.project_id is not None
     assert retryable.error_code == "post_acceptance_retryable"
+    items = service.list_intakes()
+    assert len(items) == 1
+    assert items[0].intake_id == retryable.intake_id
+    assert items[0].asset_id == retryable.asset_id
+    assert items[0].project_id == retryable.project_id
 
     recovered = service.reconcile_receiving()
 
     assert len(recovered) == 1
+    assert recovered[0].intake_id == retryable.intake_id
     assert recovered[0].state is IntakeState.PREPARED
     assert recovered[0].asset_id == retryable.asset_id
     assert recovered[0].project_id == retryable.project_id
