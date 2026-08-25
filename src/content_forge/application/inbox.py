@@ -492,8 +492,12 @@ class InboxService:
                 os.fsync(handle.fileno())
 
             # File fsync alone does not make a newly-created filename durable on POSIX.
-            # Persist the incoming-directory entry before publishing the byte receipt.
+            # Persist both the staged filename and the complete directory chain through
+            # the established runtime root before publishing the FULL byte receipt. This
+            # matters on the first upload where `.incoming` and its parents may themselves
+            # be newly-created directory entries.
             _fsync_directory(staged.parent)
+            fsync_directory_chain(staged.parent, stop_at=self.library.paths.root)
             content_sha256 = digest.hexdigest()
             # This is the byte-acceptance linearization point. Before this durable receipt
             # exists, a crash may safely fail the intake. After it exists, the verified
@@ -672,22 +676,22 @@ class InboxService:
             except Exception as exc:
                 current = self.repository.get_intake(original.intake_id)
                 if current is not None and current.state is IntakeState.RECEIVING:
-                    accepted_unlinked_file = (
+                    accepted_file = (
                         current.kind is IntakeKind.FILE
                         and current.content_sha256 is not None
                         and current.size_bytes is not None
-                        and current.project_id is None
                     )
                     retryable_storage_error = isinstance(
                         exc,
                         (OSError, sqlite3.OperationalError),
                     )
-                    if accepted_unlinked_file and retryable_storage_error:
-                        # Operational filesystem or SQLite failures (for example ENOSPC,
-                        # a busy/locked catalog, or inability to complete a storage
-                        # operation) are retryable after byte acceptance. Integrity and
-                        # linkage contradictions use different exception types and fall
-                        # through to the explicit terminal path below.
+                    if accepted_file and retryable_storage_error:
+                        # Once exact bytes are FULL-accepted, operational filesystem or
+                        # SQLite failures stay retryable even if provenance/project links
+                        # already exist. A linked project does not make a newly repaired
+                        # canonical directory entry durable, so staging must survive until
+                        # the storage barrier succeeds. Integrity/linkage contradictions
+                        # use different exception types and still fail closed below.
                         recovered.append(current)
                         continue
                     try:
