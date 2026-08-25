@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 import content_forge.application.media as media_module
 from content_forge.application import ApplicationRepository
-from content_forge.application.media import generate_thumbnail
+from content_forge.application.media import ThumbnailError, generate_thumbnail
 from content_forge.core import MediaType
 from content_forge.storage import LocalLibrary
 
@@ -49,6 +52,42 @@ def test_authoritative_enrichment_repairs_legacy_classification(tmp_path) -> Non
     assert repaired.created_at == legacy.created_at
 
 
+def test_thumbnail_ffmpeg_stderr_overflow_is_bounded_generation_failure() -> None:
+    limit = 8 * 1024
+    script = (
+        "import sys; "
+        f"sys.stderr.buffer.write(b'x' * {limit + 1}); "
+        "sys.stderr.buffer.flush()"
+    )
+
+    with pytest.raises(ThumbnailError, match="output exceeded safe limit"):
+        media_module._run_thumbnail_ffmpeg_bounded(
+            (sys.executable, "-c", script),
+            timeout=5.0,
+            stderr_limit=limit,
+        )
+
+
+def test_thumbnail_ffmpeg_discards_unused_stdout_without_capture_budget() -> None:
+    # stdout is intentionally irrelevant to thumbnail generation. A child may write far
+    # more than the diagnostic budget without consuming application memory or blocking.
+    script = (
+        "import sys; "
+        "sys.stdout.buffer.write(b'x' * (1024 * 1024)); "
+        "sys.stdout.buffer.flush()"
+    )
+
+    completed = media_module._run_thumbnail_ffmpeg_bounded(
+        (sys.executable, "-c", script),
+        timeout=5.0,
+        stderr_limit=1024,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+
+
 def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch) -> None:
     library = LocalLibrary(tmp_path)
     source = tmp_path / "source.png"
@@ -64,7 +103,7 @@ def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch)
     call_count = 0
     count_lock = threading.Lock()
 
-    def fake_run(arguments, **kwargs):
+    def fake_runner(arguments, *, timeout, stderr_limit=media_module.THUMBNAIL_STDERR_LIMIT_BYTES):
         nonlocal call_count
         with count_lock:
             call_count += 1
@@ -74,7 +113,7 @@ def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch)
         Path(arguments[-1]).write_bytes(b"synthetic-jpeg")
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
-    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(media_module, "_run_thumbnail_ffmpeg_bounded", fake_runner)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
