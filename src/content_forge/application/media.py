@@ -286,7 +286,11 @@ def generate_thumbnail(
                 width=width,
                 height=height,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ThumbnailError(f"thumbnail execution failed: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            # A bounded FFmpeg execution/content-generation failure is a terminal media
+            # preparation outcome for this intake. Filesystem/database OSError is
+            # intentionally *not* converted here: the caller classifies those failures
+            # as operational and keeps the FULL-accepted intake RECEIVING for retry.
+            raise ThumbnailError(f"thumbnail execution timed out: {exc}") from exc
         finally:
             temporary.unlink(missing_ok=True)
