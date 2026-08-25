@@ -56,7 +56,9 @@ pre-parse bearer authentication + Content-Length bound
 -> flush + fsync staging file
 -> fsync containing staging directory where supported
 -> freeze exact size + SHA-256 in the intake receipt   [byte acceptance]
--> existing AssetStore bytes ingest + SHA-256 deduplication
+-> AssetStore content-addressed ingest + SHA-256 deduplication
+-> atomic canonical-blob publish
+-> fsync canonical blob directory chain where supported
 -> durable asset linkage checkpoint
 -> idempotent source/provenance record
 -> deterministic Project(state=INBOX)
@@ -70,7 +72,9 @@ FastAPI/Starlette would normally parse/spool `UploadFile` before endpoint depend
 
 The application computes SHA-256 while copying the bounded upload. The complete staging file is flushed and fsynced; on POSIX, the containing incoming directory is also fsynced so the newly created filename is durable across the acceptance boundary. Only then are the exact byte count and SHA-256 committed to the intake receipt. That receipt transition is the byte-acceptance linearization point: before it, interruption may safely fail the intake and discard staging; after it, recovery must preserve or reproduce exactly those accepted bytes.
 
-After byte acceptance but before a durable project checkpoint, transient filesystem/storage failures such as exhausted disk space do not terminally fail the intake. The receipt remains `receiving`; if no verified canonical/catalog Asset exists yet, the authenticated staging file is retained as the recovery authority. A later exclusive startup retries the handoff. Integrity failures are different: an ambiguous staging set, a size/digest mismatch, inconsistent linkage, or another non-transient recovery contradiction fails closed instead of retrying forever.
+AssetStore publishes a new canonical content-addressed blob with an atomic rename. On POSIX it then fsyncs the canonical shard-directory chain through the established runtime root before a new asset catalog row can commit. A committed new asset row therefore cannot intentionally outrun durability of the canonical blob directory entry. Windows uses the strongest portable file-fsync behavior available because Python does not expose a portable directory-fsync primitive there.
+
+After byte acceptance but before a durable project checkpoint, transient operational storage failures do not terminally fail the intake. This includes filesystem failures such as exhausted disk space and SQLite operational failures such as a temporarily locked/busy catalog or database disk-pressure error. The receipt remains `receiving`; when no verified canonical/catalog Asset exists yet, the authenticated staging file is retained as the recovery authority. A later exclusive startup retries the handoff. Integrity failures are different: an ambiguous staging set, a size/digest mismatch, inconsistent linkage, a present-but-corrupt canonical blob, or another non-transient recovery contradiction fails closed instead of retrying forever.
 
 Provenance receives a stable source ID in the initial intake receipt. AssetStore is used for immutable bytes/deduplication without creating provenance inside the same opaque call; after the asset checkpoint, the reserved provenance record and Inbox project are attached idempotently. This ordering makes the post-acceptance cross-store handoffs discoverable and resumable.
 
@@ -86,14 +90,16 @@ Application startup reconciles an intake left in `receiving` by process terminat
 
 After that acceptance point, recovery can resume from progressively later durable representations:
 
-1. an already-linked verified Asset;
-2. an Asset catalog row found by the frozen SHA-256;
+1. an already-linked Asset whose canonical bytes verify;
+2. an Asset catalog row found by the frozen SHA-256 whose canonical bytes verify;
 3. the canonical content-addressed blob, if its expected path, exact size, and SHA-256 all verify;
 4. the surviving application staging file, but only when exactly one file belongs to that intake and its exact size and SHA-256 match the frozen receipt.
 
-A verified staging file is re-ingested through the existing AssetStore rather than promoted by path manipulation. If more than one staging file claims the intake, or its size/digest disagrees with the frozen receipt, recovery fails closed and does not accept those bytes. If AssetStore publication is temporarily unavailable, for example because storage is still full, the accepted receipt and authenticated staging file remain resumable rather than being destroyed. Once a canonical/catalog Asset is established and verified, obsolete staging for that intake is discarded.
+A verified staging file is re-ingested through the existing AssetStore rather than promoted by path manipulation. If a catalog row exists but its canonical blob is missing, recovery may use exactly one authenticated surviving staging file to republish that same byte identity through AssetStore and requires convergence to the same catalog asset. This additionally repairs interrupted pre-hardening PR8 states from before canonical-directory durability was enforced. If no authenticated staging copy exists for a missing cataloged blob, recovery fails closed rather than retrying the contradiction indefinitely.
 
-If the process died after the canonical content-addressed blob was atomically published but before its `assets` row committed, recovery reconstructs only the neutral Asset metadata row after verifying the canonical blob against the frozen receipt. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
+If more than one staging file claims the intake, or its size/digest disagrees with the frozen receipt, recovery fails closed and does not accept those bytes. If AssetStore or SQLite publication is temporarily unavailable, for example because storage is still full or the catalog is temporarily locked, the accepted receipt and authenticated staging file remain resumable rather than being destroyed. Once a canonical/catalog Asset is established and verified, obsolete staging for that intake is discarded.
+
+If the process died after the canonical content-addressed blob was atomically and durably published but before its `assets` row committed, recovery reconstructs only the neutral Asset metadata row after verifying the canonical blob against the frozen receipt. It then restores the reserved SourceRecord, project linkage, and media preparation idempotently.
 
 Project identity is deterministically derived from the intake's UUID payload and project timestamps are frozen to intake creation time. Recovery of an accepted unlinked intake therefore converges on the same canonical project ID and manifest instead of allocating duplicate random projects. SQLite receipt transitions remain serialized/CAS-checked. Pre-hardening PR8 receipts with an older randomly allocated project remain discoverable through `metadata.inbox_intake_id`.
 
@@ -105,7 +111,7 @@ URL/note intake deliberately does not create a fake `Asset` or fake `SourceRecor
 
 ## Thumbnail derivative
 
-PR8 writes a deterministic JPEG derivative under a runtime-relative key derived from source SHA-256 and thumbnail spec, then records it through the existing `DerivativeSlot` mechanism. Publication is atomic: FFmpeg writes a same-directory temporary JPEG and the final path appears only after a non-empty output is produced and fsynced. Process-local publication for a canonical thumbnail key is serialized; because the runtime root has exactly one live API owner, concurrent requests for identical bytes converge on one publication rather than deleting or replacing each other's output. Reuse requires an existing derivative receipt whose canonical key, source digest, and output digest match the bytes. Serving repeats those checks and fails closed on tampering.
+PR8 writes a deterministic JPEG derivative under a runtime-relative key derived from source SHA-256 and thumbnail spec, then records it through the existing `DerivativeSlot` mechanism. Publication is receipt-safe: FFmpeg writes a same-directory temporary JPEG, the temporary file is fsynced, it is atomically renamed to the canonical path, and on POSIX the thumbnail shard-directory chain is fsynced through the established runtime root before the derivative-slot receipt is committed. A receipt therefore does not intentionally outrun durability of the canonical thumbnail directory entry. Process-local publication for a canonical thumbnail key is serialized; because the runtime root has exactly one live API owner, concurrent requests for identical bytes converge on one publication rather than deleting or replacing each other's output. Reuse requires an existing derivative receipt whose canonical key, source digest, and output digest match the bytes. Serving repeats those checks and fails closed on tampering.
 
 ## Explicit non-goals
 
