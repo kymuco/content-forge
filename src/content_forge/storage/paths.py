@@ -27,6 +27,36 @@ def default_runtime_root() -> Path:
     return Path.home() / ".local" / "share" / "content-forge"
 
 
+def fsync_directory_chain(path: str | Path, *, stop_at: str | Path) -> None:
+    """Make directory entries durable from ``path`` through ``stop_at`` on POSIX.
+
+    Fsyncing a newly-written file is not enough to guarantee that a rename or newly
+    created directory hierarchy survives power loss. Callers publish into sharded runtime
+    directories, so sync every directory in that chain after the final atomic rename and
+    before committing the corresponding SQLite receipt. Windows has no portable Python
+    directory-fsync primitive, so this is intentionally a no-op there.
+    """
+
+    if os.name == "nt":
+        return
+
+    current = Path(path).resolve()
+    boundary = Path(stop_at).resolve()
+    if current != boundary and boundary not in current.parents:
+        raise ValueError("directory durability path must be inside stop_at")
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    while True:
+        descriptor = os.open(current, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if current == boundary:
+            break
+        current = current.parent
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimePaths:
     root: Path
