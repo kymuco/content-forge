@@ -544,41 +544,49 @@ class InboxService:
             current = self.repository.get_intake(intake.intake_id)
             if current is not None and current.state is IntakeState.RECEIVING:
                 accepted = current.content_sha256 is not None and current.size_bytes is not None
-                project_checkpointed = current.project_id is not None
-                if accepted and not project_checkpointed:
-                    # Accepted bytes and incomplete cross-store linkage are resumable, not
-                    # terminal. Preserve the receipt in RECEIVING so startup can finish
-                    # AssetStore/provenance/project publication. If no Asset is catalogued
-                    # yet, the verified staging file remains the recovery authority.
-                    retain_staging = current.asset_id is None
-                    try:
-                        self.repository.transition_intake(
-                            current.intake_id,
-                            expected_state=IntakeState.RECEIVING,
-                            update={
-                                "state": IntakeState.RECEIVING,
-                                "error_code": "post_acceptance_retryable",
-                                "error_message": "accepted upload awaits recovery",
-                            },
-                        )
-                    except Exception:
-                        pass
+                if not isinstance(exc, Exception):
+                    # Shutdown/control-flow signals are not application failures. Once the
+                    # FULL byte receipt exists, retain the authenticated staging authority
+                    # until a canonical Asset receipt exists, then let exclusive startup
+                    # reconciliation resume from whichever durable checkpoint survived.
+                    retain_staging = accepted and current.asset_id is None
                 else:
-                    try:
-                        self.repository.transition_intake(
-                            current.intake_id,
-                            expected_state=IntakeState.RECEIVING,
-                            update={
-                                "state": IntakeState.FAILED,
-                                "size_bytes": size_bytes,
-                                "probe_state": PreparationState.SKIPPED,
-                                "thumbnail_state": PreparationState.SKIPPED,
-                                "error_code": type(exc).__name__,
-                                "error_message": _public_failure_message(exc),
-                            },
-                        )
-                    except Exception:
-                        pass
+                    project_checkpointed = current.project_id is not None
+                    if accepted and not project_checkpointed:
+                        # Accepted bytes and incomplete cross-store linkage are resumable,
+                        # not terminal. Preserve the receipt in RECEIVING so startup can
+                        # finish AssetStore/provenance/project publication. If no Asset is
+                        # catalogued yet, the verified staging file remains the recovery
+                        # authority.
+                        retain_staging = current.asset_id is None
+                        try:
+                            self.repository.transition_intake(
+                                current.intake_id,
+                                expected_state=IntakeState.RECEIVING,
+                                update={
+                                    "state": IntakeState.RECEIVING,
+                                    "error_code": "post_acceptance_retryable",
+                                    "error_message": "accepted upload awaits recovery",
+                                },
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            self.repository.transition_intake(
+                                current.intake_id,
+                                expected_state=IntakeState.RECEIVING,
+                                update={
+                                    "state": IntakeState.FAILED,
+                                    "size_bytes": size_bytes,
+                                    "probe_state": PreparationState.SKIPPED,
+                                    "thumbnail_state": PreparationState.SKIPPED,
+                                    "error_code": type(exc).__name__,
+                                    "error_message": _public_failure_message(exc),
+                                },
+                            )
+                        except Exception:
+                            pass
             raise
         finally:
             if descriptor is not None:
@@ -615,7 +623,7 @@ class InboxService:
                 expected_state=IntakeState.RECEIVING,
                 update={"state": IntakeState.PREPARED},
             )
-        except BaseException as exc:
+        except Exception as exc:
             try:
                 self.repository.transition_intake(
                     intake.intake_id,
