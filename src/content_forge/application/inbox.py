@@ -583,7 +583,7 @@ class InboxService:
                         # staging remains the recovery authority.
                         retain_staging = current.asset_id is None
                         try:
-                            self.repository.transition_intake(
+                            retryable = self.repository.transition_intake(
                                 current.intake_id,
                                 expected_state=IntakeState.RECEIVING,
                                 update={
@@ -593,7 +593,13 @@ class InboxService:
                                 },
                             )
                         except Exception:
-                            pass
+                            retryable = current
+                        if retryable_operational:
+                            # The durable receipt reread above already confirmed that the
+                            # FULL byte-acceptance boundary committed. Returning that same
+                            # RECEIVING identity prevents a normal client retry from
+                            # allocating a duplicate intake/project while recovery finishes.
+                            return retryable
                     else:
                         try:
                             self.repository.transition_intake(
