@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from fractions import Fraction
 from pathlib import Path
+from typing import BinaryIO
 
 from content_forge.core import Asset, MediaType
 
@@ -14,6 +16,16 @@ from .models import MediaProbe
 
 class MediaProbeError(RuntimeError):
     pass
+
+
+FFPROBE_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024
+FFPROBE_STDERR_LIMIT_BYTES = 256 * 1024
+_FFPROBE_READ_CHUNK_BYTES = 64 * 1024
+_FFPROBE_SHOW_ENTRIES = (
+    "format=format_name,duration:"
+    "stream=codec_type,codec_name,duration,width,height,avg_frame_rate,r_frame_rate:"
+    "stream_disposition=attached_pic"
+)
 
 
 def _positive_float(value: object) -> float | None:
@@ -45,6 +57,115 @@ def _is_attached_picture(stream: object) -> bool:
     return disposition.get("attached_pic") in {1, True, "1"}
 
 
+def _kill_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _run_ffprobe_bounded(
+    arguments: tuple[str, ...],
+    *,
+    timeout: float,
+    stdout_limit: int = FFPROBE_STDOUT_LIMIT_BYTES,
+    stderr_limit: int = FFPROBE_STDERR_LIMIT_BYTES,
+) -> subprocess.CompletedProcess[str]:
+    """Run ffprobe while imposing hard in-memory output bounds.
+
+    `subprocess.run(..., stdout=PIPE, stderr=PIPE)` buffers both streams completely before
+    returning. Media containers can carry attacker-controlled metadata and stream counts,
+    so timeout and input-size limits alone do not bound that memory. Two readers drain the
+    pipes concurrently, retain at most the configured byte budget, and terminate ffprobe
+    immediately when either stream crosses its limit.
+    """
+
+    if stdout_limit < 1 or stderr_limit < 1:
+        raise ValueError("ffprobe output limits must be positive")
+
+    try:
+        process = subprocess.Popen(
+            arguments,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+        )
+    except OSError as exc:
+        raise MediaProbeError(f"ffprobe execution failed: {exc}") from exc
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    output_exceeded = threading.Event()
+    reader_errors: list[Exception] = []
+    reader_error_lock = threading.Lock()
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    def drain(stream: BinaryIO, limit: int, chunks: list[bytes]) -> None:
+        total = 0
+        try:
+            while True:
+                chunk = stream.read(_FFPROBE_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                remaining = limit - total
+                if remaining > 0:
+                    chunks.append(chunk[:remaining])
+                total += len(chunk)
+                if total > limit:
+                    output_exceeded.set()
+                    _kill_process(process)
+                    # Continue draining until EOF so the child cannot remain blocked on a
+                    # full pipe while termination is being delivered.
+        except Exception as exc:  # pragma: no cover - defensive OS/pipe failure boundary
+            with reader_error_lock:
+                reader_errors.append(exc)
+            _kill_process(process)
+
+    stdout_reader = threading.Thread(
+        target=drain,
+        args=(process.stdout, stdout_limit, stdout_chunks),
+        name="content-forge-ffprobe-stdout",
+        daemon=True,
+    )
+    stderr_reader = threading.Thread(
+        target=drain,
+        args=(process.stderr, stderr_limit, stderr_chunks),
+        name="content-forge-ffprobe-stderr",
+        daemon=True,
+    )
+    stdout_reader.start()
+    stderr_reader.start()
+
+    timed_out = False
+    try:
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process(process)
+            returncode = process.wait()
+    finally:
+        stdout_reader.join()
+        stderr_reader.join()
+        process.stdout.close()
+        process.stderr.close()
+
+    if timed_out:
+        raise MediaProbeError("ffprobe execution timed out")
+    if reader_errors:
+        raise MediaProbeError("ffprobe output capture failed") from reader_errors[0]
+    if output_exceeded.is_set():
+        raise MediaProbeError("ffprobe output exceeded safe limit")
+
+    return subprocess.CompletedProcess(
+        arguments,
+        returncode,
+        stdout=b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+        stderr=b"".join(stderr_chunks).decode("utf-8", errors="replace"),
+    )
+
+
 def probe_media(
     path: str | Path,
     *,
@@ -59,26 +180,13 @@ def probe_media(
         ffprobe_path,
         "-v",
         "error",
-        "-show_streams",
-        "-show_format",
+        "-show_entries",
+        _FFPROBE_SHOW_ENTRIES,
         "-of",
         "json",
         str(source),
     )
-    try:
-        result = subprocess.run(
-            arguments,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            shell=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise MediaProbeError(f"ffprobe execution failed: {exc}") from exc
+    result = _run_ffprobe_bounded(arguments, timeout=timeout)
 
     if result.returncode != 0:
         message = result.stderr.strip()
