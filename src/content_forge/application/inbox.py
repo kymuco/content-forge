@@ -182,6 +182,43 @@ class InboxService:
         self.library.database.add_source(record)
         return intake, record
 
+    def _ensure_asset_bytes(self, intake: InboxIntake, asset: Asset) -> Asset:
+        """Verify cataloged bytes or republish an authenticated surviving staging copy.
+
+        New AssetStore publications make their canonical directory entry durable before a
+        new catalog row can commit. This fallback also repairs receipts produced by older
+        interrupted PR8 snapshots where the row survived but the unsynced rename did not.
+        Only the exact frozen intake bytes may repair a missing blob; a present-but-corrupt
+        canonical blob remains an integrity contradiction and is never overwritten here.
+        """
+
+        try:
+            verified = self.library.assets.verify(asset)
+        except FileNotFoundError as exc:
+            staged = self._verified_staging_candidate(intake)
+            if staged is None:
+                raise InboxError("cataloged Inbox asset blob is missing") from exc
+            result = self.library.assets.ingest_file(
+                staged,
+                source=None,
+                media_type=MediaType.OTHER,
+                mime_type="application/octet-stream",
+            )
+            repaired = result.asset
+            if repaired.asset_id != asset.asset_id:
+                raise InboxError("staging repair resolved to a different asset")
+            if repaired.sha256 != asset.sha256 or repaired.size_bytes != asset.size_bytes:
+                raise InboxError("staging repair disagrees with cataloged asset identity")
+            asset = repaired
+            try:
+                verified = self.library.assets.verify(asset)
+            except FileNotFoundError as second_exc:
+                raise InboxError("repaired Inbox asset blob is still missing") from second_exc
+
+        if not verified:
+            raise InboxError("cataloged Inbox asset failed byte verification")
+        return asset
+
     def _recover_asset_for_intake(
         self,
         intake: InboxIntake,
@@ -201,8 +238,7 @@ class InboxService:
                 raise InboxError("Inbox content digest disagrees with accepted asset")
             if intake.size_bytes is not None and asset.size_bytes != intake.size_bytes:
                 raise InboxError("Inbox byte count disagrees with accepted asset")
-            if not self.library.assets.verify(asset):
-                raise InboxError("accepted Inbox asset failed byte verification")
+            asset = self._ensure_asset_bytes(intake, asset)
             self._discard_staging_candidates(intake)
             return intake, asset
 
@@ -242,8 +278,7 @@ class InboxService:
 
         if asset.sha256 != intake.content_sha256 or asset.size_bytes != intake.size_bytes:
             raise InboxError("recovered asset metadata disagrees with Inbox receipt")
-        if not self.library.assets.verify(asset):
-            raise InboxError("recovered Inbox asset failed byte verification")
+        asset = self._ensure_asset_bytes(intake, asset)
 
         # From this point the catalog/canonical blob is authoritative, so an old staging
         # copy is no longer needed even if receipt linkage is interrupted again.
