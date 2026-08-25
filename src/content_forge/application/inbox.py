@@ -551,13 +551,17 @@ class InboxService:
                     # reconciliation resume from whichever durable checkpoint survived.
                     retain_staging = accepted and current.asset_id is None
                 else:
+                    retryable_operational = isinstance(
+                        exc,
+                        (OSError, sqlite3.OperationalError),
+                    )
                     project_checkpointed = current.project_id is not None
-                    if accepted and not project_checkpointed:
-                        # Accepted bytes and incomplete cross-store linkage are resumable,
-                        # not terminal. Preserve the receipt in RECEIVING so startup can
-                        # finish AssetStore/provenance/project publication. If no Asset is
-                        # catalogued yet, the verified staging file remains the recovery
-                        # authority.
+                    if accepted and (retryable_operational or not project_checkpointed):
+                        # Accepted bytes with incomplete handoff or a transient storage
+                        # failure are resumable, not terminal. Operational failures remain
+                        # retryable even after the project checkpoint, matching startup
+                        # reconciliation. If no Asset is catalogued yet, authenticated
+                        # staging remains the recovery authority.
                         retain_staging = current.asset_id is None
                         try:
                             self.repository.transition_intake(
