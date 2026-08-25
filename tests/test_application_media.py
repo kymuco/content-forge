@@ -158,7 +158,11 @@ def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch)
             call_count += 1
         protocol_index = arguments.index("-protocol_whitelist")
         assert arguments[protocol_index + 1] == "file"
-        assert protocol_index < arguments.index("-i")
+        format_index = arguments.index("-format_whitelist")
+        assert arguments[format_index + 1] == media_module._LOCAL_MEDIA_FORMAT_WHITELIST
+        allowed_formats = set(media_module._LOCAL_MEDIA_FORMAT_WHITELIST.split(","))
+        assert {"hls", "dash", "concat", "sdp", "m3u", "pls"}.isdisjoint(allowed_formats)
+        assert protocol_index < format_index < arguments.index("-i")
         # Widen the race enough that an implementation without publication locking
         # reliably lets both callers pass the initial missing-receipt check.
         time.sleep(0.05)
