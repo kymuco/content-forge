@@ -149,7 +149,7 @@ def test_ffprobe_interrupt_terminates_child_before_reader_join(
     assert released.is_set()
 
 
-def test_probe_media_requests_only_consumed_ffprobe_fields(
+def test_probe_media_requests_only_safe_consumed_ffprobe_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -194,7 +194,12 @@ def test_probe_media_requests_only_consumed_ffprobe_fields(
     assert "-protocol_whitelist" in arguments
     protocol_index = arguments.index("-protocol_whitelist")
     assert arguments[protocol_index + 1] == "file"
-    assert protocol_index < len(arguments) - 1
+    assert "-format_whitelist" in arguments
+    format_index = arguments.index("-format_whitelist")
+    assert arguments[format_index + 1] == probe_module._LOCAL_MEDIA_FORMAT_WHITELIST
+    allowed_formats = set(probe_module._LOCAL_MEDIA_FORMAT_WHITELIST.split(","))
+    assert {"hls", "dash", "concat", "sdp", "m3u", "pls"}.isdisjoint(allowed_formats)
+    assert protocol_index < format_index < len(arguments) - 1
     assert "-show_entries" in arguments
     entries = arguments[arguments.index("-show_entries") + 1]
     assert entries == probe_module._FFPROBE_SHOW_ENTRIES
@@ -206,6 +211,64 @@ def test_probe_media_requests_only_consumed_ffprobe_fields(
     assert probe.has_video is False
     assert probe.audio_codec == "aac"
     assert probe.duration_seconds == 1.25
+
+
+def test_ffprobe_rejects_hls_nested_local_file_reference(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("FFmpeg runtime is not installed")
+
+    segment = tmp_path / "outside-upload.ts"
+    generated = subprocess.run(
+        (
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=32x32:r=1:d=1",
+            "-c:v",
+            "mpeg2video",
+            "-f",
+            "mpegts",
+            str(segment),
+        ),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+    )
+    assert generated.returncode == 0, generated.stderr
+
+    # The external target itself is an allowed self-contained media object.
+    direct = probe_media(segment, ffprobe_path=ffprobe)
+    assert direct.has_video is True
+
+    playlist = tmp_path / "uploaded-reference.m3u8"
+    playlist.write_text(
+        "\n".join(
+            (
+                "#EXTM3U",
+                "#EXT-X-VERSION:3",
+                "#EXT-X-TARGETDURATION:1",
+                "#EXT-X-MEDIA-SEQUENCE:0",
+                "#EXTINF:1.0,",
+                segment.resolve().as_uri(),
+                "#EXT-X-ENDLIST",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MediaProbeError, match="ffprobe failed"):
+        probe_media(playlist, ffprobe_path=ffprobe)
 
 
 def test_ffprobe_can_read_synthetic_ppm_and_enrich_asset(tmp_path: Path) -> None:
