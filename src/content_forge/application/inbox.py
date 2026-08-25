@@ -471,7 +471,10 @@ class InboxService:
             descriptor, temporary_name = tempfile.mkstemp(
                 dir=self.library.paths.incoming,
                 prefix=f"http-{intake.intake_id}-",
-                suffix=Path(filename).suffix or ".upload",
+                # Staging names are opaque internal recovery keys. The user filename is
+                # preserved in the intake/provenance record and must never control a
+                # filesystem component (length, encoding, or platform-invalid chars).
+                suffix=".upload",
             )
             staged = Path(temporary_name)
             handle = os.fdopen(descriptor, "wb")
@@ -644,6 +647,31 @@ class InboxService:
                 update={"state": IntakeState.PREPARED},
             )
         except Exception as exc:
+            retryable_operational = isinstance(
+                exc,
+                (OSError, sqlite3.OperationalError),
+            )
+            if retryable_operational:
+                # URL/note capture has no accepted byte authority to protect, but its
+                # deterministic project/receipt checkpoints are explicitly recoverable.
+                # A transient database/filesystem failure must therefore leave the intake
+                # RECEIVING so exclusive startup can resume instead of forcing a duplicate
+                # intake/project on client retry.
+                try:
+                    current = self.repository.get_intake(intake.intake_id)
+                    if current is not None and current.state is IntakeState.RECEIVING:
+                        self.repository.transition_intake(
+                            current.intake_id,
+                            expected_state=IntakeState.RECEIVING,
+                            update={
+                                "state": IntakeState.RECEIVING,
+                                "error_code": "capture_retryable",
+                                "error_message": "URL/note capture awaits recovery",
+                            },
+                        )
+                except Exception:
+                    pass
+                raise
             try:
                 self.repository.transition_intake(
                     intake.intake_id,
@@ -713,13 +741,15 @@ class InboxService:
                         exc,
                         (OSError, sqlite3.OperationalError),
                     )
-                    if accepted_file and retryable_storage_error:
-                        # Once exact bytes are FULL-accepted, operational filesystem or
-                        # SQLite failures stay retryable even if provenance/project links
-                        # already exist. A linked project does not make a newly repaired
-                        # canonical directory entry durable, so staging must survive until
-                        # the storage barrier succeeds. Integrity/linkage contradictions
-                        # use different exception types and still fail closed below.
+                    retryable_receipt = retryable_storage_error and (
+                        accepted_file or current.kind is IntakeKind.URL_NOTE
+                    )
+                    if retryable_receipt:
+                        # FULL-accepted files keep operational storage failures retryable
+                        # so their authenticated byte authority is not destroyed. URL/note
+                        # records have no byte acceptance boundary, but their deterministic
+                        # project linkage is likewise reconstructible, so storage pressure
+                        # must leave them RECEIVING for a later exclusive startup.
                         recovered.append(current)
                         continue
                     try:
