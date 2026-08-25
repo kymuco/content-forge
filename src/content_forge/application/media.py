@@ -41,6 +41,7 @@ IMAGE_FORMAT_TOKENS = {
 
 THUMBNAIL_STDERR_LIMIT_BYTES = 256 * 1024
 _THUMBNAIL_STDERR_READ_CHUNK_BYTES = 64 * 1024
+_LOCAL_MEDIA_PROTOCOL_WHITELIST = "file"
 
 # FastAPI executes synchronous upload handlers in a thread pool. Equal source bytes share
 # one canonical derivative path, so publication must be serialized even in the supported
@@ -57,6 +58,19 @@ def _kill_process(process: subprocess.Popen[bytes]) -> None:
     try:
         process.kill()
     except OSError:
+        pass
+
+
+def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    """Ensure a launched thumbnail child cannot outlive an exceptional runner exit."""
+
+    if process.poll() is None:
+        _kill_process(process)
+    try:
+        process.wait()
+    except Exception:
+        # Cleanup must not replace the primary thumbnail/capture exception. Control-flow
+        # exceptions are deliberately not swallowed here.
         pass
 
 
@@ -130,6 +144,9 @@ def _run_thumbnail_ffmpeg_bounded(
             _kill_process(process)
             returncode = process.wait()
     finally:
+        # A shutdown/control-flow exception can interrupt wait() itself. Reap the child
+        # before joining the stderr reader so propagation cannot block waiting for EOF.
+        _terminate_and_reap(process)
         stderr_reader.join()
         process.stderr.close()
 
@@ -340,6 +357,8 @@ def generate_thumbnail(
             "error",
             "-nostdin",
             "-y",
+            "-protocol_whitelist",
+            _LOCAL_MEDIA_PROTOCOL_WHITELIST,
             "-i",
             str(Path(source_path)),
             "-map",
