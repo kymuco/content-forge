@@ -12,6 +12,7 @@ from pathlib import Path
 from content_forge.core import Asset, MediaType
 from content_forge.render.ffmpeg import MediaProbe, apply_probe_to_asset
 from content_forge.storage import DerivativeSlot, LocalLibrary, sha256_file
+from content_forge.storage.paths import fsync_directory_chain
 
 
 class ThumbnailError(RuntimeError):
@@ -274,6 +275,9 @@ def generate_thumbnail(
             with temporary.open("r+b") as handle:
                 os.fsync(handle.fileno())
             os.replace(temporary, output)
+            # The derivative receipt must never commit before the canonical rename and
+            # any newly-created thumbnail shard directories are durable.
+            fsync_directory_chain(output.parent, stop_at=library.paths.root)
             return _record_thumbnail(
                 library,
                 asset,
