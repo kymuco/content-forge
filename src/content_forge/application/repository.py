@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from content_forge.core import Asset, Project, dump_json, load_json
@@ -24,6 +26,34 @@ class ApplicationRepository:
 
     def __init__(self, database: LibraryDatabase) -> None:
         self.database = database
+
+    @contextmanager
+    def _transaction(self, *, durable: bool = False) -> Iterator[sqlite3.Connection]:
+        """Open an application transaction, optionally making its commit power-loss durable.
+
+        LibraryDatabase normally uses WAL + synchronous=NORMAL for routine metadata
+        throughput. PR8 has one stronger linearization point: the exact size+SHA upload
+        acceptance receipt. That transaction uses synchronous=FULL before BEGIN so the
+        WAL commit is synchronized before returning. Later checkpoints remain NORMAL
+        because they are reconstructible from the durable acceptance receipt and verified
+        byte representations.
+        """
+
+        if not durable:
+            with self.database.transaction() as connection:
+                yield connection
+            return
+
+        with self.database.connection() as connection:
+            connection.execute("PRAGMA synchronous = FULL")
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                yield connection
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
 
     def initialize(self) -> "ApplicationRepository":
         with self.database.transaction() as connection:
@@ -191,8 +221,9 @@ class ApplicationRepository:
         *,
         expected_state: IntakeState,
         update: dict[str, object],
+        durable: bool = False,
     ) -> InboxIntake:
-        with self.database.transaction() as connection:
+        with self._transaction(durable=durable) as connection:
             row = connection.execute(
                 "SELECT manifest_json, state FROM inbox_intakes WHERE intake_id = ?",
                 (intake_id,),
