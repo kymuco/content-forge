@@ -160,6 +160,37 @@ def test_thumbnail_ffmpeg_launch_oserror_is_partial_generation_failure(
     assert service.reconcile_receiving() == ()
 
 
+def test_thumbnail_mapping_excludes_attached_picture_streams(tmp_path, monkeypatch) -> None:
+    library = LocalLibrary(tmp_path)
+    repository = ApplicationRepository(library.database).initialize()
+    service = InboxService(library, repository, max_upload_bytes=1024)
+    _install_visual_probe(monkeypatch)
+    captured_arguments: tuple[str, ...] | None = None
+
+    def fake_run(arguments, **kwargs):
+        nonlocal captured_arguments
+        captured_arguments = tuple(arguments)
+        Path(arguments[-1]).write_bytes(b"thumbnail-from-real-video-stream")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fake_run)
+
+    intake = service.ingest_upload(
+        BytesIO(b"video-with-leading-attached-picture-stream"),
+        filename="video-with-cover.mp4",
+    )
+
+    assert intake.state is IntakeState.PREPARED
+    assert captured_arguments is not None
+    map_index = captured_arguments.index("-map")
+    assert captured_arguments[map_index + 1] == "0:V:0"
+    assert "0:v:0" not in captured_arguments
+    assert intake.asset_id is not None
+    thumbnail = service.thumbnail_path(intake.asset_id)
+    assert thumbnail is not None
+    assert thumbnail.read_bytes() == b"thumbnail-from-real-video-stream"
+
+
 def test_url_note_sqlite_operational_after_project_linkage_returns_same_recoverable_intake(
     tmp_path, monkeypatch
 ) -> None:
