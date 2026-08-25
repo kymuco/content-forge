@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,55 @@ def test_ffprobe_capture_rejects_output_beyond_hard_byte_budget(stream_name: str
         )
 
 
+def test_ffprobe_interrupt_terminates_child_before_reader_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released = threading.Event()
+
+    class BlockingPipe:
+        def read(self, size: int) -> bytes:
+            assert size > 0
+            assert released.wait(timeout=2.0), "reader was joined before child termination"
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    class InterruptingProcess:
+        def __init__(self) -> None:
+            self.stdout = BlockingPipe()
+            self.stderr = BlockingPipe()
+            self.returncode: int | None = None
+            self.killed = False
+            self.wait_calls = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise KeyboardInterrupt
+            assert self.killed
+            self.returncode = -9
+            return self.returncode
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+            released.set()
+
+    process = InterruptingProcess()
+    monkeypatch.setattr(probe_module.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(KeyboardInterrupt):
+        probe_module._run_ffprobe_bounded(("synthetic-ffprobe",), timeout=60.0)
+
+    assert process.killed is True
+    assert process.wait_calls == 2
+    assert released.is_set()
+
+
 def test_probe_media_requests_only_consumed_ffprobe_fields(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -141,6 +191,10 @@ def test_probe_media_requests_only_consumed_ffprobe_fields(
 
     arguments = captured["arguments"]
     assert isinstance(arguments, tuple)
+    assert "-protocol_whitelist" in arguments
+    protocol_index = arguments.index("-protocol_whitelist")
+    assert arguments[protocol_index + 1] == "file"
+    assert protocol_index < len(arguments) - 1
     assert "-show_entries" in arguments
     entries = arguments[arguments.index("-show_entries") + 1]
     assert entries == probe_module._FFPROBE_SHOW_ENTRIES
