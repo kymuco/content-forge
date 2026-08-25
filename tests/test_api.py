@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
@@ -26,6 +29,41 @@ def _paired_client(tmp_path) -> tuple[TestClient, dict[str, str]]:
     assert exchanged.status_code == 200
     token = exchanged.json()["token"]
     return client, {"Authorization": f"Bearer {token}"}
+
+
+def _programmatic_lan_get(app, *, base_url: str):
+    async def request():
+        transport = httpx.ASGITransport(
+            app=app,
+            client=("192.168.50.23", 48152),
+        )
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url=base_url,
+        ) as client:
+            return await client.get("/health")
+
+    return asyncio.run(request())
+
+
+def test_programmatic_asgi_lan_plaintext_is_rejected_but_https_is_allowed(tmp_path) -> None:
+    app = create_app(root=tmp_path)
+    try:
+        plaintext = _programmatic_lan_get(
+            app,
+            base_url="http://content-forge.lan",
+        )
+        assert plaintext.status_code == 426
+        assert plaintext.json()["detail"] == "non-loopback requests require HTTPS"
+
+        encrypted = _programmatic_lan_get(
+            app,
+            base_url="https://content-forge.lan",
+        )
+        assert encrypted.status_code == 200
+        assert encrypted.json()["ok"] is True
+    finally:
+        app.state.runtime_lease.close()
 
 
 def test_pairing_challenge_rejects_nonloopback_browser_authority(tmp_path) -> None:
