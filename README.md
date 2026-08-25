@@ -93,7 +93,7 @@ Sensitive reads and writes require a paired bearer session. Pairing challenge cr
 
 PR8 enforces one live API owner per runtime root with an OS advisory lock acquired before restart reconciliation. A second process using the same root is rejected while the first is alive; process termination or a crash releases ownership automatically so recovery can proceed without a stale timeout.
 
-Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance transient storage failures preserve resumable state instead of discarding the only verified copy.
+Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance operational filesystem or SQLite storage failures preserve resumable state instead of discarding the only verified copy. New canonical blobs and thumbnails also make their POSIX directory entries durable before the corresponding SQLite metadata receipt is committed.
 
 See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the current PR8 contract.
 
