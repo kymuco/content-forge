@@ -123,6 +123,18 @@ def _pairing_bootstrap_allowed(request: Request) -> bool:
     )
 
 
+def _transport_is_secure(request: Request) -> bool:
+    """Permit plaintext only from a loopback socket peer.
+
+    CLI validation prevents the supported server entry point from binding a LAN socket
+    without TLS, but `create_app()` is also a public ASGI factory. Enforce the same
+    fail-closed rule from the request scope so a programmatic Uvicorn/ASGI deployment
+    cannot expose pairing responses or bearer credentials over plaintext LAN HTTP.
+    """
+
+    return _is_loopback_client(request) or request.url.scheme == "https"
+
+
 def _authorization_token(value: str | None) -> str:
     if value is None or not value.startswith("Bearer "):
         raise AuthenticationError("bearer token required")
@@ -178,8 +190,14 @@ def create_app(
     app.state.runtime_lease = runtime_lease
 
     @app.middleware("http")
-    async def protect_upload_body(request: Request, call_next):
-        """Reject unauthorized/oversized multipart uploads before form parsing."""
+    async def protect_transport_and_upload_body(request: Request, call_next):
+        """Enforce LAN encryption and guard upload bodies before form parsing."""
+
+        if not _transport_is_secure(request):
+            return JSONResponse(
+                status_code=426,
+                content={"detail": "non-loopback requests require HTTPS"},
+            )
 
         if request.method == "POST" and request.url.path == "/api/v1/inbox/files":
             try:
