@@ -83,6 +83,17 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _best_effort_unlink(path: Path) -> None:
+    """Remove obsolete staging without overturning an accepted/terminal operation."""
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # Once another verified representation is authoritative, staging is garbage
+        # collection. EACCES/EIO here must not turn a completed intake into an HTTP 500.
+        pass
+
+
 class InboxService:
     def __init__(
         self,
@@ -135,8 +146,12 @@ class InboxService:
         return candidate
 
     def _discard_staging_candidates(self, intake: InboxIntake) -> None:
-        for path in self._staging_candidates(intake):
-            path.unlink(missing_ok=True)
+        try:
+            candidates = self._staging_candidates(intake)
+        except OSError:
+            return
+        for path in candidates:
+            _best_effort_unlink(path)
 
     def _source_record_for_intake(self, intake: InboxIntake):
         if intake.source_id is None:
@@ -476,6 +491,8 @@ class InboxService:
             # This is the byte-acceptance linearization point. Before this durable receipt
             # exists, a crash may safely fail the intake. After it exists, the verified
             # staging file/canonical blob/catalog row are all resumable representations.
+            # This specific SQLite commit uses synchronous=FULL so returning from the
+            # transition means the WAL acceptance receipt has reached stable storage.
             intake = self.repository.transition_intake(
                 intake.intake_id,
                 expected_state=IntakeState.RECEIVING,
@@ -484,6 +501,7 @@ class InboxService:
                     "size_bytes": size_bytes,
                     "content_sha256": content_sha256,
                 },
+                durable=True,
             )
 
             # Client MIME/filename are provenance hints only. Shared immutable Asset
@@ -558,7 +576,7 @@ class InboxService:
                 except OSError:
                     pass
             if staged is not None and not retain_staging:
-                staged.unlink(missing_ok=True)
+                _best_effort_unlink(staged)
 
     def capture_url_note(
         self,
