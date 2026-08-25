@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,39 @@ from content_forge.api.app import PARSED_BODY_LIMIT
 from content_forge.application import ApplicationRepository, InboxService, IntakeState
 from content_forge.render.ffmpeg import MediaProbe
 from content_forge.storage import LocalLibrary
+
+
+def _install_visual_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        inbox_module,
+        "probe_media",
+        lambda path, ffprobe_path="ffprobe": MediaProbe(
+            path=str(path),
+            format_name="mp4",
+            duration_seconds=1.0,
+            has_video=True,
+            has_audio=False,
+            video_codec="h264",
+            width=320,
+            height=240,
+            fps=30.0,
+        ),
+    )
+
+
+def _install_audio_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        inbox_module,
+        "probe_media",
+        lambda path, ffprobe_path="ffprobe": MediaProbe(
+            path=str(path),
+            format_name="mp3",
+            duration_seconds=1.0,
+            has_video=False,
+            has_audio=True,
+            audio_codec="mp3",
+        ),
+    )
 
 
 def test_pairing_exchange_and_authenticated_json_are_bounded_before_parsing(tmp_path) -> None:
@@ -55,21 +89,7 @@ def test_thumbnail_directory_sync_oserror_keeps_intake_retryable(tmp_path, monke
     service = InboxService(library, repository, max_upload_bytes=1024)
     payload = b"visual-upload-with-retryable-thumbnail-storage-failure"
 
-    monkeypatch.setattr(
-        inbox_module,
-        "probe_media",
-        lambda path, ffprobe_path="ffprobe": MediaProbe(
-            path=str(path),
-            format_name="mp4",
-            duration_seconds=1.0,
-            has_video=True,
-            has_audio=False,
-            video_codec="h264",
-            width=320,
-            height=240,
-            fps=30.0,
-        ),
-    )
+    _install_visual_probe(monkeypatch)
 
     def fake_run(arguments, **kwargs):
         Path(arguments[-1]).write_bytes(b"synthetic-jpeg")
@@ -108,3 +128,108 @@ def test_thumbnail_directory_sync_oserror_keeps_intake_retryable(tmp_path, monke
     thumbnail = service.thumbnail_path(recovered[0].asset_id)
     assert thumbnail is not None
     assert thumbnail.read_bytes() == b"synthetic-jpeg"
+
+
+def test_thumbnail_ffmpeg_launch_oserror_is_partial_generation_failure(
+    tmp_path, monkeypatch
+) -> None:
+    library = LocalLibrary(tmp_path)
+    repository = ApplicationRepository(library.database).initialize()
+    service = InboxService(library, repository, max_upload_bytes=1024)
+    _install_visual_probe(monkeypatch)
+
+    def fail_launch(*args, **kwargs):
+        raise FileNotFoundError("configured ffmpeg binary is missing")
+
+    monkeypatch.setattr(media_module.subprocess, "run", fail_launch)
+
+    intake = service.ingest_upload(
+        BytesIO(b"visual-with-permanent-ffmpeg-launch-failure"),
+        filename="visual.mp4",
+    )
+
+    assert intake.state is IntakeState.PARTIAL
+    assert intake.error_code == "thumbnail_failed"
+    assert intake.error_message == "thumbnail generation failed"
+    assert intake.asset_id is not None
+    assert intake.project_id is not None
+    persisted = service.get_intake(intake.intake_id)
+    assert persisted is not None
+    assert persisted.state is IntakeState.PARTIAL
+    assert persisted.error_code == "thumbnail_failed"
+    assert service.reconcile_receiving() == ()
+
+
+def test_url_note_sqlite_operational_after_project_linkage_remains_recoverable(
+    tmp_path, monkeypatch
+) -> None:
+    library = LocalLibrary(tmp_path)
+    repository = ApplicationRepository(library.database).initialize()
+    service = InboxService(library, repository, max_upload_bytes=1024)
+    original_transition = repository.transition_intake
+    failed_once = False
+
+    def fail_final_once(
+        intake_id,
+        *,
+        expected_state,
+        update,
+        durable=False,
+    ):
+        nonlocal failed_once
+        if not failed_once and update.get("state") is IntakeState.PREPARED:
+            failed_once = True
+            raise sqlite3.OperationalError("database is locked")
+        return original_transition(
+            intake_id,
+            expected_state=expected_state,
+            update=update,
+            durable=durable,
+        )
+
+    monkeypatch.setattr(repository, "transition_intake", fail_final_once)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        service.capture_url_note(
+            source_url="https://example.com/item",
+            note="retry me",
+        )
+
+    current = service.list_intakes()[0]
+    assert current.state is IntakeState.RECEIVING
+    assert current.project_id is not None
+    assert current.error_code == "capture_retryable"
+    project_id = current.project_id
+
+    monkeypatch.setattr(repository, "transition_intake", original_transition)
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovered[0].project_id == project_id
+    project = service.library.load_project(project_id)
+    assert project is not None
+    assert project.metadata["inbox_intake_id"] == recovered[0].intake_id
+
+
+def test_upload_staging_uses_fixed_suffix_for_pathological_filename(
+    tmp_path, monkeypatch
+) -> None:
+    library = LocalLibrary(tmp_path)
+    repository = ApplicationRepository(library.database).initialize()
+    service = InboxService(library, repository, max_upload_bytes=1024)
+    _install_audio_probe(monkeypatch)
+    filename = "a." + ("x" * 300)
+
+    intake = service.ingest_upload(
+        BytesIO(b"pathological-extension-is-provenance-only"),
+        filename=filename,
+    )
+
+    assert intake.state is IntakeState.PREPARED
+    assert intake.original_name == filename
+    assert intake.asset_id is not None
+    assert intake.project_id is not None
+    project = service.library.load_project(intake.project_id)
+    assert project is not None
+    assert project.metadata["original_filename"] == filename
