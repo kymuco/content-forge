@@ -12,7 +12,7 @@ from pathlib import Path
 from content_forge.core import Asset, MediaType, SourceRecord
 
 from .database import LibraryDatabase, StorageError
-from .paths import RuntimePaths
+from .paths import RuntimePaths, fsync_directory_chain
 from .records import SourceInput
 
 CHUNK_SIZE = 1024 * 1024
@@ -108,6 +108,10 @@ class AssetStore:
                 temporary.unlink()
             else:
                 os.replace(temporary, blob_path)
+                # The canonical blob must be durable before any new catalog row can
+                # commit. Sync the sharded directory chain so both the rename and any
+                # newly-created shard directory entries survive power loss.
+                fsync_directory_chain(blob_path.parent, stop_at=self.paths.root)
 
             if existing is not None:
                 if existing.size_bytes != size_bytes:
