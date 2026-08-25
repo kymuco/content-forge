@@ -53,10 +53,11 @@ def test_post_acceptance_assetstore_failure_preserves_verified_staging_for_recov
         raise OSError("ENOSPC during AssetStore publication")
 
     monkeypatch.setattr(service.library.assets, "ingest_file", fail_ingest)
-    with pytest.raises(OSError, match="ENOSPC"):
-        service.ingest_upload(BytesIO(payload), filename="accepted.mp3")
+    returned = service.ingest_upload(BytesIO(payload), filename="accepted.mp3")
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     assert intake.state is IntakeState.RECEIVING
     assert intake.asset_id is None
     assert intake.content_sha256 is not None
@@ -96,10 +97,11 @@ def test_sqlite_operational_storage_pressure_after_acceptance_remains_resumable(
         "ingest_file",
         initial_filesystem_pressure,
     )
-    with pytest.raises(OSError, match="ENOSPC"):
-        service.ingest_upload(BytesIO(payload), filename="sqlite-retry.mp3")
+    returned = service.ingest_upload(BytesIO(payload), filename="sqlite-retry.mp3")
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     staged = service._verified_staging_candidate(intake)
     assert staged is not None
     assert staged.read_bytes() == payload
@@ -145,10 +147,11 @@ def test_catalog_row_with_missing_blob_recovers_from_authenticated_staging(
         "ingest_file",
         publish_row_then_lose_blob,
     )
-    with pytest.raises(OSError, match="unsynced blob loss"):
-        service.ingest_upload(BytesIO(payload), filename="legacy-window.mp3")
+    returned = service.ingest_upload(BytesIO(payload), filename="legacy-window.mp3")
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     assert intake.state is IntakeState.RECEIVING
     assert intake.asset_id is None
     assert intake.content_sha256 is not None
@@ -192,10 +195,11 @@ def test_blob_only_recovery_reestablishes_directory_durability_before_cataloging
         "fsync_directory_chain",
         fail_assetstore_directory_sync,
     )
-    with pytest.raises(OSError, match="EIO"):
-        service.ingest_upload(BytesIO(payload), filename="directory-eio.mp3")
+    returned = service.ingest_upload(BytesIO(payload), filename="directory-eio.mp3")
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     assert intake.state is IntakeState.RECEIVING
     assert intake.asset_id is None
     assert intake.content_sha256 is not None
@@ -264,10 +268,11 @@ def test_reconciliation_keyboard_interrupt_preserves_accepted_staging(
         "ingest_file",
         initial_storage_failure,
     )
-    with pytest.raises(OSError, match="ENOSPC"):
-        service.ingest_upload(BytesIO(payload), filename="shutdown.mp3")
+    returned = service.ingest_upload(BytesIO(payload), filename="shutdown.mp3")
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     staged = service._verified_staging_candidate(intake)
     assert staged is not None
     assert staged.read_bytes() == payload
@@ -302,10 +307,14 @@ def test_tampered_accepted_staging_fails_terminally_instead_of_retrying_forever(
         raise OSError("ENOSPC during AssetStore publication")
 
     monkeypatch.setattr(service.library.assets, "ingest_file", fail_ingest)
-    with pytest.raises(OSError, match="ENOSPC"):
-        service.ingest_upload(BytesIO(b"frozen-good-bytes"), filename="accepted.mp3")
+    returned = service.ingest_upload(
+        BytesIO(b"frozen-good-bytes"),
+        filename="accepted.mp3",
+    )
 
     intake = service.list_intakes()[0]
+    assert returned.intake_id == intake.intake_id
+    assert returned.state is IntakeState.RECEIVING
     staged = service._verified_staging_candidate(intake)
     assert staged is not None
     staged.write_bytes(b"tampered-bytes")
