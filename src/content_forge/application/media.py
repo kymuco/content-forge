@@ -42,6 +42,14 @@ IMAGE_FORMAT_TOKENS = {
 THUMBNAIL_STDERR_LIMIT_BYTES = 256 * 1024
 _THUMBNAIL_STDERR_READ_CHUNK_BYTES = 64 * 1024
 _LOCAL_MEDIA_PROTOCOL_WHITELIST = "file"
+# Keep this in lockstep with the automatic ffprobe policy. Reference-bearing manifest
+# demuxers such as HLS/DASH/concat/SDP are intentionally absent so the allowed top-level
+# `file` protocol cannot be repurposed to read arbitrary nested local paths.
+_LOCAL_MEDIA_FORMAT_WHITELIST = (
+    "aac,ac3,aiff,ape,avi,bmp_pipe,flac,flv,gif,image2,jpeg_pipe,matroska,"
+    "mjpeg,mov,mp3,mpeg,mpegts,ogg,opus,pam_pipe,pgm_pipe,pgmyuv_pipe,"
+    "png_pipe,ppm_pipe,tiff_pipe,w64,wav,webm,webp_pipe"
+)
 
 # FastAPI executes synchronous upload handlers in a thread pool. Equal source bytes share
 # one canonical derivative path, so publication must be serialized even in the supported
@@ -359,6 +367,8 @@ def generate_thumbnail(
             "-y",
             "-protocol_whitelist",
             _LOCAL_MEDIA_PROTOCOL_WHITELIST,
+            "-format_whitelist",
+            _LOCAL_MEDIA_FORMAT_WHITELIST,
             "-i",
             str(Path(source_path)),
             "-map",
