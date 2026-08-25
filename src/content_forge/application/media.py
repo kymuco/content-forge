@@ -254,17 +254,25 @@ def generate_thumbnail(
             str(temporary),
         )
         try:
-            completed = subprocess.run(
-                arguments,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                shell=False,
-            )
+            try:
+                completed = subprocess.run(
+                    arguments,
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    shell=False,
+                )
+            except OSError as exc:
+                # Failure to launch the configured FFmpeg binary is a media-preparation
+                # configuration/generation failure, not evidence that thumbnail storage
+                # itself is temporarily unavailable. Keep this catch scoped strictly to
+                # subprocess launch so publication/fsync OSError still propagates to the
+                # caller's post-acceptance operational retry policy.
+                raise ThumbnailError("thumbnail execution could not start") from exc
             if completed.returncode != 0:
                 raise ThumbnailError(
                     f"ffmpeg thumbnail failed ({completed.returncode}): "
