@@ -21,6 +21,7 @@ class MediaProbeError(RuntimeError):
 FFPROBE_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024
 FFPROBE_STDERR_LIMIT_BYTES = 256 * 1024
 _FFPROBE_READ_CHUNK_BYTES = 64 * 1024
+_LOCAL_MEDIA_PROTOCOL_WHITELIST = "file"
 _FFPROBE_SHOW_ENTRIES = (
     "format=format_name,duration:"
     "stream=codec_type,codec_name,duration,width,height,avg_frame_rate,r_frame_rate:"
@@ -61,6 +62,19 @@ def _kill_process(process: subprocess.Popen[bytes]) -> None:
     try:
         process.kill()
     except OSError:
+        pass
+
+
+def _terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    """Ensure a launched child cannot outlive an exceptional runner exit."""
+
+    if process.poll() is None:
+        _kill_process(process)
+    try:
+        process.wait()
+    except Exception:
+        # Cleanup must not replace the primary probe/capture exception. Control-flow
+        # exceptions are deliberately not swallowed here.
         pass
 
 
@@ -146,6 +160,10 @@ def _run_ffprobe_bounded(
             _kill_process(process)
             returncode = process.wait()
     finally:
+        # `KeyboardInterrupt`, `SystemExit`, and any other exceptional exit can arrive
+        # while wait() is blocked. Terminate/reap before joining pipe readers so shutdown
+        # propagation can never wait indefinitely for a still-running child to close EOF.
+        _terminate_and_reap(process)
         stdout_reader.join()
         stderr_reader.join()
         process.stdout.close()
@@ -180,6 +198,8 @@ def probe_media(
         ffprobe_path,
         "-v",
         "error",
+        "-protocol_whitelist",
+        _LOCAL_MEDIA_PROTOCOL_WHITELIST,
         "-show_entries",
         _FFPROBE_SHOW_ENTRIES,
         "-of",
