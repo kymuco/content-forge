@@ -244,7 +244,10 @@ def generate_thumbnail(
             "-i",
             str(Path(source_path)),
             "-map",
-            "0:v:0",
+            # Uppercase V intentionally selects only real video streams. Lowercase v
+            # also includes attached pictures/cover art and can choose an embedded cover
+            # before the authoritative non-attached video stream selected by ffprobe.
+            "0:V:0",
             "-vf",
             filtergraph,
             "-frames:v",
