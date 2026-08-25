@@ -653,14 +653,16 @@ class InboxService:
             )
             if retryable_operational:
                 # URL/note capture has no accepted byte authority to protect, but its
-                # deterministic project/receipt checkpoints are explicitly recoverable.
-                # A transient database/filesystem failure must therefore leave the intake
-                # RECEIVING so exclusive startup can resume instead of forcing a duplicate
-                # intake/project on client retry.
-                try:
-                    current = self.repository.get_intake(intake.intake_id)
-                    if current is not None and current.state is IntakeState.RECEIVING:
-                        self.repository.transition_intake(
+                # durable receipt plus deterministic project checkpoints are recoverable.
+                # Once that RECEIVING receipt can be read back, return it to the caller
+                # instead of presenting the request as unaccepted and encouraging a retry
+                # that would allocate a second intake/project. Diagnostic persistence is
+                # best effort under the same storage pressure; the receipt identity/state
+                # are the authority and exclusive reconciliation completes it later.
+                current = self.repository.get_intake(intake.intake_id)
+                if current is not None and current.state is IntakeState.RECEIVING:
+                    try:
+                        return self.repository.transition_intake(
                             current.intake_id,
                             expected_state=IntakeState.RECEIVING,
                             update={
@@ -669,8 +671,8 @@ class InboxService:
                                 "error_message": "URL/note capture awaits recovery",
                             },
                         )
-                except Exception:
-                    pass
+                    except Exception:
+                        return current
                 raise
             try:
                 self.repository.transition_intake(
