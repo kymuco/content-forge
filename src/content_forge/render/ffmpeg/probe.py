@@ -22,6 +22,15 @@ FFPROBE_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024
 FFPROBE_STDERR_LIMIT_BYTES = 256 * 1024
 _FFPROBE_READ_CHUNK_BYTES = 64 * 1024
 _LOCAL_MEDIA_PROTOCOL_WHITELIST = "file"
+# Automatic Inbox media preparation intentionally supports only self-contained local
+# media demuxers. Reference-bearing manifests/demuxers (HLS, DASH, concat, SDP, etc.) are
+# absent so `file` can open the top-level canonical asset without granting that asset a
+# generic local-filesystem traversal primitive through nested references.
+_LOCAL_MEDIA_FORMAT_WHITELIST = (
+    "aac,ac3,aiff,ape,avi,bmp_pipe,flac,flv,gif,image2,jpeg_pipe,matroska,"
+    "mjpeg,mov,mp3,mpeg,mpegts,ogg,opus,pam_pipe,pgm_pipe,pgmyuv_pipe,"
+    "png_pipe,ppm_pipe,tiff_pipe,w64,wav,webm,webp_pipe"
+)
 _FFPROBE_SHOW_ENTRIES = (
     "format=format_name,duration:"
     "stream=codec_type,codec_name,duration,width,height,avg_frame_rate,r_frame_rate:"
@@ -200,6 +209,8 @@ def probe_media(
         "error",
         "-protocol_whitelist",
         _LOCAL_MEDIA_PROTOCOL_WHITELIST,
+        "-format_whitelist",
+        _LOCAL_MEDIA_FORMAT_WHITELIST,
         "-show_entries",
         _FFPROBE_SHOW_ENTRIES,
         "-of",
