@@ -173,6 +173,118 @@ def test_catalog_row_with_missing_blob_recovers_from_authenticated_staging(
     assert service._staging_candidates(recovered[0]) == ()
 
 
+def test_blob_only_recovery_reestablishes_directory_durability_before_cataloging(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    payload = b"canonical-rename-before-directory-eio"
+
+    def fail_assetstore_directory_sync(path, *, stop_at):
+        canonical = service.library.paths.blob_path_for_sha256(
+            __import__("hashlib").sha256(payload).hexdigest()
+        )
+        assert Path(path) == canonical.parent
+        assert Path(stop_at).resolve() == service.library.paths.root.resolve()
+        raise OSError("EIO while syncing canonical shard directory")
+
+    monkeypatch.setattr(
+        asset_store_module,
+        "fsync_directory_chain",
+        fail_assetstore_directory_sync,
+    )
+    with pytest.raises(OSError, match="EIO"):
+        service.ingest_upload(BytesIO(payload), filename="directory-eio.mp3")
+
+    intake = service.list_intakes()[0]
+    assert intake.state is IntakeState.RECEIVING
+    assert intake.asset_id is None
+    assert intake.content_sha256 is not None
+    blob_path = service.library.paths.blob_path_for_sha256(intake.content_sha256)
+    assert blob_path.is_file()
+    assert blob_path.read_bytes() == payload
+    assert service.library.database.get_asset_by_sha256(intake.content_sha256) is None
+    staged = service._verified_staging_candidate(intake)
+    assert staged is not None
+    assert staged.read_bytes() == payload
+
+    recovery_directory_synced = False
+    original_put_asset = service.library.database.put_asset
+
+    def mark_recovery_directory_sync(path, *, stop_at):
+        nonlocal recovery_directory_synced
+        assert Path(path).resolve() == blob_path.parent.resolve()
+        assert Path(stop_at).resolve() == service.library.paths.root.resolve()
+        recovery_directory_synced = True
+
+    def checked_put_asset(asset):
+        assert recovery_directory_synced, (
+            "blob-only recovery cataloged the asset before canonical directory fsync"
+        )
+        return original_put_asset(asset)
+
+    monkeypatch.setattr(
+        inbox_module,
+        "fsync_directory_chain",
+        mark_recovery_directory_sync,
+    )
+    monkeypatch.setattr(service.library.database, "put_asset", checked_put_asset)
+    _install_audio_probe(monkeypatch)
+
+    recovered = service.reconcile_receiving()
+
+    assert len(recovered) == 1
+    assert recovered[0].state is IntakeState.PREPARED
+    assert recovery_directory_synced
+    assert recovered[0].asset_id is not None
+    assert service._staging_candidates(recovered[0]) == ()
+    stored = service.library.database.get_asset(recovered[0].asset_id)
+    assert stored is not None
+    assert service.library.assets.verify(stored)
+
+
+def test_reconciliation_keyboard_interrupt_preserves_accepted_staging(
+    tmp_path, monkeypatch
+) -> None:
+    service = _service(tmp_path)
+    payload = b"accepted-staging-must-survive-startup-ctrl-c"
+
+    def initial_storage_failure(*args, **kwargs):
+        raise OSError("ENOSPC before canonical publication")
+
+    monkeypatch.setattr(
+        service.library.assets,
+        "ingest_file",
+        initial_storage_failure,
+    )
+    with pytest.raises(OSError, match="ENOSPC"):
+        service.ingest_upload(BytesIO(payload), filename="shutdown.mp3")
+
+    intake = service.list_intakes()[0]
+    staged = service._verified_staging_candidate(intake)
+    assert staged is not None
+    assert staged.read_bytes() == payload
+
+    def interrupt_recovery(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        service.library.assets,
+        "ingest_file",
+        interrupt_recovery,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        service.reconcile_receiving()
+
+    current = service.get_intake(intake.intake_id)
+    assert current is not None
+    assert current.state is IntakeState.RECEIVING
+    assert current.content_sha256 == intake.content_sha256
+    assert current.size_bytes == len(payload)
+    assert current.asset_id is None
+    assert service._verified_staging_candidate(current) == staged
+    assert staged.read_bytes() == payload
+
+
 def test_tampered_accepted_staging_fails_terminally_instead_of_retrying_forever(
     tmp_path, monkeypatch
 ) -> None:
