@@ -88,6 +88,55 @@ def test_thumbnail_ffmpeg_discards_unused_stdout_without_capture_budget() -> Non
     assert completed.stderr == ""
 
 
+def test_thumbnail_interrupt_terminates_child_before_reader_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released = threading.Event()
+
+    class BlockingPipe:
+        def read(self, size: int) -> bytes:
+            assert size > 0
+            assert released.wait(timeout=2.0), "reader was joined before child termination"
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    class InterruptingProcess:
+        def __init__(self) -> None:
+            self.stderr = BlockingPipe()
+            self.returncode: int | None = None
+            self.killed = False
+            self.wait_calls = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise SystemExit(17)
+            assert self.killed
+            self.returncode = -9
+            return self.returncode
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+            released.set()
+
+    process = InterruptingProcess()
+    monkeypatch.setattr(media_module.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(SystemExit) as exc_info:
+        media_module._run_thumbnail_ffmpeg_bounded(("synthetic-ffmpeg",), timeout=60.0)
+
+    assert exc_info.value.code == 17
+    assert process.killed is True
+    assert process.wait_calls == 2
+    assert released.is_set()
+
+
 def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch) -> None:
     library = LocalLibrary(tmp_path)
     source = tmp_path / "source.png"
@@ -107,6 +156,9 @@ def test_concurrent_equal_thumbnail_requests_publish_once(tmp_path, monkeypatch)
         nonlocal call_count
         with count_lock:
             call_count += 1
+        protocol_index = arguments.index("-protocol_whitelist")
+        assert arguments[protocol_index + 1] == "file"
+        assert protocol_index < arguments.index("-i")
         # Widen the race enough that an implementation without publication locking
         # reliably lets both callers pass the initial missing-receipt check.
         time.sleep(0.05)
