@@ -135,6 +135,28 @@ def _transport_is_secure(request: Request) -> bool:
     return _is_loopback_client(request) or request.url.scheme == "https"
 
 
+def _route_relative_path(request: Request) -> str:
+    """Return the app-relative ASGI path even when mounted under a root path.
+
+    `request.url.path` includes `root_path`, while Starlette routing accounts for that
+    prefix separately. Pre-parser security gates must therefore normalize the ASGI scope
+    before matching an endpoint; otherwise mounting the app could bypass those gates.
+    """
+
+    path = str(request.scope.get("path") or "")
+    root_path = str(request.scope.get("root_path") or "").rstrip("/")
+    if not root_path:
+        return path
+    if path == root_path:
+        return "/"
+    prefix = f"{root_path}/"
+    if path.startswith(prefix):
+        return path[len(root_path) :]
+    # Some ASGI integrations already provide a route-relative `path` alongside a
+    # nonempty root_path. Do not strip an unrelated prefix in that case.
+    return path
+
+
 def _authorization_token(value: str | None) -> str:
     if value is None or not value.startswith("Bearer "):
         raise AuthenticationError("bearer token required")
@@ -199,7 +221,7 @@ def create_app(
                 content={"detail": "non-loopback requests require HTTPS"},
             )
 
-        if request.method == "POST" and request.url.path == "/api/v1/inbox/files":
+        if request.method == "POST" and _route_relative_path(request) == "/api/v1/inbox/files":
             try:
                 token = _authorization_token(request.headers.get("authorization"))
                 auth.authenticate(token)
