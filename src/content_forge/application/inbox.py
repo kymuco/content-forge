@@ -654,12 +654,16 @@ class InboxService:
             if retryable_operational:
                 # URL/note capture has no accepted byte authority to protect, but its
                 # durable receipt plus deterministic project checkpoints are recoverable.
-                # Once that RECEIVING receipt can be read back, return it to the caller
-                # instead of presenting the request as unaccepted and encouraging a retry
-                # that would allocate a second intake/project. Diagnostic persistence is
-                # best effort under the same storage pressure; the receipt identity/state
-                # are the authority and exclusive reconciliation completes it later.
-                current = self.repository.get_intake(intake.intake_id)
+                # Prefer a fresh durable read so any checkpoint that committed before the
+                # primary failure is reflected in the returned identity. If that read is
+                # itself unavailable under the same operational pressure, the local intake
+                # is still the identity returned by a successful create/checkpoint and is
+                # conservatively returned as RECEIVING rather than encouraging a duplicate
+                # client retry. Diagnostic persistence remains best effort.
+                try:
+                    current = self.repository.get_intake(intake.intake_id)
+                except (OSError, sqlite3.OperationalError):
+                    return intake
                 if current is not None and current.state is IntakeState.RECEIVING:
                     try:
                         return self.repository.transition_intake(
