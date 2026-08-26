@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from threading import Event, Thread
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
+from content_forge.application.idempotency import intake_idempotency_scope
 from content_forge.web import static_path
 from content_forge.web.onboarding import normalize_public_base_url
 
@@ -106,6 +108,7 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert '"Idempotency-Key": record.id' in client
     assert "xhr.upload.onprogress" in client
     assert "isPermanentQueueRejection" in client
+    assert "![401, 408, 425, 429].includes(value)" in client
     assert "Removed from the retry queue" in client
     assert "Session retained so revocation can be retried" in client
     assert "finally { bearerToken = null" not in client
@@ -150,11 +153,45 @@ def test_server_share_target_fallback_never_ingests_and_is_preparse_bounded(tmp_
         app.state.runtime_lease.close()
 
 
+def test_idempotency_scope_serializes_same_live_request_key() -> None:
+    key = "323e4567-e89b-42d3-a456-426614174002"
+    first_entered = Event()
+    release_first = Event()
+    second_attempting = Event()
+    second_entered = Event()
+
+    def first() -> None:
+        with intake_idempotency_scope(key):
+            first_entered.set()
+            release_first.wait()
+
+    def second() -> None:
+        first_entered.wait()
+        second_attempting.set()
+        with intake_idempotency_scope(key):
+            second_entered.set()
+
+    first_thread = Thread(target=first)
+    second_thread = Thread(target=second)
+    first_thread.start()
+    assert first_entered.wait(timeout=2)
+    second_thread.start()
+    assert second_attempting.wait(timeout=2)
+    assert not second_entered.wait(timeout=0.05)
+    release_first.set()
+    assert second_entered.wait(timeout=2)
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+
+
 def test_pwa_queue_idempotency_replays_one_durable_intake_per_record(tmp_path) -> None:
     app = create_app(
         root=tmp_path,
         ffprobe_path="definitely-missing-ffprobe",
         ffmpeg_path="definitely-missing-ffmpeg",
+        max_upload_bytes=64,
     )
     client = TestClient(app)
     try:
@@ -202,9 +239,33 @@ def test_pwa_queue_idempotency_replays_one_durable_intake_per_record(tmp_path) -
         assert second_file.json()["intake_id"] == first_file.json()["intake_id"]
         assert second_file.json()["project_id"] == first_file.json()["project_id"]
 
+        different_bytes = client.post(
+            "/api/v1/inbox/files",
+            headers=file_headers,
+            files={"file": ("retry.bin", b"different file bytes", "application/octet-stream")},
+        )
+        assert different_bytes.status_code == 409
+        assert "different file bytes" in different_bytes.json()["detail"]
+
         inbox = client.get("/api/v1/inbox?limit=100", headers=auth)
         assert inbox.status_code == 200
         assert len(inbox.json()["items"]) == 2
+
+        failed_key = "423e4567-e89b-42d3-a456-426614174003"
+        failed_headers = {**auth, "Idempotency-Key": failed_key}
+        first_failed = client.post(
+            "/api/v1/inbox/files",
+            headers=failed_headers,
+            files={"file": ("too-large.bin", b"x" * 65, "application/octet-stream")},
+        )
+        replay_failed = client.post(
+            "/api/v1/inbox/files",
+            headers=failed_headers,
+            files={"file": ("too-large.bin", b"x" * 65, "application/octet-stream")},
+        )
+        assert first_failed.status_code == 413
+        assert replay_failed.status_code == 409
+        assert "already failed" in replay_failed.json()["detail"]
 
         invalid_key = client.post(
             "/api/v1/inbox/url-note",
