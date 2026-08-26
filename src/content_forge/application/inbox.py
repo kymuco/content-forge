@@ -270,6 +270,11 @@ class InboxService:
                     raise InboxError("recovery blob size disagrees with Inbox receipt")
                 if sha256_file(blob_path) != intake.content_sha256:
                     raise InboxError("recovery blob digest disagrees with Inbox receipt")
+                # A canonical pathname can survive a process interruption even when the
+                # AssetStore directory-fsync step itself failed. Re-establish that
+                # durability barrier before the first catalog row is allowed to commit.
+                # If this raises an operational OSError, reconciliation leaves the FULL-
+                # accepted receipt/staging resumable and retries on a later startup.
                 fsync_directory_chain(blob_path.parent, stop_at=self.library.paths.root)
                 asset = self.library.database.put_asset(
                     Asset(
@@ -297,6 +302,9 @@ class InboxService:
         if asset.sha256 != intake.content_sha256 or asset.size_bytes != intake.size_bytes:
             raise InboxError("recovered asset metadata disagrees with Inbox receipt")
         asset = self._ensure_asset_bytes(intake, asset)
+
+        # From this point the catalog/canonical blob is authoritative, so an old staging
+        # copy is no longer needed even if receipt linkage is interrupted again.
         self._discard_staging_candidates(intake)
         intake = self.repository.transition_intake(
             intake.intake_id,
@@ -361,6 +369,8 @@ class InboxService:
                 project = canonical
 
         if project is None:
+            # Backward compatibility for receipts created by pre-hardening PR8 snapshots
+            # whose project ID was randomly allocated before deterministic recovery.
             project = self.repository.find_project_for_intake(intake.intake_id)
         if project is None:
             project = (
@@ -501,11 +511,17 @@ class InboxService:
         digest = hashlib.sha256()
         try:
             if intake.content_sha256 is not None and intake.size_bytes is not None:
+                # A previous attempt crossed the durable byte-acceptance boundary but did
+                # not finish handoff. The retry must prove exact byte equality and then
+                # resume from durable checkpoints rather than re-stage/re-accept content.
                 return self._resume_accepted_upload(stream, intake)
 
             descriptor, temporary_name = tempfile.mkstemp(
                 dir=self.library.paths.incoming,
                 prefix=f"http-{intake.intake_id}-",
+                # Staging names are opaque internal recovery keys. The user filename is
+                # preserved in the intake/provenance record and must never control a
+                # filesystem component (length, encoding, or platform-invalid chars).
                 suffix=".upload",
             )
             staged = Path(temporary_name)
@@ -526,9 +542,19 @@ class InboxService:
                 handle.flush()
                 os.fsync(handle.fileno())
 
+            # File fsync alone does not make a newly-created filename durable on POSIX.
+            # Persist both the staged filename and the complete directory chain through
+            # the established runtime root before publishing the FULL byte receipt. This
+            # matters on the first upload where `.incoming` and its parents may themselves
+            # be newly-created directory entries.
             _fsync_directory(staged.parent)
             fsync_directory_chain(staged.parent, stop_at=self.library.paths.root)
             content_sha256 = digest.hexdigest()
+            # This is the byte-acceptance linearization point. Before this durable receipt
+            # exists, a crash may safely fail the intake. After it exists, the verified
+            # staging file/canonical blob/catalog row are all resumable representations.
+            # This specific SQLite commit uses synchronous=FULL so returning from the
+            # transition means the WAL acceptance receipt has reached stable storage.
             intake = self.repository.transition_intake(
                 intake.intake_id,
                 expected_state=IntakeState.RECEIVING,
@@ -540,6 +566,10 @@ class InboxService:
                 durable=True,
             )
 
+            # Client MIME/filename are provenance hints only. Shared immutable Asset
+            # classification starts neutral and is promoted only by authoritative probe.
+            # Provenance is deliberately attached after the asset receipt checkpoint so
+            # every post-acceptance cross-store crash window can be reconstructed.
             result = self.library.assets.ingest_file(
                 staged,
                 source=None,
@@ -562,9 +592,17 @@ class InboxService:
             intake, _project = self._ensure_project(intake)
             return self._prepare_receiving_file(intake, asset)
         except BaseException as exc:
+            # Byte mismatches are deterministic idempotency conflicts. Never rewrite the
+            # already-accepted durable receipt while reporting that conflict to the API.
             if isinstance(exc, IdempotencyConflict):
                 raise
 
+            # Failure handling must not depend on being able to read the receipt again.
+            # Under the same disk/SQLite pressure that caused the primary failure,
+            # `get_intake()` may itself fail. In that case preserve any staging file
+            # conservatively and re-raise the original application failure; exclusive
+            # startup reconciliation can later decide from the durable receipt whether
+            # those bytes were accepted or are merely pre-acceptance garbage.
             lookup_failed = False
             try:
                 current = self.repository.get_intake(intake.intake_id)
@@ -579,6 +617,10 @@ class InboxService:
             if not lookup_failed and current is not None and current.state is IntakeState.RECEIVING:
                 accepted = current.content_sha256 is not None and current.size_bytes is not None
                 if not isinstance(exc, Exception):
+                    # Shutdown/control-flow signals are not application failures. Once the
+                    # FULL byte receipt exists, retain the authenticated staging authority
+                    # until a canonical Asset receipt exists, then let exclusive startup
+                    # reconciliation resume from whichever durable checkpoint survived.
                     retain_staging = accepted and current.asset_id is None
                 else:
                     retryable_operational = isinstance(
@@ -587,6 +629,13 @@ class InboxService:
                     )
                     project_checkpointed = current.project_id is not None
                     if accepted and (retryable_operational or not project_checkpointed):
+                        # Accepted bytes with incomplete handoff or a transient storage
+                        # failure are resumable, not terminal. Operational failures remain
+                        # retryable even after the project checkpoint, matching startup
+                        # reconciliation. If no Asset is catalogued yet, authenticated
+                        # staging remains the recovery authority. Application-layer callers
+                        # retain the durable recovery checkpoint; HTTP adapters must not
+                        # serialize an accepted RECEIVING result as a synthetic 201.
                         retain_staging = current.asset_id is None
                         try:
                             retryable = self.repository.transition_intake(
@@ -601,10 +650,6 @@ class InboxService:
                         except Exception:
                             retryable = current
                         if retryable_operational:
-                            # Application-layer callers retain the durable PR8 recovery
-                            # checkpoint contract. Transport adapters must treat an
-                            # accepted RECEIVING result as retryable/non-success instead
-                            # of serializing it as HTTP 201.
                             return retryable
                     else:
                         try:
@@ -664,6 +709,14 @@ class InboxService:
                 (OSError, sqlite3.OperationalError),
             )
             if retryable_operational:
+                # URL/note capture has no accepted byte authority to protect, but its
+                # durable receipt plus deterministic project checkpoints are recoverable.
+                # Prefer a fresh durable read so any checkpoint that committed before the
+                # primary failure is reflected in the returned identity. If that read is
+                # itself unavailable under the same operational pressure, the local intake
+                # is still the identity returned by a successful create/checkpoint and is
+                # conservatively returned as RECEIVING rather than encouraging a duplicate
+                # client retry. Diagnostic persistence remains best effort.
                 try:
                     current = self.repository.get_intake(intake.intake_id)
                 except (OSError, sqlite3.OperationalError):
@@ -697,6 +750,15 @@ class InboxService:
             raise
 
     def reconcile_receiving(self) -> tuple[InboxIntake, ...]:
+        """Recover receipts left `receiving` by process/machine interruption.
+
+        A file is accepted only once exact digest+size are durable. From that point,
+        startup can recover from durable staging, canonical-blob publication, asset
+        catalog, provenance, deterministic project, and receipt-link interruptions.
+        Control-flow exceptions such as KeyboardInterrupt/SystemExit are never recovery
+        failures: they propagate without mutating the receipt or deleting staging.
+        """
+
         recovered: list[InboxIntake] = []
         for original in self.repository.list_intakes_in_state(IntakeState.RECEIVING):
             try:
@@ -746,6 +808,11 @@ class InboxService:
                         accepted_file or current.kind is IntakeKind.URL_NOTE
                     )
                     if retryable_receipt:
+                        # FULL-accepted files keep operational storage failures retryable
+                        # so their authenticated byte authority is not destroyed. URL/note
+                        # records have no byte acceptance boundary, but their deterministic
+                        # project linkage is likewise reconstructible, so storage pressure
+                        # must leave them RECEIVING for a later exclusive startup.
                         recovered.append(current)
                         continue
                     try:
