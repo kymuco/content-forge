@@ -504,6 +504,20 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UploadTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+        # InboxService deliberately preserves the PR8 application-layer contract of
+        # returning a durable RECEIVING recovery checkpoint for post-acceptance storage
+        # pressure. That checkpoint is not an HTTP success: a remote client must retain
+        # its only retry copy until the same-key exact-byte resume finishes handoff.
+        if (
+            intake.state is IntakeState.RECEIVING
+            and intake.size_bytes is not None
+            and intake.content_sha256 is not None
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="accepted upload awaits recovery",
+            )
         return _intake_payload(intake)
 
     @app.get("/api/v1/assets/{asset_id}/thumbnail")
