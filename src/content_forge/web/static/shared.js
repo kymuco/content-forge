@@ -167,11 +167,53 @@
   async function setToken(token) {
     if (typeof token !== "string" || !token) throw new Error("bearer token is required");
     const db = await openDatabase();
-    try {
-      const tx = db.transaction(KV_STORE, "readwrite");
-      tx.objectStore(KV_STORE).put(token, TOKEN_KEY);
-      await transactionDone(tx);
-    } finally { db.close(); }
+    return new Promise((resolve, reject) => {
+      let cause = null;
+      let tx;
+      try {
+        // IndexedDB serializes overlapping read/write transactions for this object store.
+        // The read and conditional put therefore form one cross-tab compare-and-set: the
+        // first issued bearer claims the empty slot, while a concurrent different bearer
+        // cannot replace it and is returned to exchangePairing's revocation path.
+        tx = db.transaction(KV_STORE, "readwrite");
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      const store = tx.objectStore(KV_STORE);
+      const read = store.get(TOKEN_KEY);
+      read.onerror = () => {
+        cause = read.error || new Error("IndexedDB token read failed");
+        try { tx.abort(); } catch (_) {}
+      };
+      read.onsuccess = () => {
+        const existing = read.result;
+        if (existing !== undefined) {
+          if (existing === token) return;
+          cause = new Error("pairing token slot is already occupied");
+          try { tx.abort(); } catch (_) {}
+          return;
+        }
+        const write = store.put(token, TOKEN_KEY);
+        write.onerror = () => {
+          cause = write.error || new Error("IndexedDB token write failed");
+          try { tx.abort(); } catch (_) {}
+        };
+      };
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onabort = () => {
+        const error = cause || tx.error || new Error("IndexedDB token claim transaction aborted");
+        db.close();
+        reject(error);
+      };
+      tx.onerror = () => {
+        if (!cause) cause = tx.error || new Error("IndexedDB token claim transaction failed");
+      };
+    });
   }
 
   async function clearToken() {
