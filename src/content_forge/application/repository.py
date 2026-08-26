@@ -27,11 +27,10 @@ from .models import InboxIntake, IntakeKind, IntakeState, PreparationState
 APPLICATION_SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_COMPONENT = "application"
 # Before a file has a durable size+SHA receipt, no bytes have crossed the acceptance
-# boundary and retrying the same idempotency identity is safe. Keep only deterministic
-# input failures terminal; operational subclasses (PermissionError, FileNotFoundError,
-# platform-specific OSError subclasses, SQLite failures, etc.) therefore do not need to be
-# reconstructed later from fragile exception class-name strings.
-_PERMANENT_PREACCEPTANCE_FILE_FAILURES = frozenset({"UploadTooLargeError"})
+# boundary. Every such failed receipt is therefore safe to revive under the same
+# deterministic identity and re-evaluate against current runtime authority. This includes
+# contextual validation such as UploadTooLargeError: retrying under the same limit returns
+# 413 again, while a later higher limit may now accept the same queued bytes.
 
 
 class ApplicationRepository:
@@ -225,15 +224,14 @@ class ApplicationRepository:
                     and existing.content_sha256 is None
                     and existing.asset_id is None
                     and existing.project_id is None
-                    and existing.error_code not in _PERMANENT_PREACCEPTANCE_FILE_FAILURES
                 )
                 if retryable_preacceptance_failure:
-                    # No exact byte receipt exists, so this durable identity has accepted
-                    # no content. Revive it regardless of the concrete operational error
-                    # class; terminal input failures are explicitly deny-listed above.
-                    # This keeps PermissionError/FileNotFoundError/platform OSError
-                    # subclasses retryable without encoding Python's exception hierarchy
-                    # into persisted class-name strings.
+                    # No exact byte receipt, asset or project exists, so this durable
+                    # identity accepted no content. Revive every such failure and re-run
+                    # current validation/operational checks. That keeps filesystem/SQLite
+                    # failures retryable and also lets contextual limits evolve: an old
+                    # UploadTooLargeError still returns 413 under the same limit, but can
+                    # succeed after max_upload_bytes is deliberately raised.
                     revived = existing.validated_copy(
                         update={
                             "state": IntakeState.RECEIVING,
@@ -267,7 +265,7 @@ class ApplicationRepository:
                         ) from exc
                     return revived
 
-                # Prepared/partial/permanently-failed records, plus FULL-accepted
+                # Prepared/partial/post-acceptance failed records, plus FULL-accepted
                 # receiving files, already represent the request identity. The HTTP
                 # adapter replays that durable result instead of executing side effects
                 # a second time.
