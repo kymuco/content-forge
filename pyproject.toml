@@ -13,6 +13,7 @@ dependencies = [
   "pydantic>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "PyYAML>=6.0,<7",
+  "segno>=1.6,<2",
   "uvicorn>=0.34,<1",
 ]
 
@@ -27,6 +28,9 @@ content-forge-api = "content_forge.api.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"content_forge.web" = ["static/*", "static/icons/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
