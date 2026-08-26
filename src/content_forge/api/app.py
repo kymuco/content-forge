@@ -465,6 +465,16 @@ def create_app(
             intake = replay.intake
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        # URL/note capture has no byte-acceptance receipt, but its deterministic intake
+        # and project checkpoints are recoverable. A RECEIVING result is therefore an
+        # application-layer retry checkpoint, not remote success: keep the PWA queue until
+        # the same-key retry completes the project handoff.
+        if intake.state is IntakeState.RECEIVING:
+            raise HTTPException(
+                status_code=500,
+                detail="URL/note capture awaits recovery",
+            )
         return _intake_payload(intake)
 
     @app.post("/api/v1/inbox/files", status_code=201)
