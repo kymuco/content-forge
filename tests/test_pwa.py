@@ -111,6 +111,9 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert 'request.formData()' in service_worker
     assert service_worker.index("boundedContentLength(request)") < service_worker.index("request.formData()")
     assert service_worker.index("self.CFStore.getToken()") < service_worker.index("request.formData()")
+    assert "body = await response.text()" in service_worker
+    assert "payload = JSON.parse(body)" in service_worker
+    assert service_worker.index("body = await response.text()") < service_worker.index("payload = JSON.parse(body)")
     assert "await self.CFStore.enqueueShares(records)" in service_worker
     assert "await self.CFStore.enqueueSharesWithLimits(records, activeLimits)" in service_worker
     assert service_worker.index("const activeLimits = await currentShareLimits()") < service_worker.index(
@@ -136,6 +139,12 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert "for (const entry of entries) store.add(entry)" in shared
     assert "const entries = await enqueueShares([record])" in shared
 
+    assert "async function revokeIssuedPairingToken(token)" in client
+    assert "const issuedToken = payload.token" in client
+    assert "await window.CFStore.setToken(issuedToken)" in client
+    assert "const revoked = await revokeIssuedPairingToken(issuedToken)" in client
+    assert client.index("await window.CFStore.setToken(issuedToken)") < client.index("bearerToken = issuedToken;")
+    assert "Automatic revocation also failed" in client
     assert "XMLHttpRequest" in client
     assert 'setRequestHeader("Authorization"' in client
     assert 'setRequestHeader("Idempotency-Key", record.id)' in client
@@ -145,6 +154,9 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert "![401, 408, 425, 429].includes(value)" in client
     assert "Removed from the retry queue" in client
     assert "Session retained so revocation can be retried" in client
+    assert "Nothing was queued; the current selection is still available." in client
+    assert "Nothing was queued; your form values were kept." in client
+    assert client.index("await window.CFStore.enqueueShares(records)") < client.index('elements.fileInput.value = "";')
     assert "finally { bearerToken = null" not in client
     assert "replaceChildren" in client
     assert "innerHTML" not in client
