@@ -99,7 +99,7 @@ async function loadInbox() {
 async function updateQueueBadge() { const queued = await window.CFStore.listShares(); elements.queueBadge.textContent = `Queue ${queued.length}`; return queued; }
 function showProgress(label, fraction) { setHidden(elements.progressShell, false); const normalized = Math.max(0, Math.min(1, Number(fraction) || 0)); elements.progressBar.style.width = `${Math.round(normalized * 100)}%`; elements.progressLabel.textContent = label; }
 function hideProgressSoon() { window.setTimeout(() => { setHidden(elements.progressShell, true); elements.progressBar.style.width = "0%"; }, 700); }
-function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 409, 425, 429].includes(value); }
+function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 425, 429].includes(value); }
 
 function uploadQueuedFile(record) {
   return new Promise((resolve, reject) => {
