@@ -19,12 +19,14 @@ from content_forge.application import (
     InboxError,
     InboxIntake,
     InboxService,
+    IntakeKind,
     IntakeState,
     UploadTooLargeError,
 )
 from content_forge.application.idempotency import (
     IdempotencyConflict,
     IdempotencyReplay,
+    intake_id_for_key,
     intake_idempotency_scope,
     normalize_idempotency_key,
 )
@@ -307,6 +309,30 @@ def create_app(
             if route_path == "/api/v1/inbox/files":
                 body_limit = max_upload_bytes + MULTIPART_OVERHEAD_BUDGET
                 body_kind = "multipart request"
+
+                # A retry can arrive after bytes were already durably accepted and the
+                # original 201 was lost, while this runtime now has a lower upload limit.
+                # Authentication has already succeeded above. Grant a larger pre-parser
+                # allowance only to the exact deterministic key of an already accepted
+                # FILE receipt, and bound it by that receipt's recorded accepted size.
+                raw_key = request.headers.get("idempotency-key")
+                if raw_key is not None:
+                    try:
+                        normalized_key = normalize_idempotency_key(raw_key)
+                    except ValueError:
+                        normalized_key = None
+                    if normalized_key is not None:
+                        existing = repository.get_intake(intake_id_for_key(normalized_key))
+                        if (
+                            existing is not None
+                            and existing.kind is IntakeKind.FILE
+                            and existing.size_bytes is not None
+                            and existing.content_sha256 is not None
+                        ):
+                            body_limit = max(
+                                body_limit,
+                                existing.size_bytes + MULTIPART_OVERHEAD_BUDGET,
+                            )
             elif route_path in _BOUNDED_PARSED_POST_ROUTES:
                 # Pairing exchange is intentionally unauthenticated, while URL/note is
                 # authenticated above. Both are Pydantic parsed-body routes, so bound
