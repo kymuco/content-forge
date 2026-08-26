@@ -30,15 +30,29 @@ def test_live_share_authority_refreshes_before_body_consumption() -> None:
 
     assert 'const LIVE_CONFIG_URL = appUrl("config.json")' in worker
     assert "async function currentShareLimits()" in worker
-    assert 'fetch(LIVE_CONFIG_URL, { cache: "no-store" })' in worker
-    assert "return validateLiveLimits(await response.json())" in worker
+    fetch_call = 'response = await fetch(LIVE_CONFIG_URL, { cache: "no-store" })'
+    body_read = "body = await response.text()"
+    json_parse = "payload = JSON.parse(body)"
+    validate = "return validateLiveLimits(payload)"
+    assert fetch_call in worker
+    assert body_read in worker
+    assert json_parse in worker
+    assert validate in worker
+    # Fetch rejection and an interrupted response body are genuine offline/network
+    # failures. Malformed bytes received in full are parsed only afterwards and fail
+    # closed rather than being confused with an offline fallback.
+    assert worker.count("return LIMITS") >= 2
+    assert worker.index(fetch_call) < worker.index(body_read)
+    assert worker.index(body_read) < worker.index(json_parse)
+    assert worker.index(json_parse) < worker.index(validate)
+    assert "throw new Error(\"invalid live PWA limits\")" in worker
+
     assert "const activeLimits = await currentShareLimits()" in worker
     parse_call = "const data = await boundedMultipartFormData(request, contentType, activeLimits)"
     assert parse_call in worker
     assert worker.index("const activeLimits = await currentShareLimits()") < worker.index(parse_call)
     assert "file.size > activeLimits.maxUploadBytes" in worker
     assert "contentLength > activeLimits.maxShareBodyBytes" in worker
-    assert "return LIMITS" in worker
 
 
 def test_service_worker_update_bypasses_http_cache_for_imports() -> None:
