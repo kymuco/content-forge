@@ -183,6 +183,52 @@
     } finally { db.close(); }
   }
 
+  async function clearTokenIfMatches(expectedToken) {
+    if (typeof expectedToken !== "string" || !expectedToken) {
+      throw new Error("expected bearer token is required");
+    }
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      let matched = false;
+      let cause = null;
+      let tx;
+      try {
+        tx = db.transaction(KV_STORE, "readwrite");
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      const store = tx.objectStore(KV_STORE);
+      const read = store.get(TOKEN_KEY);
+      read.onerror = () => {
+        cause = read.error || new Error("IndexedDB token read failed");
+        try { tx.abort(); } catch (_) {}
+      };
+      read.onsuccess = () => {
+        if (read.result !== expectedToken) return;
+        matched = true;
+        const deletion = store.delete(TOKEN_KEY);
+        deletion.onerror = () => {
+          cause = deletion.error || new Error("IndexedDB token deletion failed");
+          try { tx.abort(); } catch (_) {}
+        };
+      };
+      tx.oncomplete = () => {
+        db.close();
+        resolve(matched);
+      };
+      tx.onabort = () => {
+        const error = cause || tx.error || new Error("IndexedDB token cleanup transaction aborted");
+        db.close();
+        reject(error);
+      };
+      tx.onerror = () => {
+        if (!cause) cause = tx.error || new Error("IndexedDB token cleanup transaction failed");
+      };
+    });
+  }
+
   async function enqueueSharesWithLimits(records, authority) {
     if (!Array.isArray(records)) throw new Error("share queue batch must be an array");
     const limits = queueAuthority(authority);
@@ -270,6 +316,7 @@
     getToken,
     setToken,
     clearToken,
+    clearTokenIfMatches,
     enqueueShare,
     enqueueShares,
     enqueueSharesWithLimits,
