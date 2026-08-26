@@ -99,7 +99,7 @@ async function loadInbox() {
 async function updateQueueBadge() { const queued = await window.CFStore.listShares(); elements.queueBadge.textContent = `Queue ${queued.length}`; return queued; }
 function showProgress(label, fraction) { setHidden(elements.progressShell, false); const normalized = Math.max(0, Math.min(1, Number(fraction) || 0)); elements.progressBar.style.width = `${Math.round(normalized * 100)}%`; elements.progressLabel.textContent = label; }
 function hideProgressSoon() { window.setTimeout(() => { setHidden(elements.progressShell, true); elements.progressBar.style.width = "0%"; }, 700); }
-function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 425, 429].includes(value); }
+function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 413, 425, 429].includes(value); }
 
 function uploadQueuedFile(record) {
   return new Promise((resolve, reject) => {
@@ -134,6 +134,10 @@ async function drainQueue() {
           setPairedState(false);
           setStatus(elements.pairStatus, "Session expired. Pair again; queued shares are preserved.", "error");
           break;
+        }
+        if (error.status === 413) {
+          setStatus(elements.captureStatus, `${error.message || "Capture exceeds the current server upload limit."} The item remains queued; refresh Content Forge to load current limits. Later captures will continue.`, "error");
+          continue;
         }
         if (isPermanentQueueRejection(error.status)) {
           await window.CFStore.deleteShare(record.id);
@@ -173,7 +177,7 @@ async function createOnboarding(event) {
   } catch (error) { setStatus(elements.onboardingStatus, error.message || "Could not create onboarding QR.", "error"); }
 }
 
-async function registerServiceWorker() { if (!("serviceWorker" in navigator)) { setStatus(elements.captureStatus, "This browser does not support Service Workers.", "error"); return; } try { await navigator.serviceWorker.register("sw.js", { scope: "./" }); } catch (error) { setStatus(elements.captureStatus, `PWA worker registration failed: ${error.message}`, "error"); } }
+async function registerServiceWorker() { if (!("serviceWorker" in navigator)) { setStatus(elements.captureStatus, "This browser does not support Service Workers.", "error"); return; } try { await navigator.serviceWorker.register("sw.js", { scope: "./", updateViaCache: "none" }); } catch (error) { setStatus(elements.captureStatus, `PWA worker registration failed: ${error.message}`, "error"); } }
 function wireInstallPrompt() { window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); installPrompt = event; setHidden(elements.installButton, false); }); elements.installButton.addEventListener("click", async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; setHidden(elements.installButton, true); }); }
 
 async function initialize() {

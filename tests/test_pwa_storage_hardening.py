@@ -25,6 +25,26 @@ def test_runtime_config_is_network_first_with_offline_cache_fallback() -> None:
     assert "${CACHE_PREFIX}v5" in worker
 
 
+def test_service_worker_update_bypasses_http_cache_for_imports() -> None:
+    client = static_path("app.js").read_text(encoding="utf-8")
+
+    assert 'navigator.serviceWorker.register("sw.js", { scope: "./", updateViaCache: "none" })' in client
+
+
+def test_413_preserves_local_capture_without_poisoning_later_queue_items() -> None:
+    client = static_path("app.js").read_text(encoding="utf-8")
+
+    assert "![401, 408, 413, 425, 429].includes(value)" in client
+    preserved = client.index("if (error.status === 413)")
+    permanent = client.index("if (isPermanentQueueRejection(error.status))")
+    assert preserved < permanent
+    branch = client[preserved:permanent]
+    assert "window.CFStore.deleteShare(record.id)" not in branch
+    assert "The item remains queued" in branch
+    assert "Later captures will continue" in branch
+    assert "continue;" in branch
+
+
 def test_share_target_streams_through_byte_cap_before_multipart_parse() -> None:
     worker = static_path("sw.js").read_text(encoding="utf-8")
 
