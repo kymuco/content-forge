@@ -3,15 +3,27 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v5`;
+const CACHE_NAME = `${CACHE_PREFIX}v6`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
+const LIVE_LIMIT_NAMES = Object.freeze([
+  "maxUploadBytes",
+  "maxShareBodyBytes",
+  "maxQueueBytes",
+  "maxQueueEntries",
+  "maxBatchEntries",
+  "maxFilenameChars",
+  "maxMimeChars",
+  "maxUrlChars",
+  "maxNoteChars",
+]);
 
 function appUrl(relative) {
   return new URL(relative, self.registration.scope).href;
 }
 
 const CONFIG_URL = appUrl("config.js");
+const LIVE_CONFIG_URL = appUrl("config.json");
 const SHELL_ASSETS = [
   appUrl("./"),
   CONFIG_URL,
@@ -55,18 +67,48 @@ function shareRequestIsTrustedNavigation(request) {
 }
 
 function boundedContentLength(request) {
-  // FetchEvent requests may not expose the browser-generated HTTP Content-Length. Treat
-  // it as an optional fast rejection only; boundedMultipartFormData is authoritative.
+  // FetchEvent requests may not expose the browser-generated HTTP Content-Length. Parse it
+  // only as an optional hint here; the live server authority is applied after refresh.
   const raw = request.headers.get("content-length");
-  if (raw == null) return;
+  if (raw == null) return null;
   if (!/^\d+$/.test(raw)) throw new Error("invalid shared Content-Length");
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0 || value > LIMITS.maxShareBodyBytes) {
-    throw new Error("shared payload exceeds the local queue limit");
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("invalid shared Content-Length");
   }
+  return value;
 }
 
-async function boundedMultipartFormData(request, contentType) {
+function validateLiveLimits(payload) {
+  if (!payload || typeof payload !== "object") throw new Error("invalid live PWA limits");
+  const normalized = {};
+  for (const name of LIVE_LIMIT_NAMES) {
+    const value = Number(payload[name]);
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`invalid live PWA limit: ${name}`);
+    }
+    normalized[name] = value;
+  }
+  if (normalized.maxShareBodyBytes < normalized.maxUploadBytes) {
+    throw new Error("invalid live PWA upload limits");
+  }
+  return Object.freeze(normalized);
+}
+
+async function currentShareLimits() {
+  let response;
+  try {
+    response = await fetch(LIVE_CONFIG_URL, { cache: "no-store" });
+  } catch (_) {
+    // Native shares must remain capturable while the local server is actually offline.
+    // Only a network failure may fall back to the worker's last validated frozen limits.
+    return LIMITS;
+  }
+  if (!response.ok) throw new Error(`live PWA limits unavailable (${response.status})`);
+  return validateLiveLimits(await response.json());
+}
+
+async function boundedMultipartFormData(request, contentType, limits) {
   if (!request.body) throw new Error("share target has no request body");
   const reader = request.body.getReader();
   let totalBytes = 0;
@@ -74,7 +116,7 @@ async function boundedMultipartFormData(request, contentType) {
 
   // Stream directly into the browser's multipart parser instead of first retaining every
   // chunk and constructing a second full-size Blob. The wrapper never enqueues a chunk
-  // that would cross the configured cap, so parser input is bounded while peak JS memory
+  // that would cross the active cap, so parser input is bounded while peak JS memory
   // remains proportional to stream buffering rather than the complete shared payload.
   const boundedStream = new ReadableStream({
     async pull(controller) {
@@ -90,7 +132,7 @@ async function boundedMultipartFormData(request, contentType) {
           throw new Error("invalid share target body chunk");
         }
         totalBytes += value.byteLength;
-        if (totalBytes > LIMITS.maxShareBodyBytes) {
+        if (totalBytes > limits.maxShareBodyBytes) {
           finished = true;
           try { await reader.cancel("share target body limit exceeded"); } catch (_) {}
           controller.error(new Error("shared payload exceeds the local queue limit"));
@@ -124,26 +166,31 @@ async function queueShareTarget(request) {
   if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
     throw new Error("share target requires multipart form data");
   }
-  // Content-Length is an optional early rejection hint only. The actual body stream is
-  // always byte-counted before/during multipart parsing, including real Android Web Share
-  // Target requests where this network-generated forbidden header is not visible to JS.
-  boundedContentLength(request);
+  const contentLength = boundedContentLength(request);
 
   // A native share may be queued while the server is offline, but only a browser profile
   // that has already completed PR8 pairing may consume/persist the OS-provided multipart.
   const token = await self.CFStore.getToken();
   if (!token) throw new Error("share target requires a paired device");
 
-  // Reject already-full queues before consuming the request body. Exact batch/count/byte
-  // checks still happen atomically in CFStore at the persistence boundary after parsing.
+  // If the server is reachable, refresh authority before consuming this share. A stale
+  // active worker therefore cannot admit bytes using yesterday's max_upload_bytes. Only
+  // an actual network failure falls back to the frozen limits for offline capture.
+  const activeLimits = await currentShareLimits();
+  if (contentLength != null && contentLength > activeLimits.maxShareBodyBytes) {
+    throw new Error("shared payload exceeds the local queue limit");
+  }
+
+  // Reject already-full queues before consuming the request body. Exact checks still
+  // happen at the shared IndexedDB persistence boundary after parsing.
   const usage = await self.CFStore.queueUsage();
-  if (usage.entries >= LIMITS.maxQueueEntries || usage.fileBytes > LIMITS.maxQueueBytes) {
+  if (usage.entries >= activeLimits.maxQueueEntries || usage.fileBytes > activeLimits.maxQueueBytes) {
     throw new Error("share queue is full");
   }
 
   // Never call request.formData() on the unbounded FetchEvent request. The parser consumes
-  // only the byte-capped stream wrapper above, without a second full-payload JS copy.
-  const data = await boundedMultipartFormData(request, contentType);
+  // only the stream wrapper capped by the freshly resolved authority above.
+  const data = await boundedMultipartFormData(request, contentType, activeLimits);
   for (const key of data.keys()) {
     if (!ALLOWED_FIELDS.has(key)) throw new Error("share target contains an unsupported field");
   }
@@ -152,20 +199,29 @@ async function queueShareTarget(request) {
   const text = normalizeString(data.get("text"));
   const url = normalizeString(data.get("url"));
   const rawFiles = data.getAll("files");
-  if (rawFiles.length > LIMITS.maxBatchEntries) throw new Error("too many shared files");
+  if (rawFiles.length > activeLimits.maxBatchEntries) throw new Error("too many shared files");
   if (rawFiles.some((item) => !(item instanceof File))) throw new Error("invalid shared file field");
   const note = [title, text].filter(Boolean).join("\n");
 
-  if (url.length > LIMITS.maxUrlChars) throw new Error("shared URL is too long");
-  if (note.length > LIMITS.maxNoteChars) throw new Error("shared note is too long");
+  if (url.length > activeLimits.maxUrlChars) throw new Error("shared URL is too long");
+  if (note.length > activeLimits.maxNoteChars) throw new Error("shared note is too long");
   if (!rawFiles.length && !url && !note) throw new Error("empty share target payload");
 
-  const records = rawFiles.length
-    ? rawFiles.map((file) => ({
+  const normalizedFiles = rawFiles.map((file) => {
+    if (file.size > activeLimits.maxUploadBytes) throw new Error("shared file exceeds upload limit");
+    const originalName = file.name || "shared-file";
+    const mimeType = file.type || "application/octet-stream";
+    if (originalName.length > activeLimits.maxFilenameChars) throw new Error("shared filename is too long");
+    if (mimeType.length > activeLimits.maxMimeChars) throw new Error("shared MIME type is too long");
+    return { file, originalName, mimeType };
+  });
+
+  const records = normalizedFiles.length
+    ? normalizedFiles.map(({ file, originalName, mimeType }) => ({
         kind: "file",
         file,
-        originalName: file.name || "shared-file",
-        mimeType: file.type || "application/octet-stream",
+        originalName,
+        mimeType,
         sourceUrl: url || null,
         note: note || null,
       }))
@@ -174,6 +230,12 @@ async function queueShareTarget(request) {
         sourceUrl: url || null,
         note: note || null,
       }];
+
+  const incomingFileBytes = normalizedFiles.reduce((total, item) => total + item.file.size, 0);
+  if (usage.entries + records.length > activeLimits.maxQueueEntries) throw new Error("share queue is full");
+  if (usage.fileBytes + incomingFileBytes > activeLimits.maxQueueBytes) {
+    throw new Error("share queue byte limit exceeded");
+  }
 
   // One IndexedDB transaction owns validation plus all inserts, so a multi-file Android
   // share is either fully queued or not queued at all. Retrying after a storage error

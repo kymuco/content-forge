@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from content_forge.application import AuthManager
 
@@ -145,6 +145,15 @@ def install_pwa_routes(
     def pwa_config() -> Response:
         response = Response(config_script, media_type="text/javascript; charset=utf-8")
         return _harden(response, cache_control="no-cache")
+
+    @app.get("/app/config.json", include_in_schema=False)
+    def pwa_live_config() -> Response:
+        # The active Service Worker reads this before an online Android share so a
+        # server-side limit change becomes authority immediately, without waiting for a
+        # worker update cycle. This endpoint is public for the same reason config.js is:
+        # it contains limits only, never bearer/session material.
+        response = JSONResponse(config_payload)
+        return _harden(response, cache_control="no-store")
 
     @app.get("/app/styles.css", include_in_schema=False)
     def pwa_styles() -> FileResponse:

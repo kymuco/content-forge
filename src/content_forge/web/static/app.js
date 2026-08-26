@@ -42,7 +42,12 @@ async function autoPairFromFragment() {
   if (!window.location.hash) return false;
   const params = new URLSearchParams(window.location.hash.slice(1)); const challengeId = params.get("challenge_id"); const code = params.get("code");
   if (!challengeId || !code) return false;
-  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`); elements.challengeId.value = challengeId; elements.challengeCode.value = code; setStatus(elements.pairStatus, "Pairing from QR…");
+  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  if (bearerToken) {
+    setStatus(elements.pairStatus, "This device is already paired. Disconnect the current session before pairing another QR.", "error");
+    return false;
+  }
+  elements.challengeId.value = challengeId; elements.challengeCode.value = code; setStatus(elements.pairStatus, "Pairing from QR…");
   try { await exchangePairing(challengeId, code); await drainQueue(); await loadInbox(); return true; }
   catch (error) { setStatus(elements.pairStatus, error.message || "QR pairing failed.", "error"); return false; }
 }
@@ -99,7 +104,7 @@ async function loadInbox() {
 async function updateQueueBadge() { const queued = await window.CFStore.listShares(); elements.queueBadge.textContent = `Queue ${queued.length}`; return queued; }
 function showProgress(label, fraction) { setHidden(elements.progressShell, false); const normalized = Math.max(0, Math.min(1, Number(fraction) || 0)); elements.progressBar.style.width = `${Math.round(normalized * 100)}%`; elements.progressLabel.textContent = label; }
 function hideProgressSoon() { window.setTimeout(() => { setHidden(elements.progressShell, true); elements.progressBar.style.width = "0%"; }, 700); }
-function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 413, 425, 429].includes(value); }
+function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 425, 429].includes(value); }
 
 function uploadQueuedFile(record) {
   return new Promise((resolve, reject) => {
