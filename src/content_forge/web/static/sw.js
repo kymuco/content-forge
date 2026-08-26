@@ -3,7 +3,7 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const CACHE_NAME = `${CACHE_PREFIX}v5`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 
@@ -69,29 +69,53 @@ function boundedContentLength(request) {
 async function boundedMultipartFormData(request, contentType) {
   if (!request.body) throw new Error("share target has no request body");
   const reader = request.body.getReader();
-  const chunks = [];
   let totalBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!(value instanceof Uint8Array)) throw new Error("invalid share target body chunk");
-      totalBytes += value.byteLength;
-      if (totalBytes > LIMITS.maxShareBodyBytes) {
-        try { await reader.cancel("share target body limit exceeded"); } catch (_) {}
-        throw new Error("shared payload exceeds the local queue limit");
+  let finished = false;
+
+  // Stream directly into the browser's multipart parser instead of first retaining every
+  // chunk and constructing a second full-size Blob. The wrapper never enqueues a chunk
+  // that would cross the configured cap, so parser input is bounded while peak JS memory
+  // remains proportional to stream buffering rather than the complete shared payload.
+  const boundedStream = new ReadableStream({
+    async pull(controller) {
+      if (finished) return;
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          finished = true;
+          controller.close();
+          return;
+        }
+        if (!(value instanceof Uint8Array)) {
+          throw new Error("invalid share target body chunk");
+        }
+        totalBytes += value.byteLength;
+        if (totalBytes > LIMITS.maxShareBodyBytes) {
+          finished = true;
+          try { await reader.cancel("share target body limit exceeded"); } catch (_) {}
+          controller.error(new Error("shared payload exceeds the local queue limit"));
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        finished = true;
+        try { await reader.cancel(error); } catch (_) {}
+        controller.error(error);
       }
-      chunks.push(value);
-    }
+    },
+    async cancel(reason) {
+      finished = true;
+      try { await reader.cancel(reason); } catch (_) {}
+    },
+  });
+
+  try {
+    return await new Response(boundedStream, {
+      headers: { "Content-Type": contentType },
+    }).formData();
   } finally {
     try { reader.releaseLock(); } catch (_) {}
   }
-
-  // Parse only the bounded bytes we have already consumed. Fetch-event requests do not
-  // reliably expose the HTTP Content-Length that the browser may add later during network
-  // serialization, so the stream itself is the authoritative pre-parser byte boundary.
-  const bounded = new Blob(chunks, { type: contentType });
-  return new Response(bounded, { headers: { "Content-Type": contentType } }).formData();
 }
 
 async function queueShareTarget(request) {
@@ -101,8 +125,8 @@ async function queueShareTarget(request) {
     throw new Error("share target requires multipart form data");
   }
   // Content-Length is an optional early rejection hint only. The actual body stream is
-  // always byte-counted before multipart parsing, including real Android Web Share Target
-  // requests where this network-generated forbidden header is not visible to JavaScript.
+  // always byte-counted before/during multipart parsing, including real Android Web Share
+  // Target requests where this network-generated forbidden header is not visible to JS.
   boundedContentLength(request);
 
   // A native share may be queued while the server is offline, but only a browser profile
@@ -117,8 +141,8 @@ async function queueShareTarget(request) {
     throw new Error("share queue is full");
   }
 
-  // Never call request.formData() on the unbounded FetchEvent request. The parser receives
-  // only the byte-capped reconstructed Response produced below.
+  // Never call request.formData() on the unbounded FetchEvent request. The parser consumes
+  // only the byte-capped stream wrapper above, without a second full-payload JS copy.
   const data = await boundedMultipartFormData(request, contentType);
   for (const key of data.keys()) {
     if (!ALLOWED_FIELDS.has(key)) throw new Error("share target contains an unsupported field");
