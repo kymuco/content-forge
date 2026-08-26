@@ -65,6 +65,36 @@ def test_pairing_persistence_failure_exposes_disconnect_before_auto_cleanup() ->
     assert persistence_failure.index("setPairedState(true)") < persistence_failure.index(auto_cleanup)
 
 
+def test_pairing_token_persistence_is_cross_tab_compare_and_set() -> None:
+    client = static_path("app.js").read_text(encoding="utf-8")
+    shared = static_path("shared.js").read_text(encoding="utf-8")
+
+    start = shared.index("async function setToken(token)")
+    end = shared.index("async function clearToken()")
+    claim = shared[start:end]
+
+    assert 'db.transaction(KV_STORE, "readwrite")' in claim
+    assert "const read = store.get(TOKEN_KEY)" in claim
+    assert "const existing = read.result" in claim
+    assert "if (existing !== undefined)" in claim
+    assert "if (existing === token) return" in claim
+    assert 'new Error("pairing token slot is already occupied")' in claim
+    assert "tx.abort()" in claim
+    assert "const write = store.put(token, TOKEN_KEY)" in claim
+    assert claim.index("const read = store.get(TOKEN_KEY)") < claim.index("const write = store.put(token, TOKEN_KEY)")
+    assert claim.index("if (existing !== undefined)") < claim.index("const write = store.put(token, TOKEN_KEY)")
+
+    pairing_start = client.index("async function exchangePairing")
+    pairing_end = client.index("async function handlePairForm")
+    pairing = client[pairing_start:pairing_end]
+    assert "await window.CFStore.setToken(issuedToken)" in pairing
+    catch_start = pairing.index("catch (storageError)")
+    loser = pairing[catch_start:]
+    assert "bearerToken = issuedToken" in loser
+    assert "await revokeIssuedPairingToken(issuedToken)" in loser
+    assert "finalizeInvalidatedSession" in loser
+
+
 def test_oversized_idempotent_receipt_retries_after_limit_increase(tmp_path) -> None:
     key = "623e4567-e89b-42d3-a456-426614174005"
     payload = b"x" * 65
