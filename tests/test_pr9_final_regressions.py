@@ -95,6 +95,34 @@ def test_pairing_token_persistence_is_cross_tab_compare_and_set() -> None:
     assert "finalizeInvalidatedSession" in loser
 
 
+def test_pairing_loser_adopts_persisted_winner_after_cleanup() -> None:
+    client = static_path("app.js").read_text(encoding="utf-8")
+
+    start = client.index("async function finalizeInvalidatedSession")
+    end = client.index("async function revokeSession")
+    cleanup = client[start:end]
+
+    compare_delete = "await window.CFStore.clearTokenIfMatches(invalidatedBearer)"
+    reread = "const persistedBearer = await window.CFStore.getToken()"
+    adopt = "bearerToken = persistedBearer"
+    assert compare_delete in cleanup
+    assert reread in cleanup
+    assert "persistedBearer && persistedBearer !== invalidatedBearer" in cleanup
+    assert adopt in cleanup
+    assert "setPairedState(true)" in cleanup
+    assert "adopted the active paired session" in cleanup
+    assert cleanup.index(compare_delete) < cleanup.index(reread) < cleanup.index(adopt)
+
+    pairing_start = client.index("async function exchangePairing")
+    pairing_end = client.index("async function handlePairForm")
+    pairing = client[pairing_start:pairing_end]
+    assert "bearerToken && bearerToken !== issuedToken" in pairing
+    assert pairing.index("await finalizeInvalidatedSession") < pairing.index(
+        "bearerToken && bearerToken !== issuedToken"
+    )
+    assert "return;" in pairing[pairing.index("bearerToken && bearerToken !== issuedToken") :]
+
+
 def test_oversized_idempotent_receipt_retries_after_limit_increase(tmp_path) -> None:
     key = "623e4567-e89b-42d3-a456-426614174005"
     payload = b"x" * 65
@@ -231,3 +259,80 @@ def test_accepted_idempotent_replay_survives_later_limit_decrease(tmp_path) -> N
         assert len(smaller.state.inbox.list_intakes()) == 1
     finally:
         smaller.state.runtime_lease.close()
+
+
+def test_accepted_receiving_retry_resumes_handoff_instead_of_replaying(tmp_path) -> None:
+    key = "923e4567-e89b-42d3-a456-426614174008"
+    payload = b"resume-me-exactly"
+
+    app = create_app(
+        root=tmp_path,
+        ffprobe_path="definitely-missing-ffprobe",
+        ffmpeg_path="definitely-missing-ffmpeg",
+        max_upload_bytes=1024,
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    token = _paired_token(client)
+    auth = {
+        **LOOPBACK_HEADERS,
+        "Authorization": f"Bearer {token}",
+        "Idempotency-Key": key,
+    }
+    original_ensure_project = app.state.inbox._ensure_project
+
+    def fail_project_handoff(_intake):
+        raise OSError("transient project handoff")
+
+    app.state.inbox._ensure_project = fail_project_handoff
+    try:
+        first = client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={"file": ("resume.bin", payload, "application/octet-stream")},
+        )
+        # The durable byte receipt exists, but handoff did not finish. This must remain a
+        # retryable HTTP failure rather than a synthetic 201 that would delete the PWA queue.
+        assert first.status_code == 500
+        receipt = app.state.application_repository.get_intake(intake_id_for_key(key))
+        assert receipt is not None
+        assert receipt.state.value == "receiving"
+        assert receipt.size_bytes == len(payload)
+        assert receipt.content_sha256 is not None
+        assert receipt.project_id is None
+        assert receipt.error_code == "post_acceptance_retryable"
+
+        # A live retry cannot use the accepted RECEIVING checkpoint to substitute bytes.
+        conflict = client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={
+                "file": (
+                    "resume.bin",
+                    b"different-bytes!",
+                    "application/octet-stream",
+                )
+            },
+        )
+        assert conflict.status_code == 409
+        unchanged = app.state.application_repository.get_intake(intake_id_for_key(key))
+        assert unchanged is not None
+        assert unchanged.state.value == "receiving"
+        assert unchanged.content_sha256 == receipt.content_sha256
+
+        app.state.inbox._ensure_project = original_ensure_project
+        retry = client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={"file": ("resume.bin", payload, "application/octet-stream")},
+        )
+        assert retry.status_code == 201
+        body = retry.json()
+        assert body["intake_id"] == intake_id_for_key(key)
+        assert body["project_id"] is not None
+        assert body["size_bytes"] == len(payload)
+        assert body["content_sha256"] == receipt.content_sha256
+        assert body["state"] in {"prepared", "partial"}
+        assert len(app.state.inbox.list_intakes()) == 1
+    finally:
+        app.state.inbox._ensure_project = original_ensure_project
+        app.state.runtime_lease.close()
