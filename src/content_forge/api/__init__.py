@@ -33,6 +33,7 @@ def create_app(
             app,
             auth=app.state.auth,
             pairing_bootstrap_allowed=_pairing_bootstrap_allowed,
+            max_upload_bytes=max_upload_bytes,
             share_body_limit=max_upload_bytes + MULTIPART_OVERHEAD_BUDGET,
         )
     except BaseException:
