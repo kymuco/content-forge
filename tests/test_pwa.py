@@ -320,7 +320,7 @@ def test_pwa_queue_idempotency_replays_one_durable_intake_per_record(tmp_path) -
         )
         assert first_failed.status_code == 413
         assert replay_failed.status_code == 413
-        assert "UploadTooLargeError" in replay_failed.json()["detail"]
+        assert replay_failed.json()["detail"] == "upload exceeds 64 bytes"
 
         invalid_key = client.post(
             "/api/v1/inbox/url-note",
