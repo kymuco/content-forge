@@ -54,7 +54,9 @@ function shareRequestIsTrustedNavigation(request) {
     && (fetchSite === "none" || fetchSite === "same-origin");
 }
 
-function rejectAdvertisedOversize(request) {
+function boundedContentLength(request) {
+  // FetchEvent requests may not expose the browser-generated HTTP Content-Length. Treat
+  // it as an optional fast rejection only; boundedMultipartFormData is authoritative.
   const raw = request.headers.get("content-length");
   if (raw == null) return;
   if (!/^\d+$/.test(raw)) throw new Error("invalid shared Content-Length");
@@ -101,7 +103,7 @@ async function queueShareTarget(request) {
   // Content-Length is an optional early rejection hint only. The actual body stream is
   // always byte-counted before multipart parsing, including real Android Web Share Target
   // requests where this network-generated forbidden header is not visible to JavaScript.
-  rejectAdvertisedOversize(request);
+  boundedContentLength(request);
 
   // A native share may be queued while the server is offline, but only a browser profile
   // that has already completed PR8 pairing may consume/persist the OS-provided multipart.
@@ -115,6 +117,8 @@ async function queueShareTarget(request) {
     throw new Error("share queue is full");
   }
 
+  // Never call request.formData() on the unbounded FetchEvent request. The parser receives
+  // only the byte-capped reconstructed Response produced below.
   const data = await boundedMultipartFormData(request, contentType);
   for (const key of data.keys()) {
     if (!ALLOWED_FIELDS.has(key)) throw new Error("share target contains an unsupported field");
