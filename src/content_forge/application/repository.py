@@ -22,10 +22,20 @@ from .idempotency import (
     intake_id_for_key,
     same_intake_request,
 )
-from .models import InboxIntake, IntakeKind, IntakeState
+from .models import InboxIntake, IntakeKind, IntakeState, PreparationState
 
 APPLICATION_SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_COMPONENT = "application"
+_RETRYABLE_PREACCEPTANCE_FILE_FAILURES = frozenset(
+    {
+        "interrupted_before_asset_acceptance",
+        "OSError",
+        "OperationalError",
+        "BlockingIOError",
+        "InterruptedError",
+        "TimeoutError",
+    }
+)
 
 
 class ApplicationRepository:
@@ -193,7 +203,8 @@ class ApplicationRepository:
                     raise StorageConflictError(
                         f"intake ID already exists: {intake.intake_id}"
                     ) from exc
-                existing = load_json(InboxIntake, row["manifest_json"])
+                current_json = row["manifest_json"]
+                existing = load_json(InboxIntake, current_json)
                 if not same_intake_request(existing, intake):
                     raise IdempotencyConflict(
                         "Idempotency-Key was reused for different capture metadata"
@@ -212,9 +223,59 @@ class ApplicationRepository:
                     # Reuse the exact durable identity and let the service resume it.
                     return existing
 
-                # Prepared/partial/failed records, plus FULL-accepted receiving files,
-                # already represent the request identity. The HTTP adapter replays that
-                # durable result instead of executing side effects a second time.
+                retryable_preacceptance_failure = (
+                    existing.kind is IntakeKind.FILE
+                    and existing.state is IntakeState.FAILED
+                    and existing.content_sha256 is None
+                    and existing.asset_id is None
+                    and existing.project_id is None
+                    and existing.error_code in _RETRYABLE_PREACCEPTANCE_FILE_FAILURES
+                )
+                if retryable_preacceptance_failure:
+                    # Startup may have observed the deterministic receipt after process
+                    # interruption but before any exact bytes were accepted. Likewise a
+                    # transient filesystem/SQLite error can fail that same pre-acceptance
+                    # window. The stable key still owns this identity, so reset only the
+                    # pre-acceptance diagnostics and let the authenticated retry supply
+                    # bytes again. Permanent failures such as UploadTooLargeError remain
+                    # terminal and are replayed as a conflict by the HTTP adapter.
+                    revived = existing.validated_copy(
+                        update={
+                            "state": IntakeState.RECEIVING,
+                            "size_bytes": None,
+                            "content_sha256": None,
+                            "probe_state": PreparationState.PENDING,
+                            "thumbnail_state": PreparationState.PENDING,
+                            "error_code": None,
+                            "error_message": None,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    )
+                    changed = connection.execute(
+                        """
+                        UPDATE inbox_intakes
+                        SET state = ?, manifest_json = ?, updated_at = ?
+                        WHERE intake_id = ? AND state = ? AND manifest_json = ?
+                        """,
+                        (
+                            revived.state.value,
+                            dump_json(revived),
+                            revived.updated_at.isoformat(),
+                            revived.intake_id,
+                            IntakeState.FAILED.value,
+                            current_json,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise StorageConflictError(
+                            f"intake {existing.intake_id} could not revive for retry"
+                        ) from exc
+                    return revived
+
+                # Prepared/partial/permanently-failed records, plus FULL-accepted
+                # receiving files, already represent the request identity. The HTTP
+                # adapter replays that durable result instead of executing side effects
+                # a second time.
                 raise IdempotencyReplay(existing) from exc
         return intake
 
