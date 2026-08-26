@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from content_forge.application import AuthManager
 
@@ -23,6 +24,12 @@ _PWA_CSP = (
     "frame-ancestors 'none'; "
     "form-action 'self'"
 )
+_PWA_MAX_QUEUE_ENTRIES = 256
+_PWA_MAX_BATCH_ENTRIES = 16
+_PWA_MAX_FILENAME_CHARS = 1024
+_PWA_MAX_MIME_CHARS = 255
+_PWA_MAX_URL_CHARS = 4096
+_PWA_MAX_NOTE_CHARS = 8192
 
 
 def _route_relative_path(request: Request) -> str:
@@ -51,7 +58,7 @@ def _replace_route_relative_path(request: Request, route_path: str) -> None:
     request.scope["raw_path"] = rewritten.encode("utf-8")
 
 
-def _harden(response: FileResponse | HTMLResponse, *, cache_control: str) -> FileResponse | HTMLResponse:
+def _harden(response: Response, *, cache_control: str) -> Response:
     response.headers["Cache-Control"] = cache_control
     response.headers["Content-Security-Policy"] = _PWA_CSP
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -70,9 +77,33 @@ def install_pwa_routes(
     *,
     auth: AuthManager,
     pairing_bootstrap_allowed: Callable[[Request], bool],
+    max_upload_bytes: int,
     share_body_limit: int,
 ) -> None:
     """Install the PR9 UI transport without moving Inbox semantics into HTTP routes."""
+
+    if max_upload_bytes < 1 or share_body_limit < max_upload_bytes:
+        raise ValueError("invalid PWA upload limits")
+    config_payload = {
+        "maxUploadBytes": max_upload_bytes,
+        "maxShareBodyBytes": share_body_limit,
+        # Bound the persistent offline queue to at most one configured upload budget in
+        # aggregate. Multiple smaller files can coexist, but browser storage cannot grow
+        # beyond the server's configured single-upload authority without an explicit
+        # future product decision to raise this independent limit.
+        "maxQueueBytes": max_upload_bytes,
+        "maxQueueEntries": _PWA_MAX_QUEUE_ENTRIES,
+        "maxBatchEntries": _PWA_MAX_BATCH_ENTRIES,
+        "maxFilenameChars": _PWA_MAX_FILENAME_CHARS,
+        "maxMimeChars": _PWA_MAX_MIME_CHARS,
+        "maxUrlChars": _PWA_MAX_URL_CHARS,
+        "maxNoteChars": _PWA_MAX_NOTE_CHARS,
+    }
+    config_script = (
+        "self.CF_CONFIG = Object.freeze("
+        + json.dumps(config_payload, sort_keys=True, separators=(",", ":"))
+        + ");\n"
+    )
 
     @app.middleware("http")
     async def pwa_transport_boundary(request: Request, call_next):
@@ -109,6 +140,11 @@ def install_pwa_routes(
     @app.get("/app/", include_in_schema=False)
     def pwa_shell() -> FileResponse:
         return _asset("index.html", "text/html; charset=utf-8")
+
+    @app.get("/app/config.js", include_in_schema=False)
+    def pwa_config() -> Response:
+        response = Response(config_script, media_type="text/javascript; charset=utf-8")
+        return _harden(response, cache_control="no-cache")
 
     @app.get("/app/styles.css", include_in_schema=False)
     def pwa_styles() -> FileResponse:
