@@ -8,7 +8,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
-from content_forge.application.idempotency import intake_idempotency_scope
+from content_forge.application import InboxIntake, IntakeKind, IntakeState, PreparationState
+from content_forge.application.idempotency import (
+    intake_id_for_key,
+    intake_idempotency_scope,
+)
 from content_forge.web import static_path
 from content_forge.web.onboarding import normalize_public_base_url
 
@@ -32,6 +36,16 @@ def _paired_token(client: TestClient) -> str:
     return exchanged.json()["token"]
 
 
+def _pwa_config(response) -> dict[str, int]:
+    prefix = "self.CF_CONFIG = Object.freeze("
+    suffix = ");\n"
+    assert response.text.startswith(prefix)
+    assert response.text.endswith(suffix)
+    payload = json.loads(response.text[len(prefix) : -len(suffix)])
+    assert isinstance(payload, dict)
+    return payload
+
+
 def test_pwa_shell_manifest_icons_and_security_headers(tmp_path) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
@@ -39,6 +53,8 @@ def test_pwa_shell_manifest_icons_and_security_headers(tmp_path) -> None:
         shell = client.get("/app/", headers=LOOPBACK_HEADERS)
         assert shell.status_code == 200
         assert 'rel="manifest" href="manifest.webmanifest"' in shell.text
+        assert '<script src="config.js"></script>' in shell.text
+        assert shell.text.index('src="config.js"') < shell.text.index('src="shared.js"')
         assert "default-src 'self'" in shell.headers["content-security-policy"]
         assert "frame-ancestors 'none'" in shell.headers["content-security-policy"]
         assert shell.headers["referrer-policy"] == "no-referrer"
@@ -83,25 +99,36 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     client = static_path("app.js").read_text(encoding="utf-8")
     shared = static_path("shared.js").read_text(encoding="utf-8")
 
+    assert 'importScripts("config.js", "shared.js")' in service_worker
     assert 'request.method === "POST"' in service_worker
     assert 'request.headers.get("content-length")' in service_worker
     assert 'request.headers.get("sec-fetch-site")' in service_worker
     assert 'request.destination === "document"' in service_worker
-    assert "MAX_SHARE_BODY_BYTES" in service_worker
-    assert "MAX_QUEUE_BYTES" in service_worker
-    assert "MAX_QUEUE_ENTRIES" in service_worker
-    assert "MAX_SHARED_FILES" in service_worker
+    assert "const LIMITS = self.CFStore.limits" in service_worker
+    assert "2 * 1024 * 1024 * 1024" not in service_worker
     assert "self.CFStore.getToken()" in service_worker
+    assert "self.CFStore.queueUsage()" in service_worker
     assert 'request.formData()' in service_worker
     assert service_worker.index("boundedContentLength(request)") < service_worker.index("request.formData()")
     assert service_worker.index("self.CFStore.getToken()") < service_worker.index("request.formData()")
-    assert "enqueueShare" in service_worker
+    assert "await self.CFStore.enqueueShares(records)" in service_worker
     assert "Response.redirect" in service_worker
     assert "key.startsWith(CACHE_PREFIX)" in service_worker
     assert 'cache.match(appUrl("./"))' in service_worker
+    assert 'appUrl("config.js")' in service_worker
 
     assert "indexedDB.open" in shared
     assert 'const TOKEN_KEY = "bearer-token"' in shared
+    assert "root.CF_CONFIG" in shared
+    assert "encodeURIComponent(scopeUrl.pathname)" in shared
+    assert "validateQueueMutation" in shared
+    assert "maxUploadBytes" in shared
+    assert "maxQueueBytes" in shared
+    assert "maxQueueEntries" in shared
+    assert "async function enqueueShares(records)" in shared
+    assert "for (const entry of entries) store.add(entry)" in shared
+    assert "const entries = await enqueueShares([record])" in shared
+
     assert "XMLHttpRequest" in client
     assert 'setRequestHeader("Authorization"' in client
     assert 'setRequestHeader("Idempotency-Key", record.id)' in client
@@ -120,6 +147,15 @@ def test_server_share_target_fallback_never_ingests_and_is_preparse_bounded(tmp_
     app = create_app(root=tmp_path, max_upload_bytes=32)
     client = TestClient(app)
     try:
+        config_response = client.get("/app/config.js", headers=LOOPBACK_HEADERS)
+        assert config_response.status_code == 200
+        config = _pwa_config(config_response)
+        assert config["maxUploadBytes"] == 32
+        assert config["maxQueueBytes"] == 32
+        assert config["maxShareBodyBytes"] == 32 + 1024 * 1024
+        assert config["maxQueueEntries"] == 256
+        assert config["maxBatchEntries"] == 16
+
         fallback = client.post(
             "/app/share-target",
             headers={"Host": "localhost", "Content-Type": "multipart/form-data; boundary=cf"},
@@ -277,6 +313,58 @@ def test_pwa_queue_idempotency_replays_one_durable_intake_per_record(tmp_path) -
         app.state.runtime_lease.close()
 
 
+def test_idempotent_file_retry_revives_interrupted_preacceptance_receipt(tmp_path) -> None:
+    app = create_app(
+        root=tmp_path,
+        ffprobe_path="definitely-missing-ffprobe",
+        ffmpeg_path="definitely-missing-ffmpeg",
+        max_upload_bytes=64,
+    )
+    client = TestClient(app)
+    try:
+        token = _paired_token(client)
+        auth = {**LOOPBACK_HEADERS, "Authorization": f"Bearer {token}"}
+        key = "523e4567-e89b-42d3-a456-426614174004"
+        intake_id = intake_id_for_key(key)
+        repository = app.state.application_repository
+        repository.create_intake(
+            InboxIntake(
+                intake_id=intake_id,
+                kind=IntakeKind.FILE,
+                original_name="resume.bin",
+                mime_type="application/octet-stream",
+            )
+        )
+        failed = repository.transition_intake(
+            intake_id,
+            expected_state=IntakeState.RECEIVING,
+            update={
+                "state": IntakeState.FAILED,
+                "probe_state": PreparationState.SKIPPED,
+                "thumbnail_state": PreparationState.SKIPPED,
+                "error_code": "interrupted_before_asset_acceptance",
+                "error_message": "upload interrupted before asset acceptance",
+            },
+        )
+        assert failed.content_sha256 is None
+        assert failed.asset_id is None
+
+        resumed = client.post(
+            "/api/v1/inbox/files",
+            headers={**auth, "Idempotency-Key": key},
+            files={"file": ("resume.bin", b"resumed bytes", "application/octet-stream")},
+        )
+        assert resumed.status_code == 201
+        payload = resumed.json()
+        assert payload["intake_id"] == intake_id
+        assert payload["state"] == "partial"
+        assert payload["content_sha256"] is not None
+        assert payload["size_bytes"] == len(b"resumed bytes")
+        assert payload["error_code"] == "media_probe_failed"
+    finally:
+        app.state.runtime_lease.close()
+
+
 def test_loopback_onboarding_builds_fragment_only_pairing_qr_and_session(tmp_path) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
@@ -344,7 +432,7 @@ def test_onboarding_rejects_plaintext_lan_and_hostile_browser_authority(tmp_path
 
 
 def test_pwa_shell_and_onboarding_remain_mount_relative(tmp_path) -> None:
-    child = create_app(root=tmp_path)
+    child = create_app(root=tmp_path, max_upload_bytes=1234)
     parent = FastAPI()
     parent.mount("/content-forge", child)
     client = TestClient(parent)
@@ -357,6 +445,9 @@ def test_pwa_shell_and_onboarding_remain_mount_relative(tmp_path) -> None:
         )
         assert manifest.status_code == 200
         assert manifest.json()["start_url"] == "./"
+        config = client.get("/content-forge/app/config.js", headers=LOOPBACK_HEADERS)
+        assert config.status_code == 200
+        assert _pwa_config(config)["maxUploadBytes"] == 1234
 
         onboarding = client.post(
             "/content-forge/api/v1/pairing/challenges",
