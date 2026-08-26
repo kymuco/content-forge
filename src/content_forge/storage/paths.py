@@ -27,6 +27,36 @@ def default_runtime_root() -> Path:
     return Path.home() / ".local" / "share" / "content-forge"
 
 
+def fsync_directory_chain(path: str | Path, *, stop_at: str | Path) -> None:
+    """Make directory entries durable from ``path`` through ``stop_at`` on POSIX.
+
+    Fsyncing a newly-written file is not enough to guarantee that a rename or newly
+    created directory hierarchy survives power loss. Callers publish into sharded runtime
+    directories, so sync every directory in that chain after the final atomic rename and
+    before committing the corresponding SQLite receipt. Windows has no portable Python
+    directory-fsync primitive, so this is intentionally a no-op there.
+    """
+
+    if os.name == "nt":
+        return
+
+    current = Path(path).resolve()
+    boundary = Path(stop_at).resolve()
+    if current != boundary and boundary not in current.parents:
+        raise ValueError("directory durability path must be inside stop_at")
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    while True:
+        descriptor = os.open(current, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if current == boundary:
+            break
+        current = current.parent
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimePaths:
     root: Path
@@ -45,7 +75,23 @@ class RuntimePaths:
         )
 
     def ensure(self) -> "RuntimePaths":
+        # On POSIX, remember the nearest already-existing ancestor before recursive
+        # creation. Fsyncing only ``root`` after mkdir does not persist ``root``'s own
+        # directory entry, which belongs to its parent; when parents=True creates more
+        # than one directory, each newly-created entry must be covered through the first
+        # pre-existing ancestor. Windows has no portable Python directory-fsync primitive.
+        durability_boundary = self.root
+        if os.name != "nt":
+            while not durability_boundary.exists():
+                parent = durability_boundary.parent
+                if parent == durability_boundary:
+                    break
+                durability_boundary = parent
+
         self.root.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            fsync_directory_chain(self.root, stop_at=durability_boundary)
+
         self.assets.mkdir(parents=True, exist_ok=True)
         self.incoming.mkdir(parents=True, exist_ok=True)
         return self

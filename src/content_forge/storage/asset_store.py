@@ -12,7 +12,7 @@ from pathlib import Path
 from content_forge.core import Asset, MediaType, SourceRecord
 
 from .database import LibraryDatabase, StorageError
-from .paths import RuntimePaths
+from .paths import RuntimePaths, fsync_directory_chain
 from .records import SourceInput
 
 CHUNK_SIZE = 1024 * 1024
@@ -109,6 +109,13 @@ class AssetStore:
             else:
                 os.replace(temporary, blob_path)
 
+            # A canonical pathname can be present after an earlier atomic rename even if
+            # that operation's directory fsync failed. Re-establish the durability
+            # barrier on every successful ingest/reuse before any catalog or provenance
+            # receipt is allowed to advance. This is idempotent on POSIX and a documented
+            # no-op on Windows where Python has no portable directory-fsync primitive.
+            fsync_directory_chain(blob_path.parent, stop_at=self.paths.root)
+
             if existing is not None:
                 if existing.size_bytes != size_bytes:
                     raise AssetIntegrityError(
@@ -161,5 +168,13 @@ class AssetStore:
         return path
 
     def verify(self, asset: Asset) -> bool:
+        """Verify canonical bytes and reassert their directory-entry durability."""
+
         path = self.resolve(asset)
-        return path.stat().st_size == asset.size_bytes and sha256_file(path) == asset.sha256
+        verified = path.stat().st_size == asset.size_bytes and sha256_file(path) == asset.sha256
+        if verified:
+            # Recovery may encounter a pathname left behind by a rename whose directory
+            # fsync failed just before process interruption. Do not let a verified name be
+            # treated as authoritative until that durability barrier succeeds again.
+            fsync_directory_chain(path.parent, stop_at=self.paths.root)
+        return verified

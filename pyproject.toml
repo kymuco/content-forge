@@ -9,14 +9,21 @@ description = "Local-first modular content production runtime."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "fastapi>=0.115,<1",
   "pydantic>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
   "PyYAML>=6.0,<7",
+  "uvicorn>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.28,<1",
   "pytest>=8,<10",
 ]
+
+[project.scripts]
+content-forge-api = "content_forge.api.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
