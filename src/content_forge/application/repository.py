@@ -26,16 +26,12 @@ from .models import InboxIntake, IntakeKind, IntakeState, PreparationState
 
 APPLICATION_SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_COMPONENT = "application"
-_RETRYABLE_PREACCEPTANCE_FILE_FAILURES = frozenset(
-    {
-        "interrupted_before_asset_acceptance",
-        "OSError",
-        "OperationalError",
-        "BlockingIOError",
-        "InterruptedError",
-        "TimeoutError",
-    }
-)
+# Before a file has a durable size+SHA receipt, no bytes have crossed the acceptance
+# boundary and retrying the same idempotency identity is safe. Keep only deterministic
+# input failures terminal; operational subclasses (PermissionError, FileNotFoundError,
+# platform-specific OSError subclasses, SQLite failures, etc.) therefore do not need to be
+# reconstructed later from fragile exception class-name strings.
+_PERMANENT_PREACCEPTANCE_FILE_FAILURES = frozenset({"UploadTooLargeError"})
 
 
 class ApplicationRepository:
@@ -229,16 +225,15 @@ class ApplicationRepository:
                     and existing.content_sha256 is None
                     and existing.asset_id is None
                     and existing.project_id is None
-                    and existing.error_code in _RETRYABLE_PREACCEPTANCE_FILE_FAILURES
+                    and existing.error_code not in _PERMANENT_PREACCEPTANCE_FILE_FAILURES
                 )
                 if retryable_preacceptance_failure:
-                    # Startup may have observed the deterministic receipt after process
-                    # interruption but before any exact bytes were accepted. Likewise a
-                    # transient filesystem/SQLite error can fail that same pre-acceptance
-                    # window. The stable key still owns this identity, so reset only the
-                    # pre-acceptance diagnostics and let the authenticated retry supply
-                    # bytes again. Permanent failures such as UploadTooLargeError remain
-                    # terminal and are replayed as a conflict by the HTTP adapter.
+                    # No exact byte receipt exists, so this durable identity has accepted
+                    # no content. Revive it regardless of the concrete operational error
+                    # class; terminal input failures are explicitly deny-listed above.
+                    # This keeps PermissionError/FileNotFoundError/platform OSError
+                    # subclasses retryable without encoding Python's exception hierarchy
+                    # into persisted class-name strings.
                     revived = existing.validated_copy(
                         update={
                             "state": IntakeState.RECEIVING,
