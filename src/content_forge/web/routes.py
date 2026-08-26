@@ -38,6 +38,19 @@ def _route_relative_path(request: Request) -> str:
     return path
 
 
+def _replace_route_relative_path(request: Request, route_path: str) -> None:
+    """Rewrite only the internal ASGI route path while preserving a mount root."""
+
+    current = str(request.scope.get("path") or "")
+    root_path = str(request.scope.get("root_path") or "").rstrip("/")
+    if root_path and (current == root_path or current.startswith(f"{root_path}/")):
+        rewritten = f"{root_path}{route_path}"
+    else:
+        rewritten = route_path
+    request.scope["path"] = rewritten
+    request.scope["raw_path"] = rewritten.encode("utf-8")
+
+
 def _harden(response: FileResponse | HTMLResponse, *, cache_control: str) -> FileResponse | HTMLResponse:
     response.headers["Cache-Control"] = cache_control
     response.headers["Content-Security-Policy"] = _PWA_CSP
@@ -62,8 +75,23 @@ def install_pwa_routes(
     """Install the PR9 UI transport without moving Inbox semantics into HTTP routes."""
 
     @app.middleware("http")
-    async def bound_unhandled_share_target(request: Request, call_next):
+    async def pwa_transport_boundary(request: Request, call_next):
         route_path = _route_relative_path(request)
+
+        # The browser shell extends the existing challenge action with an optional
+        # public_url query. Route that request to the dedicated onboarding handler while
+        # leaving ordinary PR8 challenge creation byte-for-byte compatible.
+        if (
+            request.method == "POST"
+            and route_path == "/api/v1/pairing/challenges"
+            and "public_url" in request.query_params
+        ):
+            _replace_route_relative_path(request, "/api/v1/pwa/onboarding")
+            route_path = "/api/v1/pwa/onboarding"
+
+        # A correctly installed Service Worker intercepts the Web Share Target before
+        # the request reaches the server. This server fallback must never parse or ingest
+        # an unauthenticated share body; it only bounds the request and returns guidance.
         if request.method == "POST" and route_path == "/app/share-target":
             raw_length = request.headers.get("content-length")
             if raw_length is None:
