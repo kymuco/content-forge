@@ -85,23 +85,41 @@ async function autoPairFromFragment() {
   catch (error) { setStatus(elements.pairStatus, error.message || "QR pairing failed.", "error"); return false; }
 }
 
+async function finalizeInvalidatedSession(message, kind) {
+  // Once the server confirms revocation (or 401 proves the credential is already
+  // unusable), the browser must leave paired state even if local IndexedDB cleanup fails.
+  bearerToken = null;
+  clearThumbnailUrls();
+  setPairedState(false);
+  try {
+    await window.CFStore.clearToken();
+    setStatus(elements.pairStatus, message, kind || "success");
+    return true;
+  } catch (error) {
+    setStatus(elements.pairStatus, `${message} ${error.message || "Local token cleanup failed."} The server session is no longer usable, but a stale token remains in browser storage; reload may repeat this cleanup warning.`, "error");
+    return false;
+  }
+}
+
 async function revokeSession() {
   if (!bearerToken) return;
   setStatus(elements.pairStatus, "Revoking device session…");
+  let response;
   try {
-    const response = await apiFetch("sessions/current", { method: "DELETE" });
-    if (!response.ok) {
-      const payload = await safeJson(response);
-      throw new Error(payload.detail || `Revocation failed (${response.status})`);
-    }
-    bearerToken = null;
-    await window.CFStore.clearToken();
-    clearThumbnailUrls();
-    setPairedState(false);
-    setStatus(elements.pairStatus, "Device disconnected.", "success");
+    response = await apiFetch("sessions/current", { method: "DELETE" });
   } catch (error) {
     setStatus(elements.pairStatus, `${error.message || "Revocation failed."} Session retained so revocation can be retried.`, "error");
+    return;
   }
+  if (!response.ok && response.status !== 401) {
+    const payload = await safeJson(response);
+    setStatus(elements.pairStatus, `${payload.detail || `Revocation failed (${response.status})`} Session retained so revocation can be retried.`, "error");
+    return;
+  }
+  await finalizeInvalidatedSession(
+    response.status === 401 ? "Device session was already inactive. Local pairing cleared." : "Device disconnected.",
+    "success"
+  );
 }
 
 function clearThumbnailUrls() { for (const url of thumbnailUrls) URL.revokeObjectURL(url); thumbnailUrls = []; }
@@ -126,7 +144,7 @@ async function loadInbox() {
   if (!bearerToken) return; setStatus(elements.inboxStatus, "Loading…");
   try {
     const response = await apiFetch("inbox?limit=100");
-    if (response.status === 401) { bearerToken = null; await window.CFStore.clearToken(); setPairedState(false); setStatus(elements.pairStatus, "Session expired. Pair again.", "error"); return; }
+    if (response.status === 401) { await finalizeInvalidatedSession("Session expired. Pair again.", "error"); return; }
     if (!response.ok) throw new Error(`Inbox request failed (${response.status})`);
     const payload = await response.json(); const items = Array.isArray(payload.items) ? payload.items : []; clearThumbnailUrls(); elements.inboxList.replaceChildren();
     if (!items.length) elements.inboxList.appendChild(elements.emptyTemplate.content.cloneNode(true)); else for (const item of items) elements.inboxList.appendChild(createCard(item));
@@ -167,10 +185,7 @@ async function drainQueue() {
         await updateQueueBadge();
       } catch (error) {
         if (error.status === 401) {
-          bearerToken = null;
-          await window.CFStore.clearToken();
-          setPairedState(false);
-          setStatus(elements.pairStatus, "Session expired. Pair again; queued shares are preserved.", "error");
+          await finalizeInvalidatedSession("Session expired. Pair again; queued shares are preserved.", "error");
           break;
         }
         if (error.status === 413) {
