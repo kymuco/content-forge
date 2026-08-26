@@ -21,7 +21,7 @@ The shell is packaged inside the Python distribution and served from `/app/`; no
 The shell provides:
 
 - install prompt support;
-- bearer pairing and revocation;
+- bearer pairing and confirmed revocation;
 - mobile file capture with XHR upload progress;
 - URL/note capture;
 - recent Inbox cards with authenticated thumbnail fetches;
@@ -30,24 +30,38 @@ The shell provides:
 
 Static UI responses use a restrictive Content Security Policy, no-referrer policy, `nosniff`, and frame denial. The client renders intake-controlled strings with `textContent`; it does not inject Inbox content as HTML.
 
+Shell caches use a Content Forge + Service Worker scope-specific prefix. Worker activation therefore removes only obsolete caches for the same mounted Content Forge instance, not caches owned by another application or mount on the origin. Navigation requests fall back to the cached `/app/` shell when the server is offline, including redirected share-marker URLs such as `?shared=1`.
+
 ## Android Web Share Target
 
 The manifest declares a multipart Web Share Target for image/video/audio files plus title/text/URL metadata.
 
-A correctly installed Service Worker intercepts `POST app/share-target` inside the browser, parses the OS-provided multipart payload there, stores File/URL/note material in IndexedDB, and redirects to the PWA shell. The Service Worker does **not** call storage or Inbox internals.
+A correctly installed Service Worker intercepts `POST app/share-target` inside the browser. Before multipart parsing it requires the expected navigation/document Fetch Metadata provenance, rejects cross-site provenance, requires a previously paired local session token, validates multipart Content-Type, and requires a bounded Content-Length. Only then may it call `request.formData()`.
+
+After parsing, the worker permits only the declared share fields and enforces bounded file count, filename/MIME/text lengths, per-file upload size, queue-entry count, and total queued file bytes. A share can still be captured while the Content Forge server is temporarily offline, but an unpaired browser profile cannot use the share target as an unauthenticated IndexedDB intake surface.
+
+The Service Worker stores accepted File/URL/note material in IndexedDB and redirects to the PWA shell. It does **not** call storage or Inbox internals and it does not attach the bearer token to the OS share-target navigation itself.
+
+If the Service Worker is not active, the server-side `POST /app/share-target` fallback never parses or ingests the multipart body. It enforces a Content-Length bound and returns guidance to open/install the PWA first. This prevents the fallback surface from becoming an authentication bypass around PR8.
+
+## Authenticated queue drain and idempotency
 
 The foreground shell drains queued entries only through the existing authenticated PR8 endpoints:
 
 - files -> `POST api/v1/inbox/files`;
 - URL/note -> `POST api/v1/inbox/url-note`.
 
-The bearer token is stored in IndexedDB so both the page and Service Worker-owned queue can share one persistent client store; the Service Worker never attaches the token to the unauthenticated OS share-target navigation itself.
+Every IndexedDB queue record has a stable UUID. PR9 sends that UUID as `Idempotency-Key` on each authenticated capture attempt. The API validates the key and deterministically derives the intake primary key from it. The intake identity is therefore committed atomically with the initial SQLite receipt rather than being allocated afresh on every HTTP call.
 
-If the Service Worker is not active, the server-side `POST /app/share-target` fallback never parses or ingests the multipart body. It enforces a Content-Length bound and returns guidance to open/install the PWA first. This prevents the share-target surface from becoming an authentication bypass around PR8.
+This closes the ambiguous-response window: if the server durably accepted an operation but the network connection disappeared before the browser received the success response, retrying the same queue record resolves to the same intake/project lineage instead of creating a duplicate. Reusing one idempotency key for different immutable capture metadata is rejected with `409`.
 
-Queue entries are removed only after the authenticated API reports successful acceptance. Network failures, 5xx responses, or an expired session leave the entry queued for explicit or later retry. A 401 clears the local bearer token but preserves queued shares.
+For files, a retry before the durable byte-acceptance receipt may resume the same receiving intake. Once exact size + SHA-256 are durable, or the intake is already terminal, the existing durable intake is replayed rather than executing a second lineage. Existing PR8 clients that omit `Idempotency-Key` retain the original non-idempotent API behavior; the PR9 PWA always supplies it for queued captures.
 
-## Pairing and QR onboarding
+Queue failure handling distinguishes retryable and permanent failures. Network failures, 5xx, `408`, `409`, `425`, and `429` preserve the queue head for retry. `401` clears the expired local session token while preserving queued shares for re-pairing. Other permanent 4xx responses remove that rejected record and continue draining later valid captures, preventing one poison item from blocking FIFO forever.
+
+## Pairing, revocation, and QR onboarding
+
+The bearer token is stored in IndexedDB so the page and Service Worker can share one persistent paired-device state. Revocation is confirmation-sensitive: the client clears its local token only after `DELETE /api/v1/sessions/current` succeeds. A network failure or non-success response retains the token locally so the security-sensitive revocation can be retried instead of silently presenting a disconnected state while the server session remains live.
 
 Pairing authority remains PR8's authority: challenge creation is still restricted to loopback socket peer + loopback Host + loopback Origin when present.
 
@@ -82,5 +96,7 @@ PR9 does not add:
 The normal target flow after one-time pairing/install is:
 
 ```text
-Android Share -> Content Forge -> persistent local queue -> authenticated Inbox -> project card
+Android Share -> bounded persistent local queue
+              -> authenticated idempotent Inbox intake
+              -> one project lineage
 ```
