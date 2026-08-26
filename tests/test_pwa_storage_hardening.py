@@ -23,3 +23,23 @@ def test_runtime_config_is_network_first_with_offline_cache_fallback() -> None:
     assert "event.respondWith(networkFirstConfig(request, event))" in worker
     assert "content-forge-shell:${self.registration.scope}:" in worker
     assert "${CACHE_PREFIX}v4" in worker
+
+
+def test_share_target_bounds_fetch_event_stream_before_multipart_parse() -> None:
+    worker = static_path("sw.js").read_text(encoding="utf-8")
+
+    # Content-Length can be absent on the pre-network FetchEvent request. It is only an
+    # optional fast rejection; the body stream itself is always bounded before parsing.
+    assert 'const raw = request.headers.get("content-length")' in worker
+    assert "if (raw == null) return" in worker
+    assert "request.body.getReader()" in worker
+    assert "totalBytes += value.byteLength" in worker
+    assert "totalBytes > LIMITS.maxShareBodyBytes" in worker
+    assert "await reader.cancel" in worker
+    assert "new Blob(chunks, { type: contentType })" in worker
+    assert 'new Response(bounded, { headers: { "Content-Type": contentType } }).formData()' in worker
+    assert "const data = await boundedMultipartFormData(request, contentType)" in worker
+    assert "const data = await request.formData()" not in worker
+    assert worker.index("self.CFStore.getToken()") < worker.index(
+        "boundedMultipartFormData(request, contentType)"
+    )
