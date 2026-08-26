@@ -7,31 +7,49 @@
   const KV_STORE = "kv";
   const SHARE_STORE = "shares";
   const TOKEN_KEY = "bearer-token";
+  const LIMIT_NAMES = Object.freeze([
+    "maxUploadBytes",
+    "maxShareBodyBytes",
+    "maxQueueBytes",
+    "maxQueueEntries",
+    "maxBatchEntries",
+    "maxFilenameChars",
+    "maxMimeChars",
+    "maxUrlChars",
+    "maxNoteChars",
+  ]);
 
   const config = root.CF_CONFIG;
   if (!config || typeof config !== "object") {
     throw new Error("Content Forge PWA configuration is missing");
   }
 
-  function positiveInteger(name) {
-    const value = Number(config[name]);
+  function positiveInteger(name, source) {
+    const value = Number(source[name]);
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error(`Invalid Content Forge PWA configuration: ${name}`);
     }
     return value;
   }
 
-  const LIMITS = Object.freeze({
-    maxUploadBytes: positiveInteger("maxUploadBytes"),
-    maxShareBodyBytes: positiveInteger("maxShareBodyBytes"),
-    maxQueueBytes: positiveInteger("maxQueueBytes"),
-    maxQueueEntries: positiveInteger("maxQueueEntries"),
-    maxBatchEntries: positiveInteger("maxBatchEntries"),
-    maxFilenameChars: positiveInteger("maxFilenameChars"),
-    maxMimeChars: positiveInteger("maxMimeChars"),
-    maxUrlChars: positiveInteger("maxUrlChars"),
-    maxNoteChars: positiveInteger("maxNoteChars"),
-  });
+  function normalizeLimits(source) {
+    if (!source || typeof source !== "object") {
+      throw new Error("Content Forge PWA queue authority is missing");
+    }
+    const normalized = {};
+    for (const name of LIMIT_NAMES) normalized[name] = positiveInteger(name, source);
+    if (normalized.maxShareBodyBytes < normalized.maxUploadBytes) {
+      throw new Error("Invalid Content Forge PWA upload limits");
+    }
+    return Object.freeze(normalized);
+  }
+
+  const LIMITS = normalizeLimits(config);
+
+  function queueAuthority(authority) {
+    if (authority == null || authority === LIMITS) return LIMITS;
+    return normalizeLimits(authority);
+  }
 
   function openDatabase() {
     return new Promise((resolve, reject) => {
@@ -71,25 +89,25 @@
     return value;
   }
 
-  function normalizeShare(record) {
+  function normalizeShare(record, limits) {
     if (!record || typeof record !== "object") throw new Error("invalid share queue record");
     const id = record.id || crypto.randomUUID();
     const createdAt = record.createdAt || new Date().toISOString();
     if (typeof id !== "string" || !id) throw new Error("share queue record requires an ID");
     if (typeof createdAt !== "string" || !createdAt) throw new Error("share queue record requires createdAt");
 
-    const sourceUrl = optionalString(record.sourceUrl, LIMITS.maxUrlChars, "shared URL");
-    const note = optionalString(record.note, LIMITS.maxNoteChars, "shared note");
+    const sourceUrl = optionalString(record.sourceUrl, limits.maxUrlChars, "shared URL");
+    const note = optionalString(record.note, limits.maxNoteChars, "shared note");
 
     if (record.kind === "file") {
       if (!(record.file instanceof Blob)) throw new Error("file queue record requires Blob bytes");
-      if (record.file.size > LIMITS.maxUploadBytes) throw new Error("shared file exceeds upload limit");
+      if (record.file.size > limits.maxUploadBytes) throw new Error("shared file exceeds upload limit");
       const originalName = record.originalName || record.file.name || "shared-file";
       const mimeType = record.mimeType || record.file.type || "application/octet-stream";
-      if (typeof originalName !== "string" || originalName.length > LIMITS.maxFilenameChars) {
+      if (typeof originalName !== "string" || originalName.length > limits.maxFilenameChars) {
         throw new Error("shared filename is too long");
       }
-      if (typeof mimeType !== "string" || mimeType.length > LIMITS.maxMimeChars) {
+      if (typeof mimeType !== "string" || mimeType.length > limits.maxMimeChars) {
         throw new Error("shared MIME type is too long");
       }
       return {
@@ -121,17 +139,17 @@
     }, 0);
   }
 
-  function validateQueueMutation(existing, incoming) {
+  function validateQueueMutation(existing, incoming, limits) {
     if (incoming.length < 1) throw new Error("share queue batch is empty");
-    if (incoming.length > LIMITS.maxBatchEntries) throw new Error("too many items in one capture");
-    if (existing.length + incoming.length > LIMITS.maxQueueEntries) throw new Error("share queue is full");
+    if (incoming.length > limits.maxBatchEntries) throw new Error("too many items in one capture");
+    if (existing.length + incoming.length > limits.maxQueueEntries) throw new Error("share queue is full");
 
     const existingBytes = queuedFileBytes(existing);
     const incomingBytes = queuedFileBytes(incoming);
-    if (existingBytes > LIMITS.maxQueueBytes || incomingBytes > LIMITS.maxQueueBytes) {
+    if (existingBytes > limits.maxQueueBytes || incomingBytes > limits.maxQueueBytes) {
       throw new Error("share queue byte limit exceeded");
     }
-    if (existingBytes + incomingBytes > LIMITS.maxQueueBytes) {
+    if (existingBytes + incomingBytes > limits.maxQueueBytes) {
       throw new Error("share queue byte limit exceeded");
     }
   }
@@ -165,9 +183,10 @@
     } finally { db.close(); }
   }
 
-  async function enqueueShares(records) {
+  async function enqueueSharesWithLimits(records, authority) {
     if (!Array.isArray(records)) throw new Error("share queue batch must be an array");
-    const entries = records.map(normalizeShare);
+    const limits = queueAuthority(authority);
+    const entries = records.map((record) => normalizeShare(record, limits));
     if (!entries.length) throw new Error("share queue batch is empty");
 
     const db = await openDatabase();
@@ -190,7 +209,7 @@
       };
       read.onsuccess = () => {
         try {
-          validateQueueMutation(Array.isArray(read.result) ? read.result : [], entries);
+          validateQueueMutation(Array.isArray(read.result) ? read.result : [], entries, limits);
           for (const entry of entries) store.add(entry);
         } catch (error) {
           cause = error;
@@ -210,6 +229,10 @@
         if (!cause) cause = tx.error || new Error("IndexedDB queue transaction failed");
       };
     });
+  }
+
+  async function enqueueShares(records) {
+    return enqueueSharesWithLimits(records, LIMITS);
   }
 
   async function enqueueShare(record) {
@@ -249,6 +272,7 @@
     clearToken,
     enqueueShare,
     enqueueShares,
+    enqueueSharesWithLimits,
     listShares,
     queueUsage,
     deleteShare,
