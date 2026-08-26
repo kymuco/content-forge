@@ -112,6 +112,10 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert service_worker.index("boundedContentLength(request)") < service_worker.index("request.formData()")
     assert service_worker.index("self.CFStore.getToken()") < service_worker.index("request.formData()")
     assert "await self.CFStore.enqueueShares(records)" in service_worker
+    assert "await self.CFStore.enqueueSharesWithLimits(records, activeLimits)" in service_worker
+    assert service_worker.index("const activeLimits = await currentShareLimits()") < service_worker.index(
+        "enqueueSharesWithLimits(records, activeLimits)"
+    )
     assert "Response.redirect" in service_worker
     assert "key.startsWith(CACHE_PREFIX)" in service_worker
     assert 'cache.match(appUrl("./"))' in service_worker
@@ -125,6 +129,9 @@ def test_service_worker_and_client_preserve_share_queue_and_authenticated_upload
     assert "maxUploadBytes" in shared
     assert "maxQueueBytes" in shared
     assert "maxQueueEntries" in shared
+    assert "async function enqueueSharesWithLimits(records, authority)" in shared
+    assert "records.map((record) => normalizeShare(record, limits))" in shared
+    assert "validateQueueMutation(Array.isArray(read.result) ? read.result : [], entries, limits)" in shared
     assert "async function enqueueShares(records)" in shared
     assert "for (const entry of entries) store.add(entry)" in shared
     assert "const entries = await enqueueShares([record])" in shared
@@ -300,8 +307,8 @@ def test_pwa_queue_idempotency_replays_one_durable_intake_per_record(tmp_path) -
             files={"file": ("too-large.bin", b"x" * 65, "application/octet-stream")},
         )
         assert first_failed.status_code == 413
-        assert replay_failed.status_code == 409
-        assert "already failed" in replay_failed.json()["detail"]
+        assert replay_failed.status_code == 413
+        assert "UploadTooLargeError" in replay_failed.json()["detail"]
 
         invalid_key = client.post(
             "/api/v1/inbox/url-note",
