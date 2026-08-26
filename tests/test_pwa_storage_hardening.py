@@ -78,12 +78,37 @@ def test_existing_pairing_cannot_be_silently_replaced_by_qr() -> None:
     client = static_path("app.js").read_text(encoding="utf-8")
 
     start = client.index("async function autoPairFromFragment()")
-    end = client.index("async function revokeSession()")
+    end = client.index("async function finalizeInvalidatedSession")
     auto_pair = client[start:end]
     assert "history.replaceState" in auto_pair
     assert "if (bearerToken)" in auto_pair
     assert "already paired" in auto_pair
     assert auto_pair.index("if (bearerToken)") < auto_pair.index("exchangePairing(challengeId, code)")
+
+
+def test_confirmed_revocation_finalizes_ui_even_if_local_cleanup_fails() -> None:
+    client = static_path("app.js").read_text(encoding="utf-8")
+
+    helper_start = client.index("async function finalizeInvalidatedSession")
+    revoke_start = client.index("async function revokeSession()")
+    helper = client[helper_start:revoke_start]
+    clear_call = "await window.CFStore.clearToken()"
+    assert "bearerToken = null" in helper
+    assert "setPairedState(false)" in helper
+    assert clear_call in helper
+    assert helper.index("bearerToken = null") < helper.index(clear_call)
+    assert helper.index("setPairedState(false)") < helper.index(clear_call)
+    assert "The server session is no longer usable" in helper
+
+    revoke_end = client.index("function clearThumbnailUrls()")
+    revoke = client[revoke_start:revoke_end]
+    assert "response.status !== 401" in revoke
+    assert "await finalizeInvalidatedSession(" in revoke
+    assert "Session retained so revocation can be retried" in revoke
+
+    # The same finalization path handles stale/expired credentials discovered after a
+    # reload, so a failed IndexedDB delete cannot leave the UI falsely paired forever.
+    assert client.count("await finalizeInvalidatedSession(") >= 3
 
 
 def test_share_target_streams_through_byte_cap_before_multipart_parse() -> None:
