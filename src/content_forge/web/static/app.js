@@ -49,8 +49,21 @@ async function autoPairFromFragment() {
 
 async function revokeSession() {
   if (!bearerToken) return;
-  try { await apiFetch("sessions/current", { method: "DELETE" }); }
-  finally { bearerToken = null; await window.CFStore.clearToken(); clearThumbnailUrls(); setPairedState(false); setStatus(elements.pairStatus, "Device disconnected."); }
+  setStatus(elements.pairStatus, "Revoking device session…");
+  try {
+    const response = await apiFetch("sessions/current", { method: "DELETE" });
+    if (!response.ok) {
+      const payload = await safeJson(response);
+      throw new Error(payload.detail || `Revocation failed (${response.status})`);
+    }
+    bearerToken = null;
+    await window.CFStore.clearToken();
+    clearThumbnailUrls();
+    setPairedState(false);
+    setStatus(elements.pairStatus, "Device disconnected.", "success");
+  } catch (error) {
+    setStatus(elements.pairStatus, `${error.message || "Revocation failed."} Session retained so revocation can be retried.`, "error");
+  }
 }
 
 function clearThumbnailUrls() { for (const url of thumbnailUrls) URL.revokeObjectURL(url); thumbnailUrls = []; }
@@ -86,10 +99,11 @@ async function loadInbox() {
 async function updateQueueBadge() { const queued = await window.CFStore.listShares(); elements.queueBadge.textContent = `Queue ${queued.length}`; return queued; }
 function showProgress(label, fraction) { setHidden(elements.progressShell, false); const normalized = Math.max(0, Math.min(1, Number(fraction) || 0)); elements.progressBar.style.width = `${Math.round(normalized * 100)}%`; elements.progressLabel.textContent = label; }
 function hideProgressSoon() { window.setTimeout(() => { setHidden(elements.progressShell, true); elements.progressBar.style.width = "0%"; }, 700); }
+function isPermanentQueueRejection(status) { const value = Number(status); return value >= 400 && value < 500 && ![401, 408, 409, 425, 429].includes(value); }
 
 function uploadQueuedFile(record) {
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest(); xhr.open("POST", new URL("inbox/files", API_BASE)); xhr.setRequestHeader("Authorization", `Bearer ${bearerToken}`); xhr.responseType = "json";
+    const xhr = new XMLHttpRequest(); xhr.open("POST", new URL("inbox/files", API_BASE)); xhr.setRequestHeader("Authorization", `Bearer ${bearerToken}`); xhr.setRequestHeader("Idempotency-Key", record.id); xhr.responseType = "json";
     xhr.upload.onprogress = (event) => { showProgress(`Uploading ${record.originalName || "file"}…`, event.lengthComputable ? event.loaded / event.total : 0); };
     xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) { showProgress(`Accepted ${record.originalName || "file"}`, 1); resolve(xhr.response || {}); } else { const error = new Error((xhr.response && xhr.response.detail) || `Upload failed (${xhr.status})`); error.status = xhr.status; reject(error); } };
     xhr.onerror = () => reject(new Error("Network error while uploading.")); xhr.onabort = () => reject(new Error("Upload cancelled."));
@@ -98,7 +112,7 @@ function uploadQueuedFile(record) {
 }
 
 async function uploadQueuedNote(record) {
-  const response = await apiFetch("inbox/url-note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_url: record.sourceUrl || null, note: record.note || null }) });
+  const response = await apiFetch("inbox/url-note", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": record.id }, body: JSON.stringify({ source_url: record.sourceUrl || null, note: record.note || null }) });
   if (!response.ok) { const payload = await safeJson(response); const error = new Error(payload.detail || `Capture failed (${response.status})`); error.status = response.status; throw error; }
   return response.json();
 }
@@ -109,8 +123,27 @@ async function drainQueue() {
   try {
     const queued = await updateQueueBadge();
     for (const record of queued) {
-      try { if (record.kind === "file") await uploadQueuedFile(record); else await uploadQueuedNote(record); await window.CFStore.deleteShare(record.id); await updateQueueBadge(); }
-      catch (error) { if (error.status === 401) { bearerToken = null; await window.CFStore.clearToken(); setPairedState(false); setStatus(elements.pairStatus, "Session expired. Pair again; queued shares are preserved.", "error"); break; } setStatus(elements.captureStatus, `${error.message || "Capture failed."} The item remains queued for retry.`, "error"); break; }
+      try {
+        if (record.kind === "file") await uploadQueuedFile(record); else await uploadQueuedNote(record);
+        await window.CFStore.deleteShare(record.id);
+        await updateQueueBadge();
+      } catch (error) {
+        if (error.status === 401) {
+          bearerToken = null;
+          await window.CFStore.clearToken();
+          setPairedState(false);
+          setStatus(elements.pairStatus, "Session expired. Pair again; queued shares are preserved.", "error");
+          break;
+        }
+        if (isPermanentQueueRejection(error.status)) {
+          await window.CFStore.deleteShare(record.id);
+          await updateQueueBadge();
+          setStatus(elements.captureStatus, `${error.message || "Capture rejected."} Removed from the retry queue so later captures can continue.`, "error");
+          continue;
+        }
+        setStatus(elements.captureStatus, `${error.message || "Capture failed."} The item remains queued for retry.`, "error");
+        break;
+      }
     }
   } finally { queueDraining = false; hideProgressSoon(); }
   if (bearerToken) await loadInbox();
