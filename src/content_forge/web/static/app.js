@@ -20,11 +20,19 @@ function setPairedState(paired) {
 }
 function isLoopbackHostname(hostname) { const value = String(hostname || "").toLowerCase(); return value === "localhost" || value === "127.0.0.1" || value === "::1" || value === "[::1]"; }
 async function safeJson(response) { try { return await response.json(); } catch (_) { return {}; } }
-async function apiFetch(relativePath, options) {
+async function apiFetchWithBearer(relativePath, options) {
+  const requestBearer = bearerToken;
   const requestOptions = Object.assign({}, options || {}); requestOptions.headers = new Headers(requestOptions.headers || {});
-  if (bearerToken) requestOptions.headers.set("Authorization", `Bearer ${bearerToken}`);
-  return fetch(new URL(relativePath, API_BASE), requestOptions);
+  if (requestBearer) requestOptions.headers.set("Authorization", `Bearer ${requestBearer}`);
+  try {
+    const response = await fetch(new URL(relativePath, API_BASE), requestOptions);
+    return { response, requestBearer };
+  } catch (error) {
+    error.requestBearer = requestBearer;
+    throw error;
+  }
 }
+async function apiFetch(relativePath, options) { return (await apiFetchWithBearer(relativePath, options)).response; }
 
 async function revokeIssuedPairingToken(token) {
   try {
@@ -49,16 +57,27 @@ async function exchangePairing(challengeId, code) {
     // state. Otherwise a reload could discard the only local copy of a live session.
     await window.CFStore.setToken(issuedToken);
   } catch (storageError) {
-    const revoked = await revokeIssuedPairingToken(issuedToken);
-    if (revoked) {
-      bearerToken = null;
-      throw new Error(`${storageError.message || "Could not persist the pairing session."} The issued server session was revoked.`);
-    }
-    // If automatic cleanup itself cannot be confirmed, retain the only credential in
-    // memory and expose Disconnect so the user still has a revocation path this page.
+    // The server session already exists. Expose its only credential immediately while
+    // automatic cleanup is attempted, so a stalled DELETE can still be revoked through
+    // the visible Disconnect action rather than trapping the bearer in this closure.
     bearerToken = issuedToken;
     setPairedState(true);
-    throw new Error(`${storageError.message || "Could not persist the pairing session."} Automatic revocation also failed; this page still holds the live session. Use Disconnect before closing or reloading.`);
+    setStatus(elements.pairStatus, `${storageError.message || "Could not persist the pairing session."} Attempting automatic revocation; Disconnect remains available while cleanup is pending.`, "error");
+    const revoked = await revokeIssuedPairingToken(issuedToken);
+    if (revoked) {
+      if (bearerToken === issuedToken) {
+        await finalizeInvalidatedSession(
+          "Issued pairing session was revoked after local persistence failed.",
+          "error",
+          issuedToken
+        );
+      }
+      throw new Error(`${storageError.message || "Could not persist the pairing session."} The issued server session was revoked.`);
+    }
+    if (bearerToken === issuedToken) {
+      throw new Error(`${storageError.message || "Could not persist the pairing session."} Automatic revocation also failed; this page still holds the live session. Use Disconnect before closing or reloading.`);
+    }
+    throw new Error(`${storageError.message || "Could not persist the pairing session."} The issued session changed while automatic cleanup was pending.`);
   }
   bearerToken = issuedToken;
   setPairedState(true);
@@ -85,18 +104,24 @@ async function autoPairFromFragment() {
   catch (error) { setStatus(elements.pairStatus, error.message || "QR pairing failed.", "error"); return false; }
 }
 
-async function finalizeInvalidatedSession(message, kind) {
-  // Once the server confirms revocation (or 401 proves the credential is already
-  // unusable), the browser must leave paired state even if local IndexedDB cleanup fails.
+async function finalizeInvalidatedSession(message, kind, expectedBearer) {
+  // A late response from an old request must never revoke a newer pairing. Require the
+  // bearer that actually authorized the request to still be current before changing UI
+  // state, then use a compare-and-delete IndexedDB transaction so a new token written
+  // while cleanup is pending cannot be erased by the old request either.
+  const invalidatedBearer = expectedBearer || bearerToken;
+  if (!invalidatedBearer || bearerToken !== invalidatedBearer) return false;
   bearerToken = null;
   clearThumbnailUrls();
   setPairedState(false);
   try {
-    await window.CFStore.clearToken();
+    await window.CFStore.clearTokenIfMatches(invalidatedBearer);
+    if (bearerToken) return false;
     setStatus(elements.pairStatus, message, kind || "success");
     return true;
   } catch (error) {
-    setStatus(elements.pairStatus, `${message} ${error.message || "Local token cleanup failed."} The server session is no longer usable, but a stale token remains in browser storage; reload may repeat this cleanup warning.`, "error");
+    if (bearerToken) return false;
+    setStatus(elements.pairStatus, `${message} ${error.message || "Local token cleanup failed."} The server session is no longer usable, but its stale token may remain in browser storage; reload may repeat this cleanup warning.`, "error");
     return false;
   }
 }
@@ -104,27 +129,38 @@ async function finalizeInvalidatedSession(message, kind) {
 async function revokeSession() {
   if (!bearerToken) return;
   setStatus(elements.pairStatus, "Revoking device session…");
-  let response;
+  let result;
   try {
-    response = await apiFetch("sessions/current", { method: "DELETE" });
+    result = await apiFetchWithBearer("sessions/current", { method: "DELETE" });
   } catch (error) {
+    if (error.requestBearer !== bearerToken) return;
     setStatus(elements.pairStatus, `${error.message || "Revocation failed."} Session retained so revocation can be retried.`, "error");
     return;
   }
+  const { response, requestBearer } = result;
+  if (requestBearer !== bearerToken) return;
   if (!response.ok && response.status !== 401) {
     const payload = await safeJson(response);
+    if (requestBearer !== bearerToken) return;
     setStatus(elements.pairStatus, `${payload.detail || `Revocation failed (${response.status})`} Session retained so revocation can be retried.`, "error");
     return;
   }
   await finalizeInvalidatedSession(
     response.status === 401 ? "Device session was already inactive. Local pairing cleared." : "Device disconnected.",
-    "success"
+    "success",
+    requestBearer
   );
 }
 
 function clearThumbnailUrls() { for (const url of thumbnailUrls) URL.revokeObjectURL(url); thumbnailUrls = []; }
 async function fetchThumbnail(assetId, img) {
-  try { const response = await apiFetch(`assets/${encodeURIComponent(assetId)}/thumbnail`); if (!response.ok) return; const blob = await response.blob(); const objectUrl = URL.createObjectURL(blob); thumbnailUrls.push(objectUrl); img.src = objectUrl; img.classList.remove("hidden"); } catch (_) {}
+  try {
+    const { response, requestBearer } = await apiFetchWithBearer(`assets/${encodeURIComponent(assetId)}/thumbnail`);
+    if (!response.ok) return;
+    const blob = await response.blob();
+    if (requestBearer !== bearerToken) return;
+    const objectUrl = URL.createObjectURL(blob); thumbnailUrls.push(objectUrl); img.src = objectUrl; img.classList.remove("hidden");
+  } catch (_) {}
 }
 function formatBytes(value) { const bytes = Number(value); if (!Number.isFinite(bytes) || bytes < 0) return ""; const units = ["B","KB","MB","GB"]; let amount = bytes, index = 0; while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index += 1; } return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`; }
 function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(); }
@@ -142,14 +178,22 @@ function createCard(item) {
 
 async function loadInbox() {
   if (!bearerToken) return; setStatus(elements.inboxStatus, "Loading…");
+  let requestBearer = bearerToken;
   try {
-    const response = await apiFetch("inbox?limit=100");
-    if (response.status === 401) { await finalizeInvalidatedSession("Session expired. Pair again.", "error"); return; }
+    const result = await apiFetchWithBearer("inbox?limit=100");
+    const response = result.response; requestBearer = result.requestBearer;
+    if (response.status === 401) { await finalizeInvalidatedSession("Session expired. Pair again.", "error", requestBearer); return; }
+    if (requestBearer !== bearerToken) return;
     if (!response.ok) throw new Error(`Inbox request failed (${response.status})`);
-    const payload = await response.json(); const items = Array.isArray(payload.items) ? payload.items : []; clearThumbnailUrls(); elements.inboxList.replaceChildren();
+    const payload = await response.json();
+    if (requestBearer !== bearerToken) return;
+    const items = Array.isArray(payload.items) ? payload.items : []; clearThumbnailUrls(); elements.inboxList.replaceChildren();
     if (!items.length) elements.inboxList.appendChild(elements.emptyTemplate.content.cloneNode(true)); else for (const item of items) elements.inboxList.appendChild(createCard(item));
     elements.inboxCount.textContent = String(items.length); setStatus(elements.inboxStatus, "");
-  } catch (error) { setStatus(elements.inboxStatus, error.message || "Could not load Inbox.", "error"); }
+  } catch (error) {
+    if (requestBearer !== bearerToken) return;
+    setStatus(elements.inboxStatus, error.message || "Could not load Inbox.", "error");
+  }
 }
 
 async function updateQueueBadge() { const queued = await window.CFStore.listShares(); elements.queueBadge.textContent = `Queue ${queued.length}`; return queued; }
@@ -159,23 +203,29 @@ function isPermanentQueueRejection(status) { const value = Number(status); retur
 
 function uploadQueuedFile(record) {
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest(); xhr.open("POST", new URL("inbox/files", API_BASE)); xhr.setRequestHeader("Authorization", `Bearer ${bearerToken}`); xhr.setRequestHeader("Idempotency-Key", record.id); xhr.responseType = "json";
+    const requestBearer = bearerToken;
+    const rejectRequest = (message, status) => {
+      const error = new Error(message); error.status = status; error.requestBearer = requestBearer; reject(error);
+    };
+    if (!requestBearer) { rejectRequest("Pairing session is unavailable.", 401); return; }
+    const xhr = new XMLHttpRequest(); xhr.open("POST", new URL("inbox/files", API_BASE)); xhr.setRequestHeader("Authorization", `Bearer ${requestBearer}`); xhr.setRequestHeader("Idempotency-Key", record.id); xhr.responseType = "json";
     xhr.upload.onprogress = (event) => { showProgress(`Uploading ${record.originalName || "file"}…`, event.lengthComputable ? event.loaded / event.total : 0); };
-    xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) { showProgress(`Accepted ${record.originalName || "file"}`, 1); resolve(xhr.response || {}); } else { const error = new Error((xhr.response && xhr.response.detail) || `Upload failed (${xhr.status})`); error.status = xhr.status; reject(error); } };
-    xhr.onerror = () => reject(new Error("Network error while uploading.")); xhr.onabort = () => reject(new Error("Upload cancelled."));
+    xhr.onload = () => { if (xhr.status >= 200 && xhr.status < 300) { showProgress(`Accepted ${record.originalName || "file"}`, 1); resolve(xhr.response || {}); } else { rejectRequest((xhr.response && xhr.response.detail) || `Upload failed (${xhr.status})`, xhr.status); } };
+    xhr.onerror = () => rejectRequest("Network error while uploading."); xhr.onabort = () => rejectRequest("Upload cancelled.");
     const form = new FormData(); const file = record.file; form.append("file", file, record.originalName || file.name || "shared-file"); if (record.sourceUrl) form.append("source_url", record.sourceUrl); if (record.note) form.append("note", record.note); xhr.send(form);
   });
 }
 
 async function uploadQueuedNote(record) {
-  const response = await apiFetch("inbox/url-note", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": record.id }, body: JSON.stringify({ source_url: record.sourceUrl || null, note: record.note || null }) });
-  if (!response.ok) { const payload = await safeJson(response); const error = new Error(payload.detail || `Capture failed (${response.status})`); error.status = response.status; throw error; }
+  const { response, requestBearer } = await apiFetchWithBearer("inbox/url-note", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": record.id }, body: JSON.stringify({ source_url: record.sourceUrl || null, note: record.note || null }) });
+  if (!response.ok) { const payload = await safeJson(response); const error = new Error(payload.detail || `Capture failed (${response.status})`); error.status = response.status; error.requestBearer = requestBearer; throw error; }
   return response.json();
 }
 
 async function drainQueue() {
   if (!bearerToken || queueDraining) { await updateQueueBadge(); return; }
   queueDraining = true;
+  let redrainForNewBearer = false;
   try {
     const queued = await updateQueueBadge();
     for (const record of queued) {
@@ -185,7 +235,13 @@ async function drainQueue() {
         await updateQueueBadge();
       } catch (error) {
         if (error.status === 401) {
-          await finalizeInvalidatedSession("Session expired. Pair again; queued shares are preserved.", "error");
+          const requestBearer = error.requestBearer || null;
+          if (requestBearer && requestBearer !== bearerToken) {
+            if (bearerToken) redrainForNewBearer = true;
+            else break;
+            continue;
+          }
+          await finalizeInvalidatedSession("Session expired. Pair again; queued shares are preserved.", "error", requestBearer || bearerToken);
           break;
         }
         if (error.status === 413) {
@@ -204,6 +260,7 @@ async function drainQueue() {
     }
   } finally { queueDraining = false; hideProgressSoon(); }
   if (bearerToken) await loadInbox();
+  if (redrainForNewBearer && bearerToken) await drainQueue();
 }
 
 async function queueFiles(files) {
