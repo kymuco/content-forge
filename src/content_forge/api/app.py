@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,6 +19,7 @@ from content_forge.application import (
     InboxError,
     InboxIntake,
     InboxService,
+    IntakeState,
     UploadTooLargeError,
 )
 from content_forge.application.idempotency import (
@@ -34,6 +36,7 @@ PAIRING_ID_PATTERN = r"^cf_pair_[0-9a-f]{32}$"
 PAIRING_CODE_PATTERN = r"^[0-9]{8}$"
 MULTIPART_OVERHEAD_BUDGET = 1024 * 1024
 PARSED_BODY_LIMIT = 128 * 1024
+_REPLAY_HASH_CHUNK_BYTES = 1024 * 1024
 _PREPARSE_AUTH_POST_ROUTES = frozenset(
     {
         "/api/v1/inbox/files",
@@ -85,6 +88,46 @@ class URLNoteRequest(BaseModel):
 
 def _intake_payload(intake: InboxIntake) -> dict[str, object]:
     return intake.model_dump(mode="json")
+
+
+def _failed_replay_conflict(intake: InboxIntake) -> None:
+    """Never turn a previously durable failed result into a synthetic 201 replay."""
+
+    if intake.state is IntakeState.FAILED:
+        detail = "capture already failed for this Idempotency-Key"
+        if intake.error_code:
+            detail = f"{detail}: {intake.error_code}"
+        raise HTTPException(status_code=409, detail=detail)
+
+
+def _verify_replayed_file_bytes(file: UploadFile, intake: InboxIntake) -> None:
+    """Reject key reuse when accepted file bytes differ despite matching metadata.
+
+    Metadata comparison in ApplicationRepository is sufficient for URL/note captures, but
+    a file key must also bind the actual bytes once an exact size+SHA receipt exists. The
+    multipart parser has already spooled the authenticated upload by this point, so hash
+    the retry from its seekable temporary stream without allocating another full copy.
+    """
+
+    if intake.content_sha256 is None or intake.size_bytes is None:
+        return
+    stream = file.file
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        stream.seek(0)
+        while True:
+            chunk = stream.read(_REPLAY_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            digest.update(chunk)
+    finally:
+        stream.seek(0)
+    if size != intake.size_bytes or digest.hexdigest() != intake.content_sha256:
+        raise IdempotencyConflict(
+            "Idempotency-Key was reused for different file bytes"
+        )
 
 
 def _is_loopback_hostname(hostname: str | None) -> bool:
@@ -385,6 +428,7 @@ def create_app(
                     content_kind_hint=payload.content_kind_hint,
                 )
         except IdempotencyReplay as replay:
+            _failed_replay_conflict(replay.intake)
             intake = replay.intake
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -417,6 +461,11 @@ def create_app(
                     content_kind_hint=content_kind_hint,
                 )
         except IdempotencyReplay as replay:
+            _failed_replay_conflict(replay.intake)
+            try:
+                _verify_replayed_file_bytes(file, replay.intake)
+            except IdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             intake = replay.intake
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
