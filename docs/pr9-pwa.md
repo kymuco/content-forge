@@ -30,7 +30,7 @@ The shell provides:
 
 Static UI responses use a restrictive Content Security Policy, no-referrer policy, `nosniff`, and frame denial. The client renders intake-controlled strings with `textContent`; it does not inject Inbox content as HTML.
 
-The server also exposes a generated same-origin `/app/config.js` before `shared.js`. It carries the authoritative `max_upload_bytes`, multipart body budget, and browser queue limits into both the page and Service Worker. The worker therefore cannot silently accept a 2 GiB file when the local API was configured for a smaller maximum.
+The server also exposes a generated same-origin `/app/config.js` before `shared.js`. It carries the authoritative `max_upload_bytes`, multipart body budget, and browser queue limits into both the page and Service Worker. Controlled `config.js` GETs are network-first with `cache: no-store`; a successful live response refreshes the scope-specific cache, while the cached copy is only an offline fallback. The shell cache generation is versioned so worker activation drops obsolete snapshots for the same mounted instance.
 
 Shell caches use a Content Forge + Service Worker scope-specific prefix. Worker activation therefore removes only obsolete caches for the same mounted Content Forge instance, not caches owned by another application or mount on the origin. Navigation requests fall back to the cached `/app/` shell when the server is offline, including redirected share-marker URLs such as `?shared=1`.
 
@@ -40,15 +40,17 @@ IndexedDB is origin-scoped by browsers, so PR9 additionally includes the mounted
 
 The manifest declares a multipart Web Share Target for image/video/audio files plus title/text/URL metadata.
 
-A correctly installed Service Worker intercepts `POST app/share-target` inside the browser. Before multipart parsing it requires the expected navigation/document Fetch Metadata provenance, rejects cross-site provenance, requires a previously paired local session token, validates multipart Content-Type, and requires a Content-Length bounded by the server-provided configuration. Only then may it call `request.formData()`.
+A correctly installed Service Worker intercepts `POST app/share-target` inside the browser. Before consuming the body it requires the expected navigation/document Fetch Metadata provenance, rejects cross-site provenance, requires a previously paired local session token, validates multipart Content-Type, and rejects an advertised oversized Content-Length when that header is visible. Browser Web Share Target FetchEvent requests are not required to expose that network-generated header.
+
+The actual pre-parser bound is the request stream itself. The worker reads `request.body` incrementally, counts bytes against the server-provided `maxShareBodyBytes`, cancels/rejects once the cap is exceeded, and only after the stream is known to fit reconstructs a bounded Blob/Response for multipart `formData()` parsing. The raw FetchEvent request is never handed directly to the multipart parser.
 
 After parsing, the worker permits only the declared share fields. Queue validation itself is owned by `shared.js`, not by individual producers: Android Share, the foreground file picker, and URL/note capture all pass through the same per-file size, filename/MIME/text length, batch-count, queue-entry-count, and aggregate queued-byte limits.
 
-A multi-file Android share is committed through one IndexedDB read/write transaction. Validation happens against the existing queue and then every record is inserted in that same transaction; quota exhaustion or another IndexedDB failure cannot leave an already-committed prefix of the share that would be duplicated when the user retries.
+Multi-file Android shares and multi-file foreground picker selections are each submitted as one `enqueueShares()` batch. Validation happens against the existing queue and every record is inserted in the same IndexedDB read/write transaction; quota exhaustion, duplicate IDs, or another IndexedDB failure cannot leave an already-committed prefix that would be duplicated when the user retries.
 
 A share can still be captured while the Content Forge server is temporarily offline, but an unpaired browser profile cannot use the share target as an unauthenticated IndexedDB intake surface. The Service Worker stores accepted File/URL/note material in IndexedDB and redirects to the PWA shell. It does **not** call storage or Inbox internals and it does not attach the bearer token to the OS share-target navigation itself.
 
-If the Service Worker is not active, the server-side `POST /app/share-target` fallback never parses or ingests the multipart body. It enforces the same configured Content-Length authority and returns guidance to open/install the PWA first. This prevents the fallback surface from becoming an authentication bypass around PR8.
+If the Service Worker is not active, the server-side `POST /app/share-target` fallback never parses or ingests the multipart body. Because this request has reached the HTTP server rather than a FetchEvent, the fallback requires and bounds Content-Length before returning guidance to open/install the PWA first. This prevents the fallback surface from becoming an authentication bypass around PR8.
 
 ## Authenticated queue drain and idempotency
 
@@ -65,7 +67,7 @@ File idempotency also binds accepted content, not just the filename and MIME met
 
 FastAPI may run synchronous capture handlers concurrently even though one process exclusively owns the Content Forge root. PR9 therefore serializes live side-effect execution through a fixed set of idempotency-key lock stripes. Two simultaneous requests for one queue UUID cannot both observe and advance the same `receiving` receipt; sequential retries retain the durable SQLite identity and recovery semantics without an unbounded in-memory per-key lock map.
 
-For files, a sequential retry before the durable byte-acceptance receipt reuses the same deterministic intake. If startup observed that receipt after interruption but before any exact bytes were accepted, it may have classified it as `interrupted_before_asset_acceptance`; PR9 revives that specific retryable pre-acceptance state, clears only its transient diagnostics, and lets the authenticated retry supply bytes again under the same identity. Retryable pre-acceptance filesystem/SQLite interruption codes receive the same treatment. Permanent failures such as `UploadTooLargeError` remain terminal.
+For files, a sequential retry before the durable byte-acceptance receipt reuses the same deterministic intake. A failed deterministic FILE receipt with no durable content SHA, asset, or project has accepted no bytes, so it is retryable by default under that same identity regardless of the concrete operational exception class (`PermissionError`, `FileNotFoundError`, platform-specific `OSError` subclasses, SQLite storage errors, or an interrupted startup reconciliation). Only explicitly deterministic pre-acceptance failures are terminal; `UploadTooLargeError` is currently the terminal input failure in this boundary.
 
 Once exact size + SHA-256 are durable, or the intake is already prepared/partial, the existing durable result is replayed rather than executing a second lineage. A durable permanent `failed` intake is not converted into a synthetic successful replay: the same key receives `409`, while the failed intake remains inspectable in Inbox. Existing PR8 clients that omit `Idempotency-Key` retain the original non-idempotent API behavior; the PR9 PWA always supplies it for queued captures.
 
