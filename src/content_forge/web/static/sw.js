@@ -101,11 +101,29 @@ async function currentShareLimits() {
     response = await fetch(LIVE_CONFIG_URL, { cache: "no-store" });
   } catch (_) {
     // Native shares must remain capturable while the local server is actually offline.
-    // Only a network failure may fall back to the worker's last validated frozen limits.
+    // A failure before response headers are received is a genuine network fallback.
     return LIMITS;
   }
   if (!response.ok) throw new Error(`live PWA limits unavailable (${response.status})`);
-  return validateLiveLimits(await response.json());
+
+  let body;
+  try {
+    // Reading the response body is still network I/O. If the connection dies after the
+    // headers arrive, preserve offline capture by falling back to the frozen authority.
+    body = await response.text();
+  } catch (_) {
+    return LIMITS;
+  }
+
+  let payload;
+  try {
+    // Once the complete body was received, malformed JSON/configuration is not an
+    // offline condition. Treat it as invalid live authority and fail closed.
+    payload = JSON.parse(body);
+  } catch (_) {
+    throw new Error("invalid live PWA limits");
+  }
+  return validateLiveLimits(payload);
 }
 
 async function boundedMultipartFormData(request, contentType, limits) {
@@ -175,7 +193,7 @@ async function queueShareTarget(request) {
 
   // If the server is reachable, refresh authority before consuming this share. A stale
   // active worker therefore cannot admit bytes using yesterday's max_upload_bytes. Only
-  // an actual network failure falls back to the frozen limits for offline capture.
+  // a genuine fetch/body-stream network failure falls back to frozen offline limits.
   const activeLimits = await currentShareLimits();
   if (contentLength != null && contentLength > activeLimits.maxShareBodyBytes) {
     throw new Error("shared payload exceeds the local queue limit");
