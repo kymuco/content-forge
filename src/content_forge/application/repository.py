@@ -205,17 +205,11 @@ class ApplicationRepository:
                         "Idempotency-Key was reused for different capture metadata"
                     ) from exc
 
-                accepted_file = (
-                    existing.kind is IntakeKind.FILE
-                    and existing.content_sha256 is not None
-                    and existing.size_bytes is not None
-                )
-                if existing.state is IntakeState.RECEIVING and (
-                    existing.kind is IntakeKind.URL_NOTE or not accepted_file
-                ):
-                    # The first attempt did not cross the file byte-acceptance boundary,
-                    # or a URL/note operation is still at a reconstructible checkpoint.
-                    # Reuse the exact durable identity and let the service resume it.
+                if existing.state is IntakeState.RECEIVING:
+                    # RECEIVING is always a resumable checkpoint. URL/note and files that
+                    # have not crossed byte acceptance can continue directly; a FULL-
+                    # accepted file must be verified against its durable size+SHA by the
+                    # Inbox service before recovery advances asset/source/project state.
                     return existing
 
                 retryable_preacceptance_failure = (
@@ -265,10 +259,9 @@ class ApplicationRepository:
                         ) from exc
                     return revived
 
-                # Prepared/partial/post-acceptance failed records, plus FULL-accepted
-                # receiving files, already represent the request identity. The HTTP
-                # adapter replays that durable result instead of executing side effects
-                # a second time.
+                # Prepared/partial/post-acceptance failed records already represent the
+                # request identity. The HTTP adapter verifies replay bytes where needed
+                # and returns that durable terminal result without re-running side effects.
                 raise IdempotencyReplay(existing) from exc
         return intake
 
