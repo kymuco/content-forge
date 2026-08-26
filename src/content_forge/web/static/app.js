@@ -72,6 +72,13 @@ async function exchangePairing(challengeId, code) {
           issuedToken
         );
       }
+      // A concurrent tab may have won the IndexedDB compare-and-set. Once this losing
+      // issued session is revoked, finalizeInvalidatedSession adopts that persisted winner.
+      // Treat that as a usable pairing so the caller immediately drains/loads under it.
+      if (bearerToken && bearerToken !== issuedToken) {
+        setStatus(elements.pairStatus, "Another pairing completed first. This tab adopted the active paired session.", "success");
+        return;
+      }
       throw new Error(`${storageError.message || "Could not persist the pairing session."} The issued server session was revoked.`);
     }
     if (bearerToken === issuedToken) {
@@ -117,6 +124,18 @@ async function finalizeInvalidatedSession(message, kind, expectedBearer) {
   try {
     await window.CFStore.clearTokenIfMatches(invalidatedBearer);
     if (bearerToken) return false;
+
+    // clearTokenIfMatches deliberately leaves a different persisted bearer untouched.
+    // That can be the winner of a concurrent pairing CAS. Adopt it immediately so this
+    // tab does not remain visually disconnected or repeatedly lose future pairing claims.
+    const persistedBearer = await window.CFStore.getToken();
+    if (persistedBearer && persistedBearer !== invalidatedBearer) {
+      bearerToken = persistedBearer;
+      setPairedState(true);
+      setStatus(elements.pairStatus, "Another pairing completed first. This tab adopted the active paired session.", "success");
+      return true;
+    }
+
     setStatus(elements.pairStatus, message, kind || "success");
     return true;
   } catch (error) {
