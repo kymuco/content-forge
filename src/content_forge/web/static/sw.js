@@ -237,10 +237,15 @@ async function queueShareTarget(request) {
     throw new Error("share queue byte limit exceeded");
   }
 
-  // One IndexedDB transaction owns validation plus all inserts, so a multi-file Android
-  // share is either fully queued or not queued at all. Retrying after a storage error
-  // therefore cannot duplicate an already-committed prefix of the same OS share.
-  await self.CFStore.enqueueShares(records);
+  // Keep the offline path on the worker's frozen authority, preserving the established
+  // shared-store contract. When the reachable server supplied a fresh snapshot, pass that
+  // exact validated authority into the same atomic IndexedDB transaction so an increased
+  // limit cannot be vetoed by the old worker's imported config after all live checks pass.
+  if (activeLimits === LIMITS) {
+    await self.CFStore.enqueueShares(records);
+  } else {
+    await self.CFStore.enqueueSharesWithLimits(records, activeLimits);
+  }
   return Response.redirect(appUrl("./?shared=1"), 303);
 }
 
