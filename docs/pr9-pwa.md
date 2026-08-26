@@ -30,7 +30,9 @@ The shell provides:
 
 Static UI responses use a restrictive Content Security Policy, no-referrer policy, `nosniff`, and frame denial. The client renders intake-controlled strings with `textContent`; it does not inject Inbox content as HTML.
 
-The server also exposes a generated same-origin `/app/config.js` before `shared.js`. It carries the authoritative `max_upload_bytes`, multipart body budget, and browser queue limits into both the page and Service Worker. Controlled `config.js` GETs are network-first with `cache: no-store`; a successful live response refreshes the scope-specific cache, while the cached copy is only an offline fallback. The shell cache generation is versioned so worker activation drops obsolete snapshots for the same mounted instance.
+The server exposes a generated same-origin `/app/config.js` before `shared.js`. It carries the configured upload, multipart-body, and browser-queue limits into both the page and Service Worker at load/update time. Controlled `config.js` GETs are network-first with `cache: no-store`; a successful live response refreshes the scope-specific cache, while the cached copy is only an offline fallback. Service Worker registration uses `updateViaCache: "none"`, so update checks fetch both the worker script and its imported configuration without letting the HTTP cache hide a changed authority.
+
+The server additionally exposes `/app/config.json` with the same limit payload and `Cache-Control: no-store`. An already-active worker fetches and validates this live authority immediately before an online Android share. A server-side limit change therefore applies to the next reachable share without waiting for a worker update cycle. Only an actual network exception permits fallback to the worker's last validated frozen limits so genuine offline capture remains possible; HTTP errors or malformed live configuration fail closed.
 
 Shell caches use a Content Forge + Service Worker scope-specific prefix. Worker activation therefore removes only obsolete caches for the same mounted Content Forge instance, not caches owned by another application or mount on the origin. Navigation requests fall back to the cached `/app/` shell when the server is offline, including redirected share-marker URLs such as `?shared=1`.
 
@@ -40,11 +42,11 @@ IndexedDB is origin-scoped by browsers, so PR9 additionally includes the mounted
 
 The manifest declares a multipart Web Share Target for image/video/audio files plus title/text/URL metadata.
 
-A correctly installed Service Worker intercepts `POST app/share-target` inside the browser. Before consuming the body it requires the expected navigation/document Fetch Metadata provenance, rejects cross-site provenance, requires a previously paired local session token, validates multipart Content-Type, and rejects an advertised oversized Content-Length when that header is visible. Browser Web Share Target FetchEvent requests are not required to expose that network-generated header.
+A correctly installed Service Worker intercepts `POST app/share-target` inside the browser. Before consuming the body it requires the expected navigation/document Fetch Metadata provenance, rejects cross-site provenance, requires a previously paired local session token, validates multipart Content-Type, resolves the current online server limits when reachable, and rejects an advertised oversized Content-Length when that header is visible. Browser Web Share Target FetchEvent requests are not required to expose that network-generated header.
 
-The actual pre-parser bound is the request stream itself. The worker reads `request.body` incrementally, counts bytes against the server-provided `maxShareBodyBytes`, cancels/rejects once the cap is exceeded, and only after the stream is known to fit reconstructs a bounded Blob/Response for multipart `formData()` parsing. The raw FetchEvent request is never handed directly to the multipart parser.
+The actual pre-parser bound is the request stream itself. The worker wraps `request.body` in a bounded `ReadableStream`, counts bytes against the active `maxShareBodyBytes`, and cancels/rejects before enqueueing any chunk that would cross the cap. That bounded stream feeds the browser multipart parser directly: the worker does not accumulate all chunks and does not construct a second full-size `Blob`, so peak JavaScript ownership remains proportional to stream buffering rather than multiple complete payload copies. The raw FetchEvent request is never handed directly to the multipart parser.
 
-After parsing, the worker permits only the declared share fields. Queue validation itself is owned by `shared.js`, not by individual producers: Android Share, the foreground file picker, and URL/note capture all pass through the same per-file size, filename/MIME/text length, batch-count, queue-entry-count, and aggregate queued-byte limits.
+After parsing, the worker permits only the declared share fields and applies the freshly resolved per-file, filename/MIME/text, batch-count, queue-entry-count, and aggregate queued-byte limits before persistence. `shared.js` remains the final shared persistence boundary for Android Share, the foreground file picker, and URL/note capture, enforcing the same frozen local limits atomically as a second line of defense.
 
 Multi-file Android shares and multi-file foreground picker selections are each submitted as one `enqueueShares()` batch. Validation happens against the existing queue and every record is inserted in the same IndexedDB read/write transaction; quota exhaustion, duplicate IDs, or another IndexedDB failure cannot leave an already-committed prefix that would be duplicated when the user retries.
 
@@ -71,11 +73,13 @@ For files, a sequential retry before the durable byte-acceptance receipt reuses 
 
 Once exact size + SHA-256 are durable, or the intake is already prepared/partial, the existing durable result is replayed rather than executing a second lineage. A durable permanent `failed` intake is not converted into a synthetic successful replay: the same key receives `409`, while the failed intake remains inspectable in Inbox. Existing PR8 clients that omit `Idempotency-Key` retain the original non-idempotent API behavior; the PR9 PWA always supplies it for queued captures.
 
-Queue failure handling distinguishes retryable and permanent failures. Network failures, 5xx, `408`, `425`, and `429` preserve the queue head for retry. `401` clears the expired local session token while preserving queued shares for re-pairing. Permanent 4xx responses, including deterministic idempotency `409`, remove that rejected record and continue draining later valid captures, preventing one poison item from blocking FIFO forever.
+Queue failure handling distinguishes retryable, preserved, and permanently rejected failures. Network failures, 5xx, `408`, `425`, and `429` preserve the current queue item and stop the drain for later retry. `401` clears the expired local session token while preserving queued shares for re-pairing. Deterministic permanent 4xx responses such as idempotency `409` remove the rejected record and continue with later captures so a poison item cannot block FIFO forever. `413` is intentionally special: because it can reveal a changed server upload authority relative to an already-captured local item, the PWA preserves that item's only local bytes, surfaces guidance to refresh the current limits, and continues attempting later queue records rather than deleting the capture.
 
 ## Pairing, revocation, and QR onboarding
 
 The bearer token is stored in the mount-scoped IndexedDB database so the page and Service Worker for one PWA instance can share one persistent paired-device state without leaking that state to another Content Forge mount on the same origin. Revocation is confirmation-sensitive: the client clears its local token only after `DELETE /api/v1/sessions/current` succeeds. A network failure or non-success response retains the token locally so the security-sensitive revocation can be retried instead of silently presenting a disconnected state while the server session remains live.
+
+A second QR cannot silently replace an already stored bearer. The fragment secret is removed from visible history immediately, but when the installation is already paired the client refuses the new exchange and requires an explicit Disconnect first. The previous server session therefore remains revocable instead of becoming an orphaned credential that only expires later.
 
 Pairing authority remains PR8's authority: challenge creation is still restricted to loopback socket peer + loopback Host + loopback Origin when present.
 
@@ -91,13 +95,13 @@ The generated QR points to:
 <phone-visible-base>/app/#challenge_id=...&code=...
 ```
 
-The short-lived pairing code is intentionally in the URL **fragment**, not the query or path. Browser fragments are not included in the HTTP request or Referer. On load the PWA reads the fragment, immediately removes it from visible history state, exchanges the challenge for a bearer session, and persists only the resulting session token locally.
+The short-lived pairing code is intentionally in the URL **fragment**, not the query or path. Browser fragments are not included in the HTTP request or Referer. On load the PWA reads the fragment, immediately removes it from visible history state, and exchanges it only when no bearer is already installed; a successful exchange persists only the resulting session token locally.
 
 QR rendering is local via the pure-Python `segno` package; no third-party QR service receives the address, challenge, or code.
 
 ## Review status
 
-Three independent Codex review passes have produced 17 actionable correctness/security findings in total (6 P1 and 11 P2). Every finding has a code fix or an already-landed equivalent fix, a targeted regression where applicable, an explicit review reply, and a resolved thread. The release gate still requires a fresh review of the final exact head rather than treating those resolved threads as proof by themselves.
+Four independent Codex review passes have produced 20 actionable correctness/security findings in total (7 P1 and 13 P2). Every finding has a code fix or an already-landed equivalent fix, a targeted regression where applicable, and an explicit review reply. The release gate still requires a fresh review of the final exact head rather than treating those resolved findings as proof by themselves.
 
 ## Boundaries / non-goals
 
@@ -114,7 +118,7 @@ PR9 does not add:
 The normal target flow after one-time pairing/install is:
 
 ```text
-Android Share -> scoped, bounded, atomic local queue
+Android Share -> scoped, live-authority-bounded, atomic local queue
               -> authenticated idempotent Inbox intake
               -> one project lineage
 ```
