@@ -15,7 +15,14 @@ from content_forge.storage import (
     StorageSchemaError,
 )
 
-from .models import InboxIntake, IntakeState
+from .idempotency import (
+    IdempotencyConflict,
+    IdempotencyReplay,
+    current_idempotency_key,
+    intake_id_for_key,
+    same_intake_request,
+)
+from .models import InboxIntake, IntakeKind, IntakeState
 
 APPLICATION_SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_COMPONENT = "application"
@@ -141,6 +148,20 @@ class ApplicationRepository:
         return self
 
     def create_intake(self, intake: InboxIntake) -> InboxIntake:
+        """Create one intake, or resume/replay the identity bound to a retry key.
+
+        The raw client UUID is never persisted as authority. While an authenticated API
+        call holds an idempotency scope, the UUID deterministically selects the intake ID.
+        That durable primary key is therefore committed in the same SQLite transaction as
+        the initial receipt: losing the HTTP response cannot create a second lineage.
+        """
+
+        idempotency_key = current_idempotency_key()
+        if idempotency_key is not None:
+            intake = intake.validated_copy(
+                update={"intake_id": intake_id_for_key(idempotency_key)}
+            )
+
         with self.database.transaction() as connection:
             try:
                 connection.execute(
@@ -159,9 +180,42 @@ class ApplicationRepository:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                raise StorageConflictError(
-                    f"intake ID already exists: {intake.intake_id}"
-                ) from exc
+                if idempotency_key is None:
+                    raise StorageConflictError(
+                        f"intake ID already exists: {intake.intake_id}"
+                    ) from exc
+
+                row = connection.execute(
+                    "SELECT manifest_json FROM inbox_intakes WHERE intake_id = ?",
+                    (intake.intake_id,),
+                ).fetchone()
+                if row is None:
+                    raise StorageConflictError(
+                        f"intake ID already exists: {intake.intake_id}"
+                    ) from exc
+                existing = load_json(InboxIntake, row["manifest_json"])
+                if not same_intake_request(existing, intake):
+                    raise IdempotencyConflict(
+                        "Idempotency-Key was reused for different capture metadata"
+                    ) from exc
+
+                accepted_file = (
+                    existing.kind is IntakeKind.FILE
+                    and existing.content_sha256 is not None
+                    and existing.size_bytes is not None
+                )
+                if existing.state is IntakeState.RECEIVING and (
+                    existing.kind is IntakeKind.URL_NOTE or not accepted_file
+                ):
+                    # The first attempt did not cross the file byte-acceptance boundary,
+                    # or a URL/note operation is still at a reconstructible checkpoint.
+                    # Reuse the exact durable identity and let the service resume it.
+                    return existing
+
+                # Prepared/partial/failed records, plus FULL-accepted receiving files,
+                # already represent the request identity. The HTTP adapter replays that
+                # durable result instead of executing side effects a second time.
+                raise IdempotencyReplay(existing) from exc
         return intake
 
     def get_intake(self, intake_id: str) -> InboxIntake | None:
