@@ -117,3 +117,87 @@ def test_oversized_idempotent_receipt_retries_after_limit_increase(tmp_path) -> 
         assert body["content_sha256"] is not None
     finally:
         larger.state.runtime_lease.close()
+
+
+def test_accepted_idempotent_replay_survives_later_limit_decrease(tmp_path) -> None:
+    key = "723e4567-e89b-42d3-a456-426614174006"
+    unknown_key = "823e4567-e89b-42d3-a456-426614174007"
+    payload = b"a" * (1024 * 1024 + 128)
+
+    larger = create_app(
+        root=tmp_path,
+        ffprobe_path="definitely-missing-ffprobe",
+        ffmpeg_path="definitely-missing-ffmpeg",
+        max_upload_bytes=len(payload),
+    )
+    client = TestClient(larger)
+    token = _paired_token(client)
+    auth = {
+        **LOOPBACK_HEADERS,
+        "Authorization": f"Bearer {token}",
+        "Idempotency-Key": key,
+    }
+    try:
+        first = client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={"file": ("accepted-large.bin", payload, "application/octet-stream")},
+        )
+        assert first.status_code == 201
+        first_body = first.json()
+        assert first_body["intake_id"] == intake_id_for_key(key)
+        assert first_body["size_bytes"] == len(payload)
+        assert first_body["content_sha256"] is not None
+        first_project_id = first_body["project_id"]
+    finally:
+        larger.state.runtime_lease.close()
+
+    smaller = create_app(
+        root=tmp_path,
+        ffprobe_path="definitely-missing-ffprobe",
+        ffmpeg_path="definitely-missing-ffmpeg",
+        max_upload_bytes=64,
+    )
+    retry_client = TestClient(smaller)
+    try:
+        # An unrelated key receives only the current runtime's normal body allowance.
+        unknown = retry_client.post(
+            "/api/v1/inbox/files",
+            headers={
+                **LOOPBACK_HEADERS,
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": unknown_key,
+            },
+            files={"file": ("accepted-large.bin", payload, "application/octet-stream")},
+        )
+        assert unknown.status_code == 413
+
+        replay = retry_client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={"file": ("accepted-large.bin", payload, "application/octet-stream")},
+        )
+        assert replay.status_code == 201
+        replay_body = replay.json()
+        assert replay_body["intake_id"] == first_body["intake_id"]
+        assert replay_body["project_id"] == first_project_id
+        assert replay_body["size_bytes"] == len(payload)
+        assert replay_body["content_sha256"] == first_body["content_sha256"]
+
+        conflict = retry_client.post(
+            "/api/v1/inbox/files",
+            headers=auth,
+            files={
+                "file": (
+                    "accepted-large.bin",
+                    b"b" * len(payload),
+                    "application/octet-stream",
+                )
+            },
+        )
+        assert conflict.status_code == 409
+        assert "different file bytes" in conflict.json()["detail"]
+
+        assert len(smaller.state.inbox.list_intakes()) == 1
+    finally:
+        smaller.state.runtime_lease.close()
