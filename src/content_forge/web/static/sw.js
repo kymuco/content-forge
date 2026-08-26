@@ -54,35 +54,68 @@ function shareRequestIsTrustedNavigation(request) {
     && (fetchSite === "none" || fetchSite === "same-origin");
 }
 
-function boundedContentLength(request) {
+function rejectAdvertisedOversize(request) {
   const raw = request.headers.get("content-length");
-  if (!raw || !/^\d+$/.test(raw)) throw new Error("share target requires Content-Length");
+  if (raw == null) return;
+  if (!/^\d+$/.test(raw)) throw new Error("invalid shared Content-Length");
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value < 0 || value > LIMITS.maxShareBodyBytes) {
     throw new Error("shared payload exceeds the local queue limit");
   }
-  return value;
+}
+
+async function boundedMultipartFormData(request, contentType) {
+  if (!request.body) throw new Error("share target has no request body");
+  const reader = request.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw new Error("invalid share target body chunk");
+      totalBytes += value.byteLength;
+      if (totalBytes > LIMITS.maxShareBodyBytes) {
+        try { await reader.cancel("share target body limit exceeded"); } catch (_) {}
+        throw new Error("shared payload exceeds the local queue limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch (_) {}
+  }
+
+  // Parse only the bounded bytes we have already consumed. Fetch-event requests do not
+  // reliably expose the HTTP Content-Length that the browser may add later during network
+  // serialization, so the stream itself is the authoritative pre-parser byte boundary.
+  const bounded = new Blob(chunks, { type: contentType });
+  return new Response(bounded, { headers: { "Content-Type": contentType } }).formData();
 }
 
 async function queueShareTarget(request) {
   if (!shareRequestIsTrustedNavigation(request)) throw new Error("share target provenance rejected");
-  const contentType = String(request.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.startsWith("multipart/form-data;")) throw new Error("share target requires multipart form data");
-  boundedContentLength(request);
+  const contentType = String(request.headers.get("content-type") || "");
+  if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
+    throw new Error("share target requires multipart form data");
+  }
+  // Content-Length is an optional early rejection hint only. The actual body stream is
+  // always byte-counted before multipart parsing, including real Android Web Share Target
+  // requests where this network-generated forbidden header is not visible to JavaScript.
+  rejectAdvertisedOversize(request);
 
   // A native share may be queued while the server is offline, but only a browser profile
-  // that has already completed PR8 pairing may parse/persist the OS-provided multipart.
+  // that has already completed PR8 pairing may consume/persist the OS-provided multipart.
   const token = await self.CFStore.getToken();
   if (!token) throw new Error("share target requires a paired device");
 
-  // Reject already-full queues before multipart parsing. Exact batch/count/byte checks
-  // still happen atomically in CFStore at the persistence boundary after parsing.
+  // Reject already-full queues before consuming the request body. Exact batch/count/byte
+  // checks still happen atomically in CFStore at the persistence boundary after parsing.
   const usage = await self.CFStore.queueUsage();
   if (usage.entries >= LIMITS.maxQueueEntries || usage.fileBytes > LIMITS.maxQueueBytes) {
     throw new Error("share queue is full");
   }
 
-  const data = await request.formData();
+  const data = await boundedMultipartFormData(request, contentType);
   for (const key of data.keys()) {
     if (!ALLOWED_FIELDS.has(key)) throw new Error("share target contains an unsupported field");
   }
