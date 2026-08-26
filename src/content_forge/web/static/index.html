@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151c27">
+  <meta name="color-scheme" content="dark">
+  <title>Content Forge</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><p class="eyebrow">LOCAL WORKSPACE</p><h1>Content Forge</h1></div>
+    <div class="topbar-actions">
+      <button id="install-button" class="ghost hidden" type="button">Install</button>
+      <button id="refresh-button" class="ghost" type="button">Refresh</button>
+    </div>
+  </header>
+  <main>
+    <section id="connection-panel" class="panel">
+      <div class="panel-heading"><div><p class="eyebrow">PAIRING</p><h2>Connect this device</h2></div><span id="connection-badge" class="badge neutral">Not paired</span></div>
+      <form id="pair-form" class="stack">
+        <label>Challenge ID<input id="challenge-id" name="challenge_id" autocomplete="off" spellcheck="false" required></label>
+        <label>8-digit code<input id="challenge-code" name="code" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code" required></label>
+        <button class="primary" type="submit">Pair device</button>
+      </form>
+      <div id="paired-actions" class="row hidden"><button id="revoke-button" class="danger" type="button">Disconnect this device</button></div>
+      <p id="pair-status" class="status"></p>
+    </section>
+    <section id="desktop-onboarding" class="panel hidden">
+      <div class="panel-heading"><div><p class="eyebrow">DESKTOP ONBOARDING</p><h2>Connect your phone</h2></div></div>
+      <p class="muted">Run the LAN server with trusted TLS, enter the address your phone uses, then scan the QR code.</p>
+      <form id="onboarding-form" class="stack">
+        <label>Phone-visible Content Forge address<input id="public-url" type="url" placeholder="https://192.168.1.10:8765" autocomplete="url" required></label>
+        <button class="secondary" type="submit">Create pairing QR</button>
+      </form>
+      <div id="onboarding-result" class="onboarding-result hidden">
+        <img id="pairing-qr" alt="Content Forge pairing QR code">
+        <p id="pairing-address" class="mono wrap"></p>
+        <p class="muted">The code is carried in the URL fragment, so it is not sent in the HTTP request or Referer.</p>
+      </div>
+      <p id="onboarding-status" class="status"></p>
+    </section>
+    <section id="capture-panel" class="panel hidden">
+      <div class="panel-heading"><div><p class="eyebrow">CAPTURE</p><h2>Send to Inbox</h2></div><span id="queue-badge" class="badge neutral">Queue 0</span></div>
+      <label class="file-picker"><span>Choose media</span><input id="file-input" type="file" accept="image/*,video/*,audio/*" multiple></label>
+      <div class="progress-shell hidden" id="progress-shell" aria-live="polite"><div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div><p id="progress-label" class="status"></p></div>
+      <form id="note-form" class="stack compact">
+        <label>URL<input id="note-url" type="url" placeholder="https://…"></label>
+        <label>Note<textarea id="note-text" rows="3" placeholder="Idea, context, reminder…"></textarea></label>
+        <button class="secondary" type="submit">Save URL / note</button>
+      </form>
+      <div class="row"><button id="retry-queue-button" class="ghost" type="button">Retry queued shares</button></div>
+      <p id="capture-status" class="status"></p>
+    </section>
+    <section id="inbox-panel" class="panel hidden">
+      <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
+      <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
+      <p id="inbox-status" class="status"></p>
+    </section>
+  </main>
+  <template id="empty-template"><div class="empty-state"><strong>Inbox is empty</strong><span>Share media to Content Forge or choose a file above.</span></div></template>
+  <script src="shared.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
