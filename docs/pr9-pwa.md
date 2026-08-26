@@ -95,6 +95,10 @@ The short-lived pairing code is intentionally in the URL **fragment**, not the q
 
 QR rendering is local via the pure-Python `segno` package; no third-party QR service receives the address, challenge, or code.
 
+## Review status
+
+Three independent Codex review passes have produced 17 actionable correctness/security findings in total (6 P1 and 11 P2). Every finding has a code fix or an already-landed equivalent fix, a targeted regression where applicable, an explicit review reply, and a resolved thread. The release gate still requires a fresh review of the final exact head rather than treating those resolved threads as proof by themselves.
+
 ## Boundaries / non-goals
 
 PR9 does not add:
