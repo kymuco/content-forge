@@ -92,7 +92,8 @@ def test_confirmed_revocation_finalizes_ui_even_if_local_cleanup_fails() -> None
     helper_start = client.index("async function finalizeInvalidatedSession")
     revoke_start = client.index("async function revokeSession()")
     helper = client[helper_start:revoke_start]
-    clear_call = "await window.CFStore.clearToken()"
+    clear_call = "await window.CFStore.clearTokenIfMatches(invalidatedBearer)"
+    assert "if (!invalidatedBearer || bearerToken !== invalidatedBearer) return false" in helper
     assert "bearerToken = null" in helper
     assert "setPairedState(false)" in helper
     assert clear_call in helper
@@ -104,6 +105,7 @@ def test_confirmed_revocation_finalizes_ui_even_if_local_cleanup_fails() -> None
     revoke = client[revoke_start:revoke_end]
     assert "response.status !== 401" in revoke
     assert "await finalizeInvalidatedSession(" in revoke
+    assert "requestBearer" in revoke
     assert "Session retained so revocation can be retried" in revoke
 
     # The same finalization path handles stale/expired credentials discovered after a
