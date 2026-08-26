@@ -26,10 +26,43 @@ async function apiFetch(relativePath, options) {
   return fetch(new URL(relativePath, API_BASE), requestOptions);
 }
 
+async function revokeIssuedPairingToken(token) {
+  try {
+    const response = await fetch(new URL("sessions/current", API_BASE), {
+      method: "DELETE",
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    // A 401 also proves this credential is not a usable live server session anymore.
+    return response.ok || response.status === 401;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function exchangePairing(challengeId, code) {
   const response = await fetch(new URL("pairing/exchange", API_BASE), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge_id: challengeId, code, label: `PWA ${navigator.userAgent.slice(0, 120)}` }) });
   if (!response.ok) { const payload = await safeJson(response); throw new Error(payload.detail || `Pairing failed (${response.status})`); }
-  const payload = await response.json(); bearerToken = payload.token; await window.CFStore.setToken(bearerToken); setPairedState(true); setStatus(elements.pairStatus, "Device paired.", "success");
+  const payload = await response.json();
+  const issuedToken = payload.token;
+  try {
+    // Persistence must succeed before the newly issued bearer becomes ordinary paired
+    // state. Otherwise a reload could discard the only local copy of a live session.
+    await window.CFStore.setToken(issuedToken);
+  } catch (storageError) {
+    const revoked = await revokeIssuedPairingToken(issuedToken);
+    if (revoked) {
+      bearerToken = null;
+      throw new Error(`${storageError.message || "Could not persist the pairing session."} The issued server session was revoked.`);
+    }
+    // If automatic cleanup itself cannot be confirmed, retain the only credential in
+    // memory and expose Disconnect so the user still has a revocation path this page.
+    bearerToken = issuedToken;
+    setPairedState(true);
+    throw new Error(`${storageError.message || "Could not persist the pairing session."} Automatic revocation also failed; this page still holds the live session. Use Disconnect before closing or reloading.`);
+  }
+  bearerToken = issuedToken;
+  setPairedState(true);
+  setStatus(elements.pairStatus, "Device paired.", "success");
 }
 
 async function handlePairForm(event) {
@@ -167,11 +200,40 @@ async function queueFiles(files) {
     sourceUrl: null,
     note: null,
   }));
-  await window.CFStore.enqueueShares(records);
-  await updateQueueBadge();
-  await drainQueue();
+  try {
+    await window.CFStore.enqueueShares(records);
+  } catch (error) {
+    setStatus(elements.captureStatus, `${error.message || "Could not queue selected files."} Nothing was queued; the current selection is still available.`, "error");
+    return false;
+  }
+  elements.fileInput.value = "";
+  try {
+    await updateQueueBadge();
+    await drainQueue();
+  } catch (error) {
+    setStatus(elements.captureStatus, `${error.message || "The files were queued, but the queue view could not be refreshed."} The queued capture is preserved.`, "error");
+  }
+  return true;
 }
-async function saveNote(event) { event.preventDefault(); const sourceUrl = elements.noteUrl.value.trim(), note = elements.noteText.value.trim(); if (!sourceUrl && !note) { setStatus(elements.captureStatus, "Enter a URL or note.", "error"); return; } await window.CFStore.enqueueShare({ kind: "url_note", sourceUrl: sourceUrl || null, note: note || null }); elements.noteUrl.value = ""; elements.noteText.value = ""; await updateQueueBadge(); await drainQueue(); }
+
+async function saveNote(event) {
+  event.preventDefault();
+  const sourceUrl = elements.noteUrl.value.trim(), note = elements.noteText.value.trim();
+  if (!sourceUrl && !note) { setStatus(elements.captureStatus, "Enter a URL or note.", "error"); return; }
+  try {
+    await window.CFStore.enqueueShare({ kind: "url_note", sourceUrl: sourceUrl || null, note: note || null });
+  } catch (error) {
+    setStatus(elements.captureStatus, `${error.message || "Could not queue the URL/note."} Nothing was queued; your form values were kept.`, "error");
+    return;
+  }
+  elements.noteUrl.value = ""; elements.noteText.value = "";
+  try {
+    await updateQueueBadge();
+    await drainQueue();
+  } catch (error) {
+    setStatus(elements.captureStatus, `${error.message || "The URL/note was queued, but the queue view could not be refreshed."} The queued capture is preserved.`, "error");
+  }
+}
 
 async function createOnboarding(event) {
   event.preventDefault(); setStatus(elements.onboardingStatus, "Creating pairing QR…");
@@ -186,7 +248,7 @@ async function registerServiceWorker() { if (!("serviceWorker" in navigator)) { 
 function wireInstallPrompt() { window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); installPrompt = event; setHidden(elements.installButton, false); }); elements.installButton.addEventListener("click", async () => { if (!installPrompt) return; installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; setHidden(elements.installButton, true); }); }
 
 async function initialize() {
-  elements.pairForm.addEventListener("submit", handlePairForm); elements.revokeButton.addEventListener("click", revokeSession); elements.refreshButton.addEventListener("click", async () => { await drainQueue(); await loadInbox(); }); elements.fileInput.addEventListener("change", async () => { const files = Array.from(elements.fileInput.files || []); elements.fileInput.value = ""; if (files.length) await queueFiles(files); }); elements.noteForm.addEventListener("submit", saveNote); elements.retryQueueButton.addEventListener("click", drainQueue); elements.onboardingForm.addEventListener("submit", createOnboarding); wireInstallPrompt(); setHidden(elements.desktopOnboarding, !isLoopbackHostname(window.location.hostname)); await registerServiceWorker(); bearerToken = await window.CFStore.getToken(); setPairedState(Boolean(bearerToken)); await updateQueueBadge(); const pairedFromQr = await autoPairFromFragment(); if (!pairedFromQr && bearerToken) { await drainQueue(); await loadInbox(); } if (new URLSearchParams(window.location.search).has("share_error")) setStatus(elements.captureStatus, "The shared item could not be queued. Try sharing again.", "error"); window.setInterval(() => { if (bearerToken && document.visibilityState === "visible" && !queueDraining) loadInbox(); }, 7000);
+  elements.pairForm.addEventListener("submit", handlePairForm); elements.revokeButton.addEventListener("click", revokeSession); elements.refreshButton.addEventListener("click", async () => { await drainQueue(); await loadInbox(); }); elements.fileInput.addEventListener("change", async () => { const files = Array.from(elements.fileInput.files || []); if (files.length) await queueFiles(files); }); elements.noteForm.addEventListener("submit", saveNote); elements.retryQueueButton.addEventListener("click", drainQueue); elements.onboardingForm.addEventListener("submit", createOnboarding); wireInstallPrompt(); setHidden(elements.desktopOnboarding, !isLoopbackHostname(window.location.hostname)); await registerServiceWorker(); bearerToken = await window.CFStore.getToken(); setPairedState(Boolean(bearerToken)); await updateQueueBadge(); const pairedFromQr = await autoPairFromFragment(); if (!pairedFromQr && bearerToken) { await drainQueue(); await loadInbox(); } if (new URLSearchParams(window.location.search).has("share_error")) setStatus(elements.captureStatus, "The shared item could not be queued. Try sharing again.", "error"); window.setInterval(() => { if (bearerToken && document.visibilityState === "visible" && !queueDraining) loadInbox(); }, 7000);
 }
 
 initialize().catch((error) => setStatus(elements.pairStatus, error.message || "Application initialization failed.", "error"));
