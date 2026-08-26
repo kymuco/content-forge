@@ -149,7 +149,19 @@ async function drainQueue() {
   if (bearerToken) await loadInbox();
 }
 
-async function queueFiles(files) { for (const file of files) await window.CFStore.enqueueShare({ kind: "file", file, originalName: file.name || "upload", mimeType: file.type || "application/octet-stream", sourceUrl: null, note: null }); await updateQueueBadge(); await drainQueue(); }
+async function queueFiles(files) {
+  const records = files.map((file) => ({
+    kind: "file",
+    file,
+    originalName: file.name || "upload",
+    mimeType: file.type || "application/octet-stream",
+    sourceUrl: null,
+    note: null,
+  }));
+  await window.CFStore.enqueueShares(records);
+  await updateQueueBadge();
+  await drainQueue();
+}
 async function saveNote(event) { event.preventDefault(); const sourceUrl = elements.noteUrl.value.trim(), note = elements.noteText.value.trim(); if (!sourceUrl && !note) { setStatus(elements.captureStatus, "Enter a URL or note.", "error"); return; } await window.CFStore.enqueueShare({ kind: "url_note", sourceUrl: sourceUrl || null, note: note || null }); elements.noteUrl.value = ""; elements.noteText.value = ""; await updateQueueBadge(); await drainQueue(); }
 
 async function createOnboarding(event) {
