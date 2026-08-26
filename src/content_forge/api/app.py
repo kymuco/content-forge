@@ -91,13 +91,20 @@ def _intake_payload(intake: InboxIntake) -> dict[str, object]:
 
 
 def _failed_replay_conflict(intake: InboxIntake) -> None:
-    """Never turn a previously durable failed result into a synthetic 201 replay."""
+    """Never turn a previously durable failed result into a synthetic 201 replay.
+
+    A durable oversized-upload failure preserves its original 413 transport semantics on
+    every same-key replay. The PR9 queue treats 413 as non-destructive because server
+    upload authority may have changed after local capture; converting that exact terminal
+    receipt to a generic 409 would make a later retry delete the only local bytes.
+    """
 
     if intake.state is IntakeState.FAILED:
         detail = "capture already failed for this Idempotency-Key"
         if intake.error_code:
             detail = f"{detail}: {intake.error_code}"
-        raise HTTPException(status_code=409, detail=detail)
+        status_code = 413 if intake.error_code == UploadTooLargeError.__name__ else 409
+        raise HTTPException(status_code=status_code, detail=detail)
 
 
 def _verify_replayed_file_bytes(file: UploadFile, intake: InboxIntake) -> None:
