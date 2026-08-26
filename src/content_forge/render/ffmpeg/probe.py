@@ -26,9 +26,12 @@ _LOCAL_MEDIA_PROTOCOL_WHITELIST = "file"
 # media demuxers. Reference-bearing manifests/demuxers (HLS, DASH, concat, SDP, etc.) are
 # absent so `file` can open the top-level canonical asset without granting that asset a
 # generic local-filesystem traversal primitive through nested references.
+#
+# `mpegvideo` is included because FFmpeg 6.1.x may select the elementary MPEG-video
+# demuxer while probing video carried by an otherwise self-contained MPEG-TS file.
 _LOCAL_MEDIA_FORMAT_WHITELIST = (
     "aac,ac3,aiff,ape,avi,bmp_pipe,flac,flv,gif,image2,jpeg_pipe,matroska,"
-    "mjpeg,mov,mp3,mpeg,mpegts,ogg,opus,pam_pipe,pgm_pipe,pgmyuv_pipe,"
+    "mjpeg,mov,mp3,mpeg,mpegts,mpegvideo,ogg,opus,pam_pipe,pgm_pipe,pgmyuv_pipe,"
     "png_pipe,ppm_pipe,tiff_pipe,w64,wav,webm,webp_pipe"
 )
 _FFPROBE_SHOW_ENTRIES = (
