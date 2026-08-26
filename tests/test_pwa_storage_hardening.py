@@ -38,8 +38,8 @@ def test_share_target_bounds_fetch_event_stream_before_multipart_parse() -> None
     assert "await reader.cancel" in worker
     assert "new Blob(chunks, { type: contentType })" in worker
     assert 'new Response(bounded, { headers: { "Content-Type": contentType } }).formData()' in worker
-    assert "const data = await boundedMultipartFormData(request, contentType)" in worker
+    parse_call = "const data = await boundedMultipartFormData(request, contentType)"
+    assert parse_call in worker
     assert "const data = await request.formData()" not in worker
-    assert worker.index("self.CFStore.getToken()") < worker.index(
-        "boundedMultipartFormData(request, contentType)"
-    )
+    assert worker.index("self.CFStore.getToken()") < worker.index(parse_call)
+    assert worker.index("self.CFStore.queueUsage()") < worker.index(parse_call)
