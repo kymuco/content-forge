@@ -20,6 +20,12 @@ from content_forge.application import (
     InboxService,
     UploadTooLargeError,
 )
+from content_forge.application.idempotency import (
+    IdempotencyConflict,
+    IdempotencyReplay,
+    intake_idempotency_scope,
+    normalize_idempotency_key,
+)
 from content_forge.application.runtime_lock import RuntimeLease
 from content_forge.core import RegistryKey
 from content_forge.storage import LocalLibrary
@@ -296,6 +302,16 @@ def create_app(
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    def intake_idempotency_key(
+        value: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> str | None:
+        if value is None:
+            return None
+        try:
+            return normalize_idempotency_key(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {"ok": True, "service": "content-forge", "api_version": "v1"}
@@ -358,13 +374,20 @@ def create_app(
     def capture_url_note(
         payload: URLNoteRequest,
         _session: AuthSession = Depends(require_session),
+        idempotency_key: str | None = Depends(intake_idempotency_key),
     ) -> dict[str, object]:
-        intake = inbox.capture_url_note(
-            source_url=payload.source_url,
-            note=payload.note,
-            creator_hint=payload.creator_hint,
-            content_kind_hint=payload.content_kind_hint,
-        )
+        try:
+            with intake_idempotency_scope(idempotency_key):
+                intake = inbox.capture_url_note(
+                    source_url=payload.source_url,
+                    note=payload.note,
+                    creator_hint=payload.creator_hint,
+                    content_kind_hint=payload.content_kind_hint,
+                )
+        except IdempotencyReplay as replay:
+            intake = replay.intake
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _intake_payload(intake)
 
     @app.post("/api/v1/inbox/files", status_code=201)
@@ -375,6 +398,7 @@ def create_app(
         creator_hint: str | None = Form(default=None, max_length=512),
         content_kind_hint: RegistryKey | None = Form(default=None),
         _session: AuthSession = Depends(require_session),
+        idempotency_key: str | None = Depends(intake_idempotency_key),
     ) -> dict[str, object]:
         filename = file.filename or "upload.bin"
         if len(filename) > 1024:
@@ -382,15 +406,20 @@ def create_app(
         if file.content_type is not None and len(file.content_type) > 255:
             raise HTTPException(status_code=422, detail="content type is too long")
         try:
-            intake = inbox.ingest_upload(
-                file.file,
-                filename=filename,
-                mime_type=file.content_type,
-                source_url=source_url,
-                note=note,
-                creator_hint=creator_hint,
-                content_kind_hint=content_kind_hint,
-            )
+            with intake_idempotency_scope(idempotency_key):
+                intake = inbox.ingest_upload(
+                    file.file,
+                    filename=filename,
+                    mime_type=file.content_type,
+                    source_url=source_url,
+                    note=note,
+                    creator_hint=creator_hint,
+                    content_kind_hint=content_kind_hint,
+                )
+        except IdempotencyReplay as replay:
+            intake = replay.intake
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UploadTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
         return _intake_payload(intake)
