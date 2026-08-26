@@ -3,7 +3,7 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v3`;
+const CACHE_NAME = `${CACHE_PREFIX}v4`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 
@@ -11,9 +11,10 @@ function appUrl(relative) {
   return new URL(relative, self.registration.scope).href;
 }
 
+const CONFIG_URL = appUrl("config.js");
 const SHELL_ASSETS = [
   appUrl("./"),
-  appUrl("config.js"),
+  CONFIG_URL,
   appUrl("styles.css"),
   appUrl("shared.js"),
   appUrl("app.js"),
@@ -120,6 +121,21 @@ async function queueShareTarget(request) {
   return Response.redirect(appUrl("./?shared=1"), 303);
 }
 
+async function networkFirstConfig(request, event) {
+  try {
+    const response = await fetch(request, { cache: "no-store" });
+    if (response.ok && response.type === "basic") {
+      const copy = response.clone();
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
+    }
+    return response;
+  } catch (error) {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    throw error;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
@@ -135,6 +151,15 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
   const scopePath = new URL(self.registration.scope).pathname;
   if (!url.pathname.startsWith(scopePath)) return;
+
+  // config.js reflects the live server's configured upload authority. When the server is
+  // reachable, never let an older shell cache shadow a changed max_upload_bytes value;
+  // while offline, fall back to the last successfully cached config so the PWA can still
+  // open and preserve already-queued captures.
+  if (url.pathname === new URL(CONFIG_URL).pathname) {
+    event.respondWith(networkFirstConfig(request, event));
+    return;
+  }
 
   event.respondWith(
     caches.match(request).then((cached) => {
