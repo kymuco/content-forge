@@ -162,14 +162,16 @@ def test_reject_preserves_non_null_canonical_crop_through_phone_resave(tmp_path)
 
     assert reopened_crop.status is ReviewStatus.OPEN
     assert list(reopened_crop.payload["scene_ids"]) == [scene_id]
-    assert dict(reopened_crop.payload["crops"])[scene_id] == crop
+    stored_crop = dict(reopened_crop.payload["crops"])[scene_id]
+    assert stored_crop == crop
 
-    # This is exactly the value the PWA sends from the reopened task payload. Saving it
-    # must preserve the crop used by the rejected preview rather than resetting full-frame.
+    # JSON serialization in the PWA thaws the canonical frozen mapping into an ordinary
+    # JSON object. Submit that exact wire shape back through the phone resolve boundary.
+    wire_crop = dict(stored_crop)
     saved = service.resolve_task(
         reopened.project_id,
         reopened_crop.review_task_id,
-        {"crops": {scene_id: dict(reopened_crop.payload["crops"])[scene_id]}},
+        {"crops": {scene_id: wire_crop}},
     )
     assert saved.scenes[0].crop is not None
     assert saved.scenes[0].crop.model_dump(mode="json") == crop
