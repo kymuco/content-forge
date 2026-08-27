@@ -11,6 +11,7 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .review_routes import install_review_routes
 
 
 def create_app(
@@ -20,7 +21,7 @@ def create_app(
     ffmpeg_path: str = "ffmpeg",
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
 ):
-    """Build the PR8 API plus the PR9 packaged PWA transport surface."""
+    """Build the authenticated API, PR9 PWA, and PR10 review/preview surface."""
 
     app = _create_api_app(
         root=root,
@@ -29,6 +30,13 @@ def create_app(
         max_upload_bytes=max_upload_bytes,
     )
     try:
+        install_review_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            ffmpeg_path=ffmpeg_path,
+            ffprobe_path=ffprobe_path,
+        )
         install_pwa_routes(
             app,
             auth=app.state.auth,
