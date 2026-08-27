@@ -120,7 +120,10 @@ class ReviewService(_base.ReviewService):
                             }
                         )
                 elif task.task_type == "source_setup" and task.status is ReviewStatus.OPEN:
-                    payload = dict(task.payload)
+                    payload = {
+                        str(key): _base._plain_json(value)
+                        for key, value in task.payload.items()
+                    }
                     payload["status"] = "completed"
                     replacement = task.validated_copy(
                         update={
