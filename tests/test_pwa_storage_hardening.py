@@ -22,7 +22,8 @@ def test_runtime_config_is_network_first_with_offline_cache_fallback() -> None:
     assert "if (cached) return cached" in worker
     assert "event.respondWith(networkFirstConfig(request, event))" in worker
     assert "content-forge-shell:${self.registration.scope}:" in worker
-    assert "${CACHE_PREFIX}v6" in worker
+    assert "${CACHE_PREFIX}v7" in worker
+    assert 'appUrl("review.js")' in worker
 
 
 def test_live_share_authority_refreshes_before_body_consumption() -> None:
