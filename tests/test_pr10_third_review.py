@@ -121,7 +121,9 @@ def test_reserved_preview_task_authority_collision_fails_closed(tmp_path) -> Non
     )
     service = _service(library)
 
-    with pytest.raises(ReviewConflictError, match="reserved review task authority collision"):
+    # Uninitialized projects own none of PR10's reserved task namespace. The newer
+    # lifecycle fence may therefore reject this before the narrower authority-shape check.
+    with pytest.raises(ReviewConflictError, match="reserved review task"):
         service.bootstrap_project(project.project_id)
 
     current = service.get_project(project.project_id)
