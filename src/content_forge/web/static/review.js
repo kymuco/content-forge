@@ -158,14 +158,33 @@
   function renderCrop(card, item) {
     card.appendChild(text(
       "p",
-      "Confirm the current full-frame crop for every scene. Fine crop editing can remain a later/manual decision.",
+      "Confirm the current canonical crop for every scene. Fine crop editing can remain a later/manual decision.",
       "muted compact-text"
     ));
     const sceneIds = Array.isArray(item.task.payload.scene_ids)
       ? item.task.payload.scene_ids.filter((value) => typeof value === "string")
       : [];
-    const crops = Object.fromEntries(sceneIds.map((sceneId) => [sceneId, null]));
-    card.appendChild(button("Confirm full frame", "secondary", async () => {
+    const storedCrops = item.task.payload && item.task.payload.crops;
+    const crops = {};
+    for (const sceneId of sceneIds) {
+      const raw = storedCrops && typeof storedCrops === "object"
+        && Object.prototype.hasOwnProperty.call(storedCrops, sceneId)
+        ? storedCrops[sceneId]
+        : null;
+      if (raw == null) {
+        crops[sceneId] = null;
+      } else if (typeof raw === "object" && !Array.isArray(raw)) {
+        crops[sceneId] = {
+          x: raw.x,
+          y: raw.y,
+          width: raw.width,
+          height: raw.height,
+        };
+      } else {
+        crops[sceneId] = null;
+      }
+    }
+    card.appendChild(button("Confirm current crop", "secondary", async () => {
       setStatus("Saving crop confirmation…");
       try {
         await resolve(item.project_id, item.task.review_task_id, { crops });
