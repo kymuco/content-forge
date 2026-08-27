@@ -39,6 +39,7 @@ _TASK_AUTHORITY = {
 _BOOTSTRAP_FORBIDDEN_UNINITIALIZED = frozenset(
     {ProjectState.READY, ProjectState.RENDERING, ProjectState.QC, ProjectState.DONE}
 )
+_MANUAL_REENTRY_PENDING = "pr10_manual_reentry_pending"
 
 
 class ReviewService(_base.ReviewService):
@@ -86,6 +87,46 @@ class ReviewService(_base.ReviewService):
                 + ", ".join(reserved)
             )
 
+    def _validate_mutation_authority(self, project: Project) -> None:
+        """Validate authority at the exact CAS mutation snapshot."""
+
+        initialized = bool(project.metadata.get("pr10_review_initialized"))
+        pending = bool(project.metadata.get(_MANUAL_REENTRY_PENDING))
+        if initialized:
+            self._validate_reserved_task_authority(project)
+            return
+        if pending:
+            if project.state not in self._MANUAL_RECHECK_STATES:
+                raise ReviewConflictError(
+                    "manual re-entry checkpoint is outside an editable review state"
+                )
+            self._validate_reserved_task_authority(project)
+            return
+        self._reject_uninitialized_reserved_tasks(project)
+
+    def _mutate_project(
+        self,
+        project_id: str,
+        mutation,
+        *,
+        retries: int = 3,
+    ) -> Project:
+        """Guard every facade mutation at the exact manifest snapshot used by CAS."""
+
+        def guarded(project: Project) -> Project:
+            self._validate_mutation_authority(project)
+            return mutation(project)
+
+        return super()._mutate_project(project_id, guarded, retries=retries)
+
+    def _require_initialized_authority(self, project: Project) -> Project:
+        """Require the PR10 initialization receipt before any reserved-task operation."""
+
+        if not bool(project.metadata.get("pr10_review_initialized")):
+            raise ReviewConflictError("project is not initialized for PR10 review")
+        self._validate_reserved_task_authority(project)
+        return project
+
     def _canonical_edit_payload(
         self,
         project: Project,
@@ -123,18 +164,24 @@ class ReviewService(_base.ReviewService):
         *,
         manual_reentry: bool,
     ) -> Project:
-        """Normalize phone payloads and, after successful manual repair, retire MANUAL setup."""
+        """Normalize phone payloads and finish a durable MANUAL re-entry checkpoint."""
 
         def finalize(project: Project) -> Project:
             self._validate_reserved_task_authority(project)
-            if (
-                project.state is not ProjectState.NEEDS_REVIEW
-                or not bool(project.metadata.get("review_renderable"))
-            ):
+            if project.state is not ProjectState.NEEDS_REVIEW:
+                if manual_reentry:
+                    raise ReviewConflictError(
+                        "manual re-entry did not return to needs_review"
+                    )
                 return project
 
             now = _base._utc_now()
+            metadata = dict(project.metadata)
             changed = False
+            if manual_reentry and metadata.pop(_MANUAL_REENTRY_PENDING, None) is not None:
+                changed = True
+
+            renderable = bool(project.metadata.get("review_renderable"))
             tasks = []
             expected_auto_payload = {
                 "template_id": _base.HOOK_OVERLAY_TEMPLATE_ID,
@@ -142,7 +189,11 @@ class ReviewService(_base.ReviewService):
             }
             for task in project.review_tasks:
                 replacement = task
-                if manual_reentry and task.task_type == _base._AUTO_BOOTSTRAP_TASK:
+                if (
+                    manual_reentry
+                    and renderable
+                    and task.task_type == _base._AUTO_BOOTSTRAP_TASK
+                ):
                     if (
                         task.status is not ReviewStatus.RESOLVED
                         or task.accepted_value != "prepared"
@@ -158,6 +209,7 @@ class ReviewService(_base.ReviewService):
                         )
                 elif (
                     manual_reentry
+                    and renderable
                     and task.task_type == "source_setup"
                     and task.status is ReviewStatus.OPEN
                 ):
@@ -175,7 +227,8 @@ class ReviewService(_base.ReviewService):
                         }
                     )
                 elif (
-                    task.attention is AttentionMode.REVIEW
+                    renderable
+                    and task.attention is AttentionMode.REVIEW
                     and task.task_type in _base._EDIT_TASKS
                     and task.status is ReviewStatus.OPEN
                 ):
@@ -190,16 +243,39 @@ class ReviewService(_base.ReviewService):
             if not changed:
                 return project
             return project.validated_copy(
-                update={"review_tasks": tuple(tasks), "updated_at": now}
+                update={
+                    "review_tasks": tuple(tasks),
+                    "metadata": metadata,
+                    "updated_at": now,
+                }
             )
 
         return self._mutate_project(project_id, finalize)
 
     def bootstrap_project(self, project_id: str) -> Project:
-        """Bootstrap only editable lifecycle states and safely re-evaluate MANUAL repairs."""
+        """Bootstrap editable states and resume MANUAL repair across crash checkpoints."""
 
         current = self.get_project(project_id)
         initialized = bool(current.metadata.get("pr10_review_initialized"))
+        pending = bool(current.metadata.get(_MANUAL_REENTRY_PENDING))
+
+        if pending:
+            self._validate_reserved_task_authority(current)
+            if current.state not in self._MANUAL_RECHECK_STATES:
+                raise ReviewConflictError(
+                    "manual re-entry checkpoint is outside an editable review state"
+                )
+            if initialized:
+                return self._finalize_bootstrap_payloads(
+                    project_id,
+                    manual_reentry=True,
+                )
+            prepared = super().bootstrap_project(project_id)
+            self._validate_reserved_task_authority(prepared)
+            return self._finalize_bootstrap_payloads(
+                project_id,
+                manual_reentry=True,
+            )
 
         # Before PR10 has established its initialization receipt it owns none of the
         # reserved task namespace. Even a structurally matching task may carry arbitrary
@@ -209,9 +285,8 @@ class ReviewService(_base.ReviewService):
         else:
             self._validate_reserved_task_authority(current)
 
-        # READY is intentionally editable for optional phone metadata, but it is never a
-        # legal bootstrap input. An older workflow's uninitialized READY project must not
-        # be rewound into PR10 review just because it appears in historical Inbox data.
+        # READY is intentionally editable after PR10 approval, but it is never a legal
+        # first-bootstrap input. Older workflow projects must not be rewound into PR10.
         if not initialized and current.state in _BOOTSTRAP_FORBIDDEN_UNINITIALIZED:
             raise ReviewConflictError(
                 f"project cannot be bootstrapped from state {current.state.value}"
@@ -226,7 +301,8 @@ class ReviewService(_base.ReviewService):
             return current
 
         if should_recheck:
-            def permit_recheck(project: Project) -> Project:
+
+            def begin_recheck(project: Project) -> Project:
                 self._validate_reserved_task_authority(project)
                 if (
                     not bool(project.metadata.get("pr10_review_initialized"))
@@ -235,19 +311,95 @@ class ReviewService(_base.ReviewService):
                 ):
                     return project
                 metadata = dict(project.metadata)
+                metadata[_MANUAL_REENTRY_PENDING] = True
                 metadata.pop("pr10_review_initialized", None)
                 return project.validated_copy(
                     update={"metadata": metadata, "updated_at": _base._utc_now()}
                 )
 
-            self._mutate_project(project_id, permit_recheck)
+            begun = self._mutate_project(project_id, begin_recheck)
+            if not bool(begun.metadata.get(_MANUAL_REENTRY_PENDING)):
+                return begun
+            # Re-enter through the durable checkpoint path. If the process exits before
+            # or after base bootstrap, the next call observes the same marker and resumes.
+            return self.bootstrap_project(project_id)
 
         prepared = super().bootstrap_project(project_id)
         self._validate_reserved_task_authority(prepared)
         return self._finalize_bootstrap_payloads(
             project_id,
-            manual_reentry=should_recheck,
+            manual_reentry=False,
         )
+
+    def list_queue(
+        self,
+        *,
+        limit: int = 100,
+        include_auto: bool = False,
+    ) -> dict[str, object]:
+        """Expose only actionable PR10 authority; quarantine invalid/uninitialized state."""
+
+        if limit < 1 or limit > 500:
+            raise ReviewValidationError("limit must be between 1 and 500")
+
+        raw = super().list_queue(limit=500, include_auto=include_auto)
+        projects = {project.project_id: project for project in self._list_projects()}
+        valid_initialized: set[str] = set()
+        invalid_initialized: set[str] = set()
+        for project in projects.values():
+            if not bool(project.metadata.get("pr10_review_initialized")):
+                continue
+            try:
+                self._validate_reserved_task_authority(project)
+            except ReviewConflictError:
+                invalid_initialized.add(project.project_id)
+            else:
+                valid_initialized.add(project.project_id)
+
+        items: list[dict[str, object]] = []
+        for item in raw["items"]:
+            project_id = str(item["project_id"])
+            project = projects.get(project_id)
+            if project is None or project_id in invalid_initialized:
+                continue
+            task = item.get("task")
+            task_type = task.get("task_type") if isinstance(task, dict) else None
+            if task_type in _TASK_AUTHORITY and project_id not in valid_initialized:
+                continue
+            items.append(item)
+
+        ready_projects = []
+        for project_id in sorted(valid_initialized):
+            project = projects[project_id]
+            if self._is_final_render_candidate(project):
+                ready_projects.append(self.project_summary(project))
+
+        return {"items": items[:limit], "ready_projects": ready_projects}
+
+    def _is_final_render_candidate(self, project: Project) -> bool:
+        if (
+            project.state is not ProjectState.READY
+            or not bool(project.metadata.get("pr10_review_initialized"))
+            or not bool(project.metadata.get("review_renderable"))
+        ):
+            return False
+        try:
+            self._validate_reserved_task_authority(project)
+        except ReviewConflictError:
+            return False
+        job_id = project.metadata.get("approved_preview_job_id")
+        digest = project.metadata.get("approved_preview_plan_digest")
+        revision = project.metadata.get("approved_preview_revision_digest")
+        if not all(isinstance(value, str) for value in (job_id, digest, revision)):
+            return False
+        preview = self._task(project, _base._PREVIEW_TASK)
+        if (
+            preview is None
+            or preview.status is not ReviewStatus.RESOLVED
+            or preview.accepted_value != job_id
+        ):
+            return False
+        return _base._preview_revision_digest(project) == revision
 
     def resolve_task(
         self,
@@ -255,15 +407,15 @@ class ReviewService(_base.ReviewService):
         task_id: str,
         value: JsonValue | None,
     ) -> Project:
-        self._validate_reserved_task_authority(self.get_project(project_id))
+        self._require_initialized_authority(self.get_project(project_id))
         return super().resolve_task(project_id, task_id, value)
 
     def render_preview(self, project_id: str) -> dict[str, object]:
-        self._validate_reserved_task_authority(self.get_project(project_id))
+        self._require_initialized_authority(self.get_project(project_id))
         return super().render_preview(project_id)
 
     def approve_preview(self, project_id: str, job_id: str) -> Project:
-        self._validate_reserved_task_authority(self.get_project(project_id))
+        self._require_initialized_authority(self.get_project(project_id))
         return super().approve_preview(project_id, job_id)
 
     def reject_preview(
@@ -277,10 +429,10 @@ class ReviewService(_base.ReviewService):
 
         if feedback is not None and len(feedback) > 4096:
             raise ReviewValidationError("preview feedback is too long")
-        self._validate_reserved_task_authority(self.get_project(project_id))
+        self._require_initialized_authority(self.get_project(project_id))
 
         def rehydrate_resolved_edits(project: Project) -> Project:
-            self._validate_reserved_task_authority(project)
+            self._require_initialized_authority(project)
             preview = self._task(project, _base._PREVIEW_TASK)
             if (
                 preview is None
@@ -318,21 +470,100 @@ class ReviewService(_base.ReviewService):
         return super().reject_preview(project_id, job_id, feedback=feedback)
 
     def render_final(self, project_id: str) -> dict[str, object]:
-        self._validate_reserved_task_authority(self.get_project(project_id))
+        self._require_initialized_authority(self.get_project(project_id))
         return super().render_final(project_id)
 
     def reconcile_persisted_state(self) -> None:
-        """Validate facade-owned authority before any restart recovery mutation."""
+        """Recover valid PR10 projects while quarantining invalid manifests."""
 
-        # The API invokes this only after the exclusive RuntimeLease is held. Validate the
-        # entire initialized PR10 set first so inherited recovery cannot reset a foreign or
-        # ambiguous preview task, retire jobs, or transition project state before the
-        # hardened facade has established authority over every affected manifest.
         projects = self._list_projects()
+        valid_projects: list[Project] = []
+        valid_ids: set[str] = set()
         for project in projects:
-            if bool(project.metadata.get("pr10_review_initialized")):
+            if not bool(project.metadata.get("pr10_review_initialized")):
+                continue
+            try:
                 self._validate_reserved_task_authority(project)
-        super().reconcile_persisted_state()
+            except ReviewConflictError:
+                # Quarantine this manifest in place. Public operations remain fail-closed,
+                # but one invalid Project must not prevent independent valid recovery.
+                continue
+            valid_projects.append(project)
+            valid_ids.add(project.project_id)
+
+        # Reset only validated preview claims. A queued immutable job can be adopted by a
+        # later request; invalid projects and their claims remain untouched for diagnosis.
+        for project in valid_projects:
+            preview = self._task(project, _base._PREVIEW_TASK)
+            if (
+                preview is not None
+                and preview.status is ReviewStatus.OPEN
+                and preview.payload.get("status") == "rendering"
+            ):
+
+                def reset_preview(current: Project) -> Project:
+                    self._require_initialized_authority(current)
+                    task = self._task(current, _base._PREVIEW_TASK)
+                    if (
+                        task is None
+                        or task.status is not ReviewStatus.OPEN
+                        or task.payload.get("status") != "rendering"
+                    ):
+                        return current
+                    reset = task.validated_copy(
+                        update={"payload": {"status": "not_rendered"}}
+                    )
+                    return current.validated_copy(
+                        update={
+                            "review_tasks": self._replace_task(current, reset),
+                            "updated_at": _base._utc_now(),
+                        }
+                    )
+
+                try:
+                    self._mutate_project(project.project_id, reset_preview)
+                except ReviewConflictError:
+                    # A concurrently altered manifest is quarantined rather than turning
+                    # one recovery race into an API-wide startup failure.
+                    valid_ids.discard(project.project_id)
+
+        # Retire orphaned running preview jobs only for the still-validated set. Final jobs
+        # are handled by the project-specific recovery path below.
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT job_id, project_id, payload_json FROM jobs WHERE state = 'running'"
+            ).fetchall()
+        for row in rows:
+            project_id = str(row["project_id"])
+            if project_id not in valid_ids:
+                continue
+            try:
+                payload = _base.json.loads(row["payload_json"])
+            except (TypeError, _base.json.JSONDecodeError):
+                continue
+            if payload.get("purpose") != "preview":
+                continue
+            try:
+                _base.transition_job_state(
+                    self.library.database,
+                    str(row["job_id"]),
+                    expected_state="running",
+                    state="failed",
+                )
+            except _base.StorageConflictError:
+                pass
+
+        for project in self._list_projects():
+            if (
+                project.project_id in valid_ids
+                and project.state in {ProjectState.RENDERING, ProjectState.QC}
+            ):
+                try:
+                    self._require_initialized_authority(project)
+                    self._recover_project_after_restart(project)
+                except ReviewConflictError:
+                    # Preserve/quarantine the independent manifest without blocking startup.
+                    continue
 
 
 __all__ = [
