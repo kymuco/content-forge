@@ -1,8 +1,8 @@
 """Public PR10 review service with adversarial-review hardening.
 
 The first implementation remains in ``_review_base``; this facade owns the hardened
-public authority checks and second/third-pass lifecycle invariants without changing PR7
-render authority or granting the phone a generic Project mutation surface.
+public authority checks and lifecycle invariants without changing PR7 render authority
+or granting the phone a generic Project mutation surface.
 """
 
 from __future__ import annotations
@@ -70,6 +70,21 @@ class ReviewService(_base.ReviewService):
                 raise ReviewConflictError(
                     f"reserved review task authority collision: {task.task_type}"
                 )
+
+    @staticmethod
+    def _reject_uninitialized_reserved_tasks(project: Project) -> None:
+        """Never adopt pre-existing state from PR10's reserved task namespace."""
+
+        reserved = sorted(
+            task.task_type
+            for task in project.review_tasks
+            if task.task_type in _TASK_AUTHORITY
+        )
+        if reserved:
+            raise ReviewConflictError(
+                "uninitialized project already contains reserved review task: "
+                + ", ".join(reserved)
+            )
 
     def _canonical_edit_payload(
         self,
@@ -184,8 +199,15 @@ class ReviewService(_base.ReviewService):
         """Bootstrap only editable lifecycle states and safely re-evaluate MANUAL repairs."""
 
         current = self.get_project(project_id)
-        self._validate_reserved_task_authority(current)
         initialized = bool(current.metadata.get("pr10_review_initialized"))
+
+        # Before PR10 has established its initialization receipt it owns none of the
+        # reserved task namespace. Even a structurally matching task may carry arbitrary
+        # status/payload/accepted-value lifecycle state, so adopting it by type is unsafe.
+        if not initialized:
+            self._reject_uninitialized_reserved_tasks(current)
+        else:
+            self._validate_reserved_task_authority(current)
 
         # READY is intentionally editable for optional phone metadata, but it is never a
         # legal bootstrap input. An older workflow's uninitialized READY project must not
@@ -298,6 +320,19 @@ class ReviewService(_base.ReviewService):
     def render_final(self, project_id: str) -> dict[str, object]:
         self._validate_reserved_task_authority(self.get_project(project_id))
         return super().render_final(project_id)
+
+    def reconcile_persisted_state(self) -> None:
+        """Validate facade-owned authority before any restart recovery mutation."""
+
+        # The API invokes this only after the exclusive RuntimeLease is held. Validate the
+        # entire initialized PR10 set first so inherited recovery cannot reset a foreign or
+        # ambiguous preview task, retire jobs, or transition project state before the
+        # hardened facade has established authority over every affected manifest.
+        projects = self._list_projects()
+        for project in projects:
+            if bool(project.metadata.get("pr10_review_initialized")):
+                self._validate_reserved_task_authority(project)
+        super().reconcile_persisted_state()
 
 
 __all__ = [
