@@ -23,6 +23,7 @@ from content_forge.render.ffmpeg import MediaProbeError, probe_media
 from content_forge.storage import LocalLibrary, sha256_file
 from content_forge.storage.paths import fsync_directory_chain
 
+from .idempotency import IdempotencyConflict
 from .media import (
     ThumbnailError,
     apply_authoritative_probe,
@@ -439,6 +440,47 @@ class InboxService:
             },
         )
 
+    def _verify_accepted_retry_stream(
+        self,
+        stream: BinaryIO,
+        intake: InboxIntake,
+    ) -> None:
+        """Bind a live retry to the exact already-accepted byte receipt."""
+
+        if intake.content_sha256 is None or intake.size_bytes is None:
+            raise InboxError("accepted Inbox retry has no durable byte receipt")
+        digest = hashlib.sha256()
+        size_bytes = 0
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            size_bytes += len(chunk)
+            if size_bytes > intake.size_bytes:
+                raise IdempotencyConflict(
+                    "Idempotency-Key was reused with different file bytes"
+                )
+            digest.update(chunk)
+        if size_bytes != intake.size_bytes or digest.hexdigest() != intake.content_sha256:
+            raise IdempotencyConflict(
+                "Idempotency-Key was reused with different file bytes"
+            )
+
+    def _resume_accepted_upload(
+        self,
+        stream: BinaryIO,
+        intake: InboxIntake,
+    ) -> InboxIntake:
+        """Resume asset/project/preparation handoff for an accepted RECEIVING retry."""
+
+        self._verify_accepted_retry_stream(stream, intake)
+        intake, asset = self._recover_asset_for_intake(intake)
+        if asset is None:
+            raise InboxError("accepted Inbox upload has no recoverable byte representation")
+        intake, _source_record = self._ensure_source_record(intake, asset)
+        intake, _project = self._ensure_project(intake)
+        return self._prepare_receiving_file(intake, asset)
+
     def ingest_upload(
         self,
         stream: BinaryIO,
@@ -468,6 +510,12 @@ class InboxService:
         size_bytes = 0
         digest = hashlib.sha256()
         try:
+            if intake.content_sha256 is not None and intake.size_bytes is not None:
+                # A previous attempt crossed the durable byte-acceptance boundary but did
+                # not finish handoff. The retry must prove exact byte equality and then
+                # resume from durable checkpoints rather than re-stage/re-accept content.
+                return self._resume_accepted_upload(stream, intake)
+
             descriptor, temporary_name = tempfile.mkstemp(
                 dir=self.library.paths.incoming,
                 prefix=f"http-{intake.intake_id}-",
@@ -544,6 +592,11 @@ class InboxService:
             intake, _project = self._ensure_project(intake)
             return self._prepare_receiving_file(intake, asset)
         except BaseException as exc:
+            # Byte mismatches are deterministic idempotency conflicts. Never rewrite the
+            # already-accepted durable receipt while reporting that conflict to the API.
+            if isinstance(exc, IdempotencyConflict):
+                raise
+
             # Failure handling must not depend on being able to read the receipt again.
             # Under the same disk/SQLite pressure that caused the primary failure,
             # `get_intake()` may itself fail. In that case preserve any staging file
@@ -580,7 +633,9 @@ class InboxService:
                         # failure are resumable, not terminal. Operational failures remain
                         # retryable even after the project checkpoint, matching startup
                         # reconciliation. If no Asset is catalogued yet, authenticated
-                        # staging remains the recovery authority.
+                        # staging remains the recovery authority. Application-layer callers
+                        # retain the durable recovery checkpoint; HTTP adapters must not
+                        # serialize an accepted RECEIVING result as a synthetic 201.
                         retain_staging = current.asset_id is None
                         try:
                             retryable = self.repository.transition_intake(
@@ -595,10 +650,6 @@ class InboxService:
                         except Exception:
                             retryable = current
                         if retryable_operational:
-                            # The durable receipt reread above already confirmed that the
-                            # FULL byte-acceptance boundary committed. Returning that same
-                            # RECEIVING identity prevents a normal client retry from
-                            # allocating a duplicate intake/project while recovery finishes.
                             return retryable
                     else:
                         try:

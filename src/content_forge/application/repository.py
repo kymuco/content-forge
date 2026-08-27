@@ -15,10 +15,22 @@ from content_forge.storage import (
     StorageSchemaError,
 )
 
-from .models import InboxIntake, IntakeState
+from .idempotency import (
+    IdempotencyConflict,
+    IdempotencyReplay,
+    current_idempotency_key,
+    intake_id_for_key,
+    same_intake_request,
+)
+from .models import InboxIntake, IntakeKind, IntakeState, PreparationState
 
 APPLICATION_SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_COMPONENT = "application"
+# Before a file has a durable size+SHA receipt, no bytes have crossed the acceptance
+# boundary. Every such failed receipt is therefore safe to revive under the same
+# deterministic identity and re-evaluate against current runtime authority. This includes
+# contextual validation such as UploadTooLargeError: retrying under the same limit returns
+# 413 again, while a later higher limit may now accept the same queued bytes.
 
 
 class ApplicationRepository:
@@ -141,6 +153,20 @@ class ApplicationRepository:
         return self
 
     def create_intake(self, intake: InboxIntake) -> InboxIntake:
+        """Create one intake, or resume/replay the identity bound to a retry key.
+
+        The raw client UUID is never persisted as authority. While an authenticated API
+        call holds an idempotency scope, the UUID deterministically selects the intake ID.
+        That durable primary key is therefore committed in the same SQLite transaction as
+        the initial receipt: losing the HTTP response cannot create a second lineage.
+        """
+
+        idempotency_key = current_idempotency_key()
+        if idempotency_key is not None:
+            intake = intake.validated_copy(
+                update={"intake_id": intake_id_for_key(idempotency_key)}
+            )
+
         with self.database.transaction() as connection:
             try:
                 connection.execute(
@@ -159,9 +185,84 @@ class ApplicationRepository:
                     ),
                 )
             except sqlite3.IntegrityError as exc:
-                raise StorageConflictError(
-                    f"intake ID already exists: {intake.intake_id}"
-                ) from exc
+                if idempotency_key is None:
+                    raise StorageConflictError(
+                        f"intake ID already exists: {intake.intake_id}"
+                    ) from exc
+
+                row = connection.execute(
+                    "SELECT manifest_json FROM inbox_intakes WHERE intake_id = ?",
+                    (intake.intake_id,),
+                ).fetchone()
+                if row is None:
+                    raise StorageConflictError(
+                        f"intake ID already exists: {intake.intake_id}"
+                    ) from exc
+                current_json = row["manifest_json"]
+                existing = load_json(InboxIntake, current_json)
+                if not same_intake_request(existing, intake):
+                    raise IdempotencyConflict(
+                        "Idempotency-Key was reused for different capture metadata"
+                    ) from exc
+
+                if existing.state is IntakeState.RECEIVING:
+                    # RECEIVING is always a resumable checkpoint. URL/note and files that
+                    # have not crossed byte acceptance can continue directly; a FULL-
+                    # accepted file must be verified against its durable size+SHA by the
+                    # Inbox service before recovery advances asset/source/project state.
+                    return existing
+
+                retryable_preacceptance_failure = (
+                    existing.kind is IntakeKind.FILE
+                    and existing.state is IntakeState.FAILED
+                    and existing.content_sha256 is None
+                    and existing.asset_id is None
+                    and existing.project_id is None
+                )
+                if retryable_preacceptance_failure:
+                    # No exact byte receipt, asset or project exists, so this durable
+                    # identity accepted no content. Revive every such failure and re-run
+                    # current validation/operational checks. That keeps filesystem/SQLite
+                    # failures retryable and also lets contextual limits evolve: an old
+                    # UploadTooLargeError still returns 413 under the same limit, but can
+                    # succeed after max_upload_bytes is deliberately raised.
+                    revived = existing.validated_copy(
+                        update={
+                            "state": IntakeState.RECEIVING,
+                            "size_bytes": None,
+                            "content_sha256": None,
+                            "probe_state": PreparationState.PENDING,
+                            "thumbnail_state": PreparationState.PENDING,
+                            "error_code": None,
+                            "error_message": None,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    )
+                    changed = connection.execute(
+                        """
+                        UPDATE inbox_intakes
+                        SET state = ?, manifest_json = ?, updated_at = ?
+                        WHERE intake_id = ? AND state = ? AND manifest_json = ?
+                        """,
+                        (
+                            revived.state.value,
+                            dump_json(revived),
+                            revived.updated_at.isoformat(),
+                            revived.intake_id,
+                            IntakeState.FAILED.value,
+                            current_json,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise StorageConflictError(
+                            f"intake {existing.intake_id} could not revive for retry"
+                        ) from exc
+                    return revived
+
+                # Prepared/partial/post-acceptance failed records already represent the
+                # request identity. The HTTP adapter verifies replay bytes where needed
+                # and returns that durable terminal result without re-running side effects.
+                raise IdempotencyReplay(existing) from exc
         return intake
 
     def get_intake(self, intake_id: str) -> InboxIntake | None:

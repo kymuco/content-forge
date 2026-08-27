@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,7 +19,16 @@ from content_forge.application import (
     InboxError,
     InboxIntake,
     InboxService,
+    IntakeKind,
+    IntakeState,
     UploadTooLargeError,
+)
+from content_forge.application.idempotency import (
+    IdempotencyConflict,
+    IdempotencyReplay,
+    intake_id_for_key,
+    intake_idempotency_scope,
+    normalize_idempotency_key,
 )
 from content_forge.application.runtime_lock import RuntimeLease
 from content_forge.core import RegistryKey
@@ -28,6 +38,7 @@ PAIRING_ID_PATTERN = r"^cf_pair_[0-9a-f]{32}$"
 PAIRING_CODE_PATTERN = r"^[0-9]{8}$"
 MULTIPART_OVERHEAD_BUDGET = 1024 * 1024
 PARSED_BODY_LIMIT = 128 * 1024
+_REPLAY_HASH_CHUNK_BYTES = 1024 * 1024
 _PREPARSE_AUTH_POST_ROUTES = frozenset(
     {
         "/api/v1/inbox/files",
@@ -79,6 +90,53 @@ class URLNoteRequest(BaseModel):
 
 def _intake_payload(intake: InboxIntake) -> dict[str, object]:
     return intake.model_dump(mode="json")
+
+
+def _failed_replay_conflict(intake: InboxIntake) -> None:
+    """Never turn a previously durable failed result into a synthetic 201 replay.
+
+    A durable oversized-upload failure preserves its original 413 transport semantics on
+    every same-key replay. The PR9 queue treats 413 as non-destructive because server
+    upload authority may have changed after local capture; converting that exact terminal
+    receipt to a generic 409 would make a later retry delete the only local bytes.
+    """
+
+    if intake.state is IntakeState.FAILED:
+        detail = "capture already failed for this Idempotency-Key"
+        if intake.error_code:
+            detail = f"{detail}: {intake.error_code}"
+        status_code = 413 if intake.error_code == UploadTooLargeError.__name__ else 409
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _verify_replayed_file_bytes(file: UploadFile, intake: InboxIntake) -> None:
+    """Reject key reuse when accepted file bytes differ despite matching metadata.
+
+    Metadata comparison in ApplicationRepository is sufficient for URL/note captures, but
+    a file key must also bind the actual bytes once an exact size+SHA receipt exists. The
+    multipart parser has already spooled the authenticated upload by this point, so hash
+    the retry from its seekable temporary stream without allocating another full copy.
+    """
+
+    if intake.content_sha256 is None or intake.size_bytes is None:
+        return
+    stream = file.file
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        stream.seek(0)
+        while True:
+            chunk = stream.read(_REPLAY_HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            digest.update(chunk)
+    finally:
+        stream.seek(0)
+    if size != intake.size_bytes or digest.hexdigest() != intake.content_sha256:
+        raise IdempotencyConflict(
+            "Idempotency-Key was reused for different file bytes"
+        )
 
 
 def _is_loopback_hostname(hostname: str | None) -> bool:
@@ -251,6 +309,30 @@ def create_app(
             if route_path == "/api/v1/inbox/files":
                 body_limit = max_upload_bytes + MULTIPART_OVERHEAD_BUDGET
                 body_kind = "multipart request"
+
+                # A retry can arrive after bytes were already durably accepted and the
+                # original 201 was lost, while this runtime now has a lower upload limit.
+                # Authentication has already succeeded above. Grant a larger pre-parser
+                # allowance only to the exact deterministic key of an already accepted
+                # FILE receipt, and bound it by that receipt's recorded accepted size.
+                raw_key = request.headers.get("idempotency-key")
+                if raw_key is not None:
+                    try:
+                        normalized_key = normalize_idempotency_key(raw_key)
+                    except ValueError:
+                        normalized_key = None
+                    if normalized_key is not None:
+                        existing = repository.get_intake(intake_id_for_key(normalized_key))
+                        if (
+                            existing is not None
+                            and existing.kind is IntakeKind.FILE
+                            and existing.size_bytes is not None
+                            and existing.content_sha256 is not None
+                        ):
+                            body_limit = max(
+                                body_limit,
+                                existing.size_bytes + MULTIPART_OVERHEAD_BUDGET,
+                            )
             elif route_path in _BOUNDED_PARSED_POST_ROUTES:
                 # Pairing exchange is intentionally unauthenticated, while URL/note is
                 # authenticated above. Both are Pydantic parsed-body routes, so bound
@@ -295,6 +377,16 @@ def create_app(
             return auth.authenticate(token)
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def intake_idempotency_key(
+        value: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> str | None:
+        if value is None:
+            return None
+        try:
+            return normalize_idempotency_key(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/health")
     def health() -> dict[str, object]:
@@ -358,13 +450,31 @@ def create_app(
     def capture_url_note(
         payload: URLNoteRequest,
         _session: AuthSession = Depends(require_session),
+        idempotency_key: str | None = Depends(intake_idempotency_key),
     ) -> dict[str, object]:
-        intake = inbox.capture_url_note(
-            source_url=payload.source_url,
-            note=payload.note,
-            creator_hint=payload.creator_hint,
-            content_kind_hint=payload.content_kind_hint,
-        )
+        try:
+            with intake_idempotency_scope(idempotency_key):
+                intake = inbox.capture_url_note(
+                    source_url=payload.source_url,
+                    note=payload.note,
+                    creator_hint=payload.creator_hint,
+                    content_kind_hint=payload.content_kind_hint,
+                )
+        except IdempotencyReplay as replay:
+            _failed_replay_conflict(replay.intake)
+            intake = replay.intake
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        # URL/note capture has no byte-acceptance receipt, but its deterministic intake
+        # and project checkpoints are recoverable. A RECEIVING result is therefore an
+        # application-layer retry checkpoint, not remote success: keep the PWA queue until
+        # the same-key retry completes the project handoff.
+        if intake.state is IntakeState.RECEIVING:
+            raise HTTPException(
+                status_code=500,
+                detail="URL/note capture awaits recovery",
+            )
         return _intake_payload(intake)
 
     @app.post("/api/v1/inbox/files", status_code=201)
@@ -375,6 +485,7 @@ def create_app(
         creator_hint: str | None = Form(default=None, max_length=512),
         content_kind_hint: RegistryKey | None = Form(default=None),
         _session: AuthSession = Depends(require_session),
+        idempotency_key: str | None = Depends(intake_idempotency_key),
     ) -> dict[str, object]:
         filename = file.filename or "upload.bin"
         if len(filename) > 1024:
@@ -382,17 +493,41 @@ def create_app(
         if file.content_type is not None and len(file.content_type) > 255:
             raise HTTPException(status_code=422, detail="content type is too long")
         try:
-            intake = inbox.ingest_upload(
-                file.file,
-                filename=filename,
-                mime_type=file.content_type,
-                source_url=source_url,
-                note=note,
-                creator_hint=creator_hint,
-                content_kind_hint=content_kind_hint,
-            )
+            with intake_idempotency_scope(idempotency_key):
+                intake = inbox.ingest_upload(
+                    file.file,
+                    filename=filename,
+                    mime_type=file.content_type,
+                    source_url=source_url,
+                    note=note,
+                    creator_hint=creator_hint,
+                    content_kind_hint=content_kind_hint,
+                )
+        except IdempotencyReplay as replay:
+            _failed_replay_conflict(replay.intake)
+            try:
+                _verify_replayed_file_bytes(file, replay.intake)
+            except IdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            intake = replay.intake
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UploadTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+        # InboxService deliberately preserves the PR8 application-layer contract of
+        # returning a durable RECEIVING recovery checkpoint for post-acceptance storage
+        # pressure. That checkpoint is not an HTTP success: a remote client must retain
+        # its only retry copy until the same-key exact-byte resume finishes handoff.
+        if (
+            intake.state is IntakeState.RECEIVING
+            and intake.size_bytes is not None
+            and intake.content_sha256 is not None
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="accepted upload awaits recovery",
+            )
         return _intake_payload(intake)
 
     @app.get("/api/v1/assets/{asset_id}/thumbnail")
