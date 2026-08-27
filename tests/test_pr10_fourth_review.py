@@ -69,21 +69,23 @@ def test_uninitialized_bootstrap_rejects_matching_reserved_task_lifecycle(tmp_pa
     assert not current.metadata.get("pr10_review_initialized")
 
 
-def test_restart_reconciliation_validates_facade_authority_before_mutation(tmp_path) -> None:
+def test_restart_reconciliation_quarantines_invalid_authority_and_recovers_valid(
+    tmp_path,
+) -> None:
     library = LocalLibrary(tmp_path)
-    asset = _image_asset(library, 1501)
-    project = library.save_project(
+    service = ReviewService(library)
+
+    bad_asset = _image_asset(library, 1501)
+    bad_project = library.save_project(
         Project(
             content_kind="image",
             state=ProjectState.INBOX,
-            source_refs=(AssetRef(asset_id=asset.asset_id),),
+            source_refs=(AssetRef(asset_id=bad_asset.asset_id),),
         )
     )
-    service = ReviewService(library)
-    initialized = service.bootstrap_project(project.project_id)
-    preview = _task(initialized, "preview_approval")
-
-    foreign_preview = preview.validated_copy(
+    bad_initialized = service.bootstrap_project(bad_project.project_id)
+    bad_preview = _task(bad_initialized, "preview_approval")
+    foreign_preview = bad_preview.validated_copy(
         update={
             "attention": AttentionMode.MANUAL,
             "payload": {
@@ -94,26 +96,61 @@ def test_restart_reconciliation_validates_facade_authority_before_mutation(tmp_p
             },
         }
     )
-    corrupted = initialized.validated_copy(
+    library.save_project(
+        bad_initialized.validated_copy(
+            update={
+                "review_tasks": tuple(
+                    foreign_preview
+                    if task.review_task_id == bad_preview.review_task_id
+                    else task
+                    for task in bad_initialized.review_tasks
+                )
+            }
+        )
+    )
+
+    good_asset = _image_asset(library, 1502)
+    good_project = library.save_project(
+        Project(
+            content_kind="image",
+            state=ProjectState.INBOX,
+            source_refs=(AssetRef(asset_id=good_asset.asset_id),),
+        )
+    )
+    good_initialized = service.bootstrap_project(good_project.project_id)
+    good_preview = _task(good_initialized, "preview_approval")
+    rendering_preview = good_preview.validated_copy(
         update={
-            "review_tasks": tuple(
-                foreign_preview if task.review_task_id == preview.review_task_id else task
-                for task in initialized.review_tasks
-            )
+            "payload": {
+                "status": "rendering",
+                "claim_id": "valid-claim",
+                "render_plan_digest": "a" * 64,
+                "project_revision_digest": "b" * 64,
+            }
         }
     )
-    library.save_project(corrupted)
+    library.save_project(
+        good_initialized.validated_copy(
+            update={
+                "review_tasks": tuple(
+                    rendering_preview
+                    if task.review_task_id == good_preview.review_task_id
+                    else task
+                    for task in good_initialized.review_tasks
+                )
+            }
+        )
+    )
 
-    with pytest.raises(
-        ReviewConflictError,
-        match="reserved review task authority collision: preview_approval",
-    ):
-        service.reconcile_persisted_state()
+    service.reconcile_persisted_state()
 
-    # Inherited recovery would reset a persisted preview `rendering` claim. The facade
-    # must fail before that or any other recovery mutation occurs.
-    current = service.get_project(project.project_id)
-    current_preview = _task(current, "preview_approval")
-    assert current_preview.attention is AttentionMode.MANUAL
-    assert current_preview.payload["status"] == "rendering"
-    assert current_preview.payload["claim_id"] == "foreign-claim"
+    bad_current = service.get_project(bad_project.project_id)
+    bad_current_preview = _task(bad_current, "preview_approval")
+    assert bad_current_preview.attention is AttentionMode.MANUAL
+    assert bad_current_preview.payload["status"] == "rendering"
+    assert bad_current_preview.payload["claim_id"] == "foreign-claim"
+
+    good_current = service.get_project(good_project.project_id)
+    good_current_preview = _task(good_current, "preview_approval")
+    assert good_current_preview.attention is AttentionMode.REVIEW
+    assert good_current_preview.payload == {"status": "not_rendered"}
