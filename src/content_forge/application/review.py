@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 
@@ -31,7 +33,12 @@ from content_forge.profiles.shorts import (
     shorts_preview_profile,
 )
 from content_forge.render.ffmpeg import FFmpegCapabilities, probe_ffmpeg_runtime
-from content_forge.storage import LocalLibrary
+from content_forge.storage import (
+    LocalLibrary,
+    StorageConflictError,
+    StoredJob,
+    transition_job_state,
+)
 from content_forge.templates import (
     HOOK_OVERLAY_TEMPLATE_ID,
     HOOK_OVERLAY_TEMPLATE_VERSION,
@@ -78,6 +85,11 @@ _ATTENTION_RANK = {
 _PREVIEW_TASK = "preview_approval"
 _AUTO_BOOTSTRAP_TASK = "timeline_bootstrap"
 _EDIT_TASKS = frozenset({"hook", "crop_confirmation", "source_order", "metadata"})
+_TERMINAL_REVIEW_STATES = frozenset({
+    ProjectState.RENDERING,
+    ProjectState.QC,
+    ProjectState.DONE,
+})
 
 
 def _utc_now() -> datetime:
@@ -90,6 +102,52 @@ def _plain_json(value: object) -> object:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_plain_json(item) for item in value]
     return value
+
+
+def _strict_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _preview_revision_digest(project: Project) -> str:
+    """Digest canonical review state while ignoring only preview-candidate bookkeeping.
+
+    Rendering records mutate the preview task and ``updated_at`` themselves. Normalize
+    those fields so a candidate can be approved after it is recorded, while every actual
+    accepted project/review edit (including metadata-only edits that do not affect the
+    RenderPlan digest) changes this revision and invalidates an in-flight candidate.
+    """
+
+    payload = project.model_dump(mode="json")
+    payload.pop("updated_at", None)
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in (
+            "approved_preview_job_id",
+            "approved_preview_plan_digest",
+            "approved_preview_revision_digest",
+            "active_final_plan_digest",
+            "final_render_job_id",
+            "final_render_plan_digest",
+            "final_output_sha256",
+            "last_final_render_error",
+        ):
+            metadata.pop(key, None)
+    tasks = payload.get("review_tasks")
+    if isinstance(tasks, list):
+        for task in tasks:
+            if isinstance(task, dict) and task.get("task_type") == _PREVIEW_TASK:
+                task["status"] = ReviewStatus.OPEN.value
+                task["accepted_value"] = None
+                task["resolved_at"] = None
+                task["payload"] = {"status": "not_rendered"}
+    return _strict_digest(payload)
 
 
 class ReviewService:
@@ -268,7 +326,11 @@ class ReviewService:
         """Turn an Inbox project into the bounded PR10 review contract, idempotently."""
 
         def bootstrap(project: Project) -> Project:
-            if project.state in {ProjectState.RENDERING, ProjectState.QC, ProjectState.DONE}:
+            # Once PR10 owns a project, repeated Inbox/history bootstrap is a strict no-op.
+            # In particular, READY/DONE or active render states must never be rewound.
+            if bool(project.metadata.get("pr10_review_initialized")):
+                return project
+            if project.state in _TERMINAL_REVIEW_STATES:
                 raise ReviewConflictError(
                     f"project cannot be bootstrapped from state {project.state.value}"
                 )
@@ -321,9 +383,7 @@ class ReviewService:
                         if duration is None or duration <= 0:
                             renderable = False
                             break
-                    generated.append(
-                        Scene(order=order, duration_seconds=duration, media=ref)
-                    )
+                    generated.append(Scene(order=order, duration_seconds=duration, media=ref))
                 if renderable:
                     scenes = generated
 
@@ -333,10 +393,7 @@ class ReviewService:
                         renderable = False
                         break
                     asset = self.library.database.get_asset(scene.media.asset_id)
-                    if asset is None or asset.media_type not in {
-                        MediaType.IMAGE,
-                        MediaType.VIDEO,
-                    }:
+                    if asset is None or asset.media_type not in {MediaType.IMAGE, MediaType.VIDEO}:
                         renderable = False
                         break
 
@@ -378,10 +435,7 @@ class ReviewService:
                         project.project_id,
                         "hook",
                         priority=ReviewPriority.BLOCKING,
-                        payload={
-                            "variant_id": review_variant.variant_id,
-                            "current": review_variant.hook,
-                        },
+                        payload={"variant_id": review_variant.variant_id, "current": review_variant.hook},
                     )
                 )
                 add_task(
@@ -475,6 +529,10 @@ class ReviewService:
         for project in self._list_projects():
             if project.state is ProjectState.READY:
                 ready_projects.append(self.project_summary(project))
+            # RENDERING/QC/DONE tasks are immutable from the phone. Keep their history in
+            # Project but never surface permanent unactionable queue cards.
+            if project.state in _TERMINAL_REVIEW_STATES:
+                continue
             for task in project.review_tasks:
                 if task.status is not ReviewStatus.OPEN:
                     continue
@@ -506,6 +564,15 @@ class ReviewService:
 
     def project_summary(self, project: Project) -> dict[str, object]:
         preview_task = self._task(project, _PREVIEW_TASK)
+        final_job_id = project.metadata.get("final_render_job_id")
+        final_summary = None
+        if isinstance(final_job_id, str):
+            final_summary = {
+                "job_id": final_job_id,
+                "render_plan_digest": project.metadata.get("final_render_plan_digest"),
+                "output_sha256": project.metadata.get("final_output_sha256"),
+                "artifact_endpoint": f"render-jobs/{final_job_id}/artifact",
+            }
         return {
             "project_id": project.project_id,
             "state": project.state.value,
@@ -514,6 +581,7 @@ class ReviewService:
             "review_renderable": bool(project.metadata.get("review_renderable")),
             "open_blocking_tasks": len(self._blocking_human_tasks(project)),
             "preview": None if preview_task is None else _plain_json(preview_task.payload),
+            "final": final_summary,
             "tasks": [
                 task.model_dump(mode="json")
                 for task in project.review_tasks
@@ -547,6 +615,7 @@ class ReviewService:
         metadata = dict(project.metadata)
         metadata.pop("approved_preview_job_id", None)
         metadata.pop("approved_preview_plan_digest", None)
+        metadata.pop("approved_preview_revision_digest", None)
         return tuple(updated_tasks), metadata
 
     def resolve_task(
@@ -556,7 +625,7 @@ class ReviewService:
         value: JsonValue | None,
     ) -> Project:
         def resolve(project: Project) -> Project:
-            if project.state in {ProjectState.RENDERING, ProjectState.QC, ProjectState.DONE}:
+            if project.state in _TERMINAL_REVIEW_STATES:
                 raise ReviewConflictError(
                     f"project cannot be edited in state {project.state.value}"
                 )
@@ -570,8 +639,12 @@ class ReviewService:
                 raise ReviewValidationError(
                     "preview approval uses the dedicated approve/reject endpoints"
                 )
-            if task.attention is AttentionMode.AUTO:
-                raise ReviewValidationError("AUTO tasks cannot be edited by a client")
+            # Phone resolve authority is exact and closed: MANUAL blockers and future or
+            # unknown REVIEW tasks cannot fall through as arbitrary accepted values.
+            if task.attention is not AttentionMode.REVIEW or task.task_type not in _EDIT_TASKS:
+                raise ReviewValidationError(
+                    "task is not a phone-resolvable PR10 review decision"
+                )
             if task.status is not ReviewStatus.OPEN:
                 if task.status is ReviewStatus.RESOLVED and task.accepted_value == value:
                     return project
@@ -587,9 +660,7 @@ class ReviewService:
                 variants = self._replace_variant(project, replacement)
             elif task.task_type == "crop_confirmation":
                 if not isinstance(value, dict):
-                    raise ReviewValidationError(
-                        "crop confirmation must provide a crops object"
-                    )
+                    raise ReviewValidationError("crop confirmation must provide a crops object")
                 crops = value.get("crops")
                 if not isinstance(crops, dict):
                     raise ReviewValidationError("crop confirmation requires crops")
@@ -617,9 +688,7 @@ class ReviewService:
                     updated_scenes.append(scene.validated_copy(update={"crop": crop}))
                 scenes = tuple(updated_scenes)
             elif task.task_type == "source_order":
-                if not isinstance(value, list) or not all(
-                    isinstance(item, str) for item in value
-                ):
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                     raise ReviewValidationError("source order must be a list of scene IDs")
                 scene_ids = [scene.scene_id for scene in scenes]
                 if len(value) != len(scene_ids) or set(value) != set(scene_ids):
@@ -631,7 +700,7 @@ class ReviewService:
                     by_id[scene_id].validated_copy(update={"order": order})
                     for order, scene_id in enumerate(value)
                 )
-            elif task.task_type == "metadata":
+            else:  # metadata is the only remaining whitelisted task type.
                 if not isinstance(value, dict):
                     raise ReviewValidationError("metadata value must be an object")
                 allowed = {"title", "description", "hashtags"}
@@ -640,9 +709,7 @@ class ReviewService:
                 update: dict[str, object] = {}
                 if "title" in value:
                     title = value["title"]
-                    if title is not None and (
-                        not isinstance(title, str) or len(title) > 4096
-                    ):
+                    if title is not None and (not isinstance(title, str) or len(title) > 4096):
                         raise ReviewValidationError("invalid title")
                     update["title"] = title
                 if "description" in value:
@@ -712,6 +779,39 @@ class ReviewService:
         except Exception as exc:
             raise ReviewNotReadyError(f"project cannot compile for review: {exc}") from exc
 
+    def _matching_jobs(
+        self,
+        project_id: str,
+        *,
+        purpose: str,
+        plan_digest: str,
+        states: tuple[str, ...],
+    ) -> tuple[StoredJob, ...]:
+        if not states:
+            return ()
+        placeholders = ",".join("?" for _ in states)
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT job_id FROM jobs
+                WHERE project_id = ? AND job_type = 'render'
+                  AND state IN ({placeholders})
+                ORDER BY updated_at DESC, job_id DESC
+                """,
+                (project_id, *states),
+            ).fetchall()
+        matches: list[StoredJob] = []
+        for row in rows:
+            job = self.library.database.get_job(str(row["job_id"]))
+            if job is None:
+                continue
+            if (
+                job.payload.get("purpose") == purpose
+                and job.payload.get("render_plan_digest") == plan_digest
+            ):
+                matches.append(job)
+        return tuple(matches)
+
     def _matching_artifact(
         self,
         project_id: str,
@@ -719,36 +819,40 @@ class ReviewService:
         purpose: str,
         plan_digest: str,
     ):
-        with self.library.database.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT job_id, payload_json FROM jobs
-                WHERE project_id = ? AND job_type = 'render' AND state = 'succeeded'
-                ORDER BY updated_at DESC, job_id DESC
-                """,
-                (project_id,),
-            ).fetchall()
-        for row in rows:
+        # Corrupt newest candidates are not authoritative for this semantic plan. Keep
+        # looking for an older authenticated success; if none survives, caller may submit
+        # a fresh immutable attempt rather than wedging the plan forever.
+        for job in self._matching_jobs(
+            project_id,
+            purpose=purpose,
+            plan_digest=plan_digest,
+            states=("succeeded",),
+        ):
             try:
-                payload = json.loads(row["payload_json"])
-            except (TypeError, json.JSONDecodeError):
+                artifact = self.orchestrator.load_artifact(
+                    job.job_id,
+                    ffprobe_path=self.ffprobe_path,
+                )
+            except RenderJobIntegrityError:
                 continue
-            if (
-                payload.get("purpose") == purpose
-                and payload.get("render_plan_digest") == plan_digest
-            ):
-                try:
-                    artifact = self.orchestrator.load_artifact(
-                        str(row["job_id"]),
-                        ffprobe_path=self.ffprobe_path,
-                    )
-                except RenderJobIntegrityError as exc:
-                    raise ReviewRenderError(
-                        f"matching render artifact failed integrity validation: {exc}"
-                    ) from exc
-                if artifact is not None:
-                    return artifact
+            if artifact is not None:
+                return artifact
         return None
+
+    def _matching_queued_job(
+        self,
+        project_id: str,
+        *,
+        purpose: str,
+        plan_digest: str,
+    ) -> StoredJob | None:
+        jobs = self._matching_jobs(
+            project_id,
+            purpose=purpose,
+            plan_digest=plan_digest,
+            states=("queued",),
+        )
+        return jobs[0] if jobs else None
 
     @staticmethod
     def _artifact_summary(artifact) -> dict[str, object]:
@@ -765,6 +869,33 @@ class ReviewService:
             "artifact_endpoint": f"render-jobs/{artifact.job_id}/artifact",
         }
 
+    def _run_or_submit(
+        self,
+        plan: RenderPlan,
+        *,
+        purpose: str,
+        plan_digest: str,
+    ):
+        artifact = self._matching_artifact(
+            plan.project_id,
+            purpose=purpose,
+            plan_digest=plan_digest,
+        )
+        if artifact is not None:
+            return artifact
+        queued = self._matching_queued_job(
+            plan.project_id,
+            purpose=purpose,
+            plan_digest=plan_digest,
+        )
+        try:
+            job = queued or self.orchestrator.submit(plan, purpose=purpose)
+            return self.orchestrator.run_job(job.job_id, self._capabilities())
+        except Exception as exc:
+            if isinstance(exc, ReviewError):
+                raise
+            raise ReviewRenderError(f"{purpose} render failed: {exc}") from exc
+
     def render_preview(self, project_id: str) -> dict[str, object]:
         project = self.get_project(project_id)
         blockers = self._blocking_human_tasks(project, exclude_preview=True)
@@ -779,61 +910,120 @@ class ReviewService:
 
         plan = self._compile_plan(project, SHORTS_PREVIEW_PROFILE_ID)
         digest = render_plan_digest(plan)
+        revision = _preview_revision_digest(project)
+        claim_id = secrets.token_hex(16)
+
+        # Reuse an already authenticated success before claiming compute.
         artifact = self._matching_artifact(
             project_id,
             purpose="preview",
             plan_digest=digest,
         )
-        if artifact is None:
-            try:
-                job = self.orchestrator.submit(plan, purpose="preview")
-                artifact = self.orchestrator.run_job(job.job_id, self._capabilities())
-            except Exception as exc:
-                if isinstance(exc, ReviewError):
-                    raise
-                raise ReviewRenderError(f"preview render failed: {exc}") from exc
 
-        def record(current: Project) -> Project:
+        def claim(current: Project) -> Project:
             task = self._task(current, _PREVIEW_TASK)
             if task is None or task.status is not ReviewStatus.OPEN:
-                raise ReviewConflictError("preview approval task changed during render")
+                raise ReviewConflictError("preview approval task changed before render")
+            if _preview_revision_digest(current) != revision:
+                raise ReviewConflictError("project changed before preview render claim")
             current_plan = self._compile_plan(current, SHORTS_PREVIEW_PROFILE_ID)
             if render_plan_digest(current_plan) != digest:
-                stale = task.validated_copy(update={"payload": {"status": "stale"}})
-                return current.validated_copy(
-                    update={
-                        "state": ProjectState.NEEDS_REVIEW,
-                        "review_tasks": self._replace_task(current, stale),
-                        "updated_at": _utc_now(),
-                    }
-                )
-            ready = task.validated_copy(
+                raise ReviewConflictError("preview render plan changed before claim")
+            status = task.payload.get("status")
+            if status == "rendering":
+                raise ReviewConflictError("preview render is already in progress")
+            claimed = task.validated_copy(
                 update={
                     "payload": {
-                        "status": "ready",
-                        "job_id": artifact.job_id,
+                        "status": "rendering",
+                        "claim_id": claim_id,
                         "render_plan_digest": digest,
-                        "output_sha256": artifact.output_sha256,
-                        "width": artifact.width,
-                        "height": artifact.height,
+                        "project_revision_digest": revision,
                     }
                 }
             )
             return current.validated_copy(
                 update={
-                    "state": ProjectState.NEEDS_REVIEW,
-                    "review_tasks": self._replace_task(current, ready),
+                    "review_tasks": self._replace_task(current, claimed),
                     "updated_at": _utc_now(),
                 }
             )
 
-        recorded = self._mutate_project(project_id, record)
-        task = self._task(recorded, _PREVIEW_TASK)
-        if task is None or task.payload.get("status") != "ready":
-            raise ReviewConflictError(
-                "project changed while preview rendered; render a fresh preview"
-            )
-        return self._artifact_summary(artifact)
+        self._mutate_project(project_id, claim)
+
+        try:
+            if artifact is None:
+                artifact = self._run_or_submit(
+                    plan,
+                    purpose="preview",
+                    plan_digest=digest,
+                )
+
+            def record(current: Project) -> Project:
+                task = self._task(current, _PREVIEW_TASK)
+                if task is None or task.status is not ReviewStatus.OPEN:
+                    raise ReviewConflictError("preview approval task changed during render")
+                if task.payload.get("claim_id") != claim_id:
+                    raise ReviewConflictError("preview render claim was superseded")
+                if _preview_revision_digest(current) != revision:
+                    raise ReviewConflictError(
+                        "project changed while preview rendered; render a fresh preview"
+                    )
+                current_plan = self._compile_plan(current, SHORTS_PREVIEW_PROFILE_ID)
+                if render_plan_digest(current_plan) != digest:
+                    raise ReviewConflictError(
+                        "preview render plan changed while rendering"
+                    )
+                ready = task.validated_copy(
+                    update={
+                        "payload": {
+                            "status": "ready",
+                            "job_id": artifact.job_id,
+                            "render_plan_digest": digest,
+                            "project_revision_digest": revision,
+                            "output_sha256": artifact.output_sha256,
+                            "width": artifact.width,
+                            "height": artifact.height,
+                        }
+                    }
+                )
+                return current.validated_copy(
+                    update={
+                        "state": ProjectState.NEEDS_REVIEW,
+                        "review_tasks": self._replace_task(current, ready),
+                        "updated_at": _utc_now(),
+                    }
+                )
+
+            recorded = self._mutate_project(project_id, record)
+            task = self._task(recorded, _PREVIEW_TASK)
+            if task is None or task.payload.get("status") != "ready":
+                raise ReviewConflictError("preview candidate was not recorded")
+            return self._artifact_summary(artifact)
+        except BaseException:
+            # Release only our own claim. A concurrent edit intentionally resets the task;
+            # never overwrite that newer canonical decision while cleaning up.
+            try:
+                def release(current: Project) -> Project:
+                    task = self._task(current, _PREVIEW_TASK)
+                    if (
+                        task is None
+                        or task.status is not ReviewStatus.OPEN
+                        or task.payload.get("claim_id") != claim_id
+                    ):
+                        return current
+                    reset = task.validated_copy(update={"payload": {"status": "not_rendered"}})
+                    return current.validated_copy(
+                        update={
+                            "review_tasks": self._replace_task(current, reset),
+                            "updated_at": _utc_now(),
+                        }
+                    )
+
+                self._mutate_project(project_id, release)
+            except Exception:
+                pass
+            raise
 
     def approve_preview(self, project_id: str, job_id: str) -> Project:
         def approve(project: Project) -> Project:
@@ -843,12 +1033,15 @@ class ReviewService:
             if task.payload.get("status") != "ready" or task.payload.get("job_id") != job_id:
                 raise ReviewConflictError("preview job is not the current approval candidate")
             expected_digest = task.payload.get("render_plan_digest")
-            if not isinstance(expected_digest, str):
-                raise ReviewConflictError("preview task has no render-plan digest")
+            expected_revision = task.payload.get("project_revision_digest")
+            if not isinstance(expected_digest, str) or not isinstance(expected_revision, str):
+                raise ReviewConflictError("preview task has no canonical candidate identity")
+            if _preview_revision_digest(project) != expected_revision:
+                raise ReviewConflictError("preview is stale for current project revision")
             plan = self._compile_plan(project, SHORTS_PREVIEW_PROFILE_ID)
             current_digest = render_plan_digest(plan)
             if current_digest != expected_digest:
-                raise ReviewConflictError("preview is stale for current project state")
+                raise ReviewConflictError("preview is stale for current render plan")
             try:
                 artifact = self.orchestrator.load_artifact(
                     job_id,
@@ -883,7 +1076,7 @@ class ReviewService:
             metadata = dict(project.metadata)
             metadata["approved_preview_job_id"] = job_id
             metadata["approved_preview_plan_digest"] = current_digest
-            return project.validated_copy(
+            ready = project.validated_copy(
                 update={
                     "state": ProjectState.READY,
                     "review_tasks": tasks,
@@ -891,6 +1084,9 @@ class ReviewService:
                     "updated_at": _utc_now(),
                 }
             )
+            metadata = dict(ready.metadata)
+            metadata["approved_preview_revision_digest"] = _preview_revision_digest(ready)
+            return ready.validated_copy(update={"metadata": metadata})
 
         return self._mutate_project(project_id, approve)
 
@@ -915,10 +1111,7 @@ class ReviewService:
             reopened: list[ReviewTask] = []
             for task in project.review_tasks:
                 if task.review_task_id == preview.review_task_id:
-                    payload: dict[str, JsonValue] = {
-                        "status": "rejected",
-                        "job_id": job_id,
-                    }
+                    payload: dict[str, JsonValue] = {"status": "rejected", "job_id": job_id}
                     if feedback:
                         payload["feedback"] = feedback
                     reopened.append(
@@ -932,7 +1125,7 @@ class ReviewService:
                         )
                     )
                 elif (
-                    task.attention is not AttentionMode.AUTO
+                    task.attention is AttentionMode.REVIEW
                     and task.task_type in _EDIT_TASKS
                     and task.status is ReviewStatus.RESOLVED
                 ):
@@ -950,6 +1143,7 @@ class ReviewService:
             metadata = dict(project.metadata)
             metadata.pop("approved_preview_job_id", None)
             metadata.pop("approved_preview_plan_digest", None)
+            metadata.pop("approved_preview_revision_digest", None)
             return project.validated_copy(
                 update={
                     "state": ProjectState.NEEDS_REVIEW,
@@ -961,13 +1155,102 @@ class ReviewService:
 
         return self._mutate_project(project_id, reject)
 
+    def _validated_final_artifact(self, project: Project):
+        job_id = project.metadata.get("final_render_job_id")
+        if not isinstance(job_id, str):
+            return None
+        try:
+            artifact = self.orchestrator.load_artifact(
+                job_id,
+                ffprobe_path=self.ffprobe_path,
+            )
+        except RenderJobIntegrityError:
+            return None
+        if artifact is None:
+            return None
+        expected_digest = project.metadata.get("final_render_plan_digest")
+        expected_sha = project.metadata.get("final_output_sha256")
+        if (
+            artifact.project_id != project.project_id
+            or artifact.purpose != "final"
+            or (isinstance(expected_digest, str) and artifact.render_plan_digest != expected_digest)
+            or (isinstance(expected_sha, str) and artifact.output_sha256 != expected_sha)
+        ):
+            return None
+        return artifact
+
+    def _record_final_success(self, project_id: str, artifact, final_digest: str) -> Project:
+        def qc(current: Project) -> Project:
+            if current.state is not ProjectState.RENDERING:
+                raise ReviewConflictError("project left rendering state unexpectedly")
+            if current.metadata.get("active_final_plan_digest") != final_digest:
+                raise ReviewConflictError("active final plan changed unexpectedly")
+            metadata = dict(current.metadata)
+            metadata["final_render_job_id"] = artifact.job_id
+            metadata["final_render_plan_digest"] = final_digest
+            metadata["final_output_sha256"] = artifact.output_sha256
+            metadata.pop("active_final_plan_digest", None)
+            metadata.pop("last_final_render_error", None)
+            return current.validated_copy(
+                update={
+                    "state": ProjectState.QC,
+                    "metadata": metadata,
+                    "updated_at": _utc_now(),
+                }
+            )
+
+        self._mutate_project(project_id, qc)
+
+        def done(current: Project) -> Project:
+            if current.state is not ProjectState.QC:
+                raise ReviewConflictError("project left QC state unexpectedly")
+            artifact_now = self._validated_final_artifact(current)
+            if artifact_now is None:
+                raise ReviewConflictError("final artifact failed QC integrity validation")
+            return current.validated_copy(
+                update={"state": ProjectState.DONE, "updated_at": _utc_now()}
+            )
+
+        return self._mutate_project(project_id, done)
+
     def render_final(self, project_id: str) -> dict[str, object]:
         project = self.get_project(project_id)
+        if project.state is ProjectState.DONE:
+            artifact = self._validated_final_artifact(project)
+            if artifact is not None:
+                return self._artifact_summary(artifact)
+
+            # DONE is replayable only while its authenticated artifact survives. If that
+            # representation is corrupt/missing, reopen the already-approved semantic
+            # project for a fresh immutable final attempt instead of wedging forever.
+            def reopen_corrupt_done(current: Project) -> Project:
+                if current.state is not ProjectState.DONE:
+                    return current
+                metadata = dict(current.metadata)
+                metadata["last_final_render_error"] = (
+                    "completed final artifact was unavailable during retry"
+                )
+                metadata.pop("final_render_job_id", None)
+                metadata.pop("final_render_plan_digest", None)
+                metadata.pop("final_output_sha256", None)
+                return current.validated_copy(
+                    update={
+                        "state": ProjectState.READY,
+                        "metadata": metadata,
+                        "updated_at": _utc_now(),
+                    }
+                )
+
+            self._mutate_project(project_id, reopen_corrupt_done)
+            return self.render_final(project_id)
         if project.state is not ProjectState.READY:
             raise ReviewNotReadyError("project must be ready before final render")
         approved_digest = project.metadata.get("approved_preview_plan_digest")
-        if not isinstance(approved_digest, str):
-            raise ReviewNotReadyError("project has no approved preview digest")
+        approved_revision = project.metadata.get("approved_preview_revision_digest")
+        if not isinstance(approved_digest, str) or not isinstance(approved_revision, str):
+            raise ReviewNotReadyError("project has no approved preview identity")
+        if _preview_revision_digest(project) != approved_revision:
+            raise ReviewConflictError("approved preview is stale for current project revision")
         current_preview = self._compile_plan(project, SHORTS_PREVIEW_PROFILE_ID)
         if render_plan_digest(current_preview) != approved_digest:
             raise ReviewConflictError("approved preview is stale for current project state")
@@ -978,9 +1261,15 @@ class ReviewService:
             if current.state is not ProjectState.READY:
                 raise ReviewConflictError("project is no longer ready for final render")
             approved = current.metadata.get("approved_preview_plan_digest")
+            revision = current.metadata.get("approved_preview_revision_digest")
+            if revision != _preview_revision_digest(current):
+                raise ReviewConflictError("approved preview revision changed before final render")
             current_preview_plan = self._compile_plan(current, SHORTS_PREVIEW_PROFILE_ID)
             if approved != render_plan_digest(current_preview_plan):
                 raise ReviewConflictError("approved preview changed before final render")
+            current_final = self._compile_plan(current, SHORTS_FINAL_PROFILE_ID)
+            if render_plan_digest(current_final) != final_digest:
+                raise ReviewConflictError("final plan changed before render claim")
             metadata = dict(current.metadata)
             metadata["active_final_plan_digest"] = final_digest
             return current.validated_copy(
@@ -993,41 +1282,12 @@ class ReviewService:
 
         self._mutate_project(project_id, claim)
         try:
-            artifact = self._matching_artifact(
-                project_id,
+            artifact = self._run_or_submit(
+                final_plan,
                 purpose="final",
                 plan_digest=final_digest,
             )
-            if artifact is None:
-                job = self.orchestrator.submit(final_plan, purpose="final")
-                artifact = self.orchestrator.run_job(job.job_id, self._capabilities())
-
-            def qc(current: Project) -> Project:
-                if current.state is not ProjectState.RENDERING:
-                    raise ReviewConflictError("project left rendering state unexpectedly")
-                metadata = dict(current.metadata)
-                metadata["final_render_job_id"] = artifact.job_id
-                metadata["final_render_plan_digest"] = final_digest
-                metadata["final_output_sha256"] = artifact.output_sha256
-                metadata.pop("active_final_plan_digest", None)
-                return current.validated_copy(
-                    update={
-                        "state": ProjectState.QC,
-                        "metadata": metadata,
-                        "updated_at": _utc_now(),
-                    }
-                )
-
-            self._mutate_project(project_id, qc)
-
-            def done(current: Project) -> Project:
-                if current.state is not ProjectState.QC:
-                    raise ReviewConflictError("project left QC state unexpectedly")
-                return current.validated_copy(
-                    update={"state": ProjectState.DONE, "updated_at": _utc_now()}
-                )
-
-            self._mutate_project(project_id, done)
+            self._record_final_success(project_id, artifact, final_digest)
             return self._artifact_summary(artifact)
         except BaseException as exc:
             try:
@@ -1036,9 +1296,7 @@ class ReviewService:
                         return current
                     metadata = dict(current.metadata)
                     metadata.pop("active_final_plan_digest", None)
-                    metadata["last_final_render_error"] = (
-                        str(exc)[:1024] or type(exc).__name__
-                    )
+                    metadata["last_final_render_error"] = str(exc)[:1024] or type(exc).__name__
                     return current.validated_copy(
                         update={
                             "state": ProjectState.READY,
@@ -1053,6 +1311,159 @@ class ReviewService:
             if isinstance(exc, ReviewError):
                 raise
             raise ReviewRenderError(f"final render failed: {exc}") from exc
+
+    def _recover_project_after_restart(self, project: Project) -> None:
+        """Repair PR10 process-crash checkpoints under the exclusive runtime lease."""
+
+        if project.state is ProjectState.QC:
+            artifact = self._validated_final_artifact(project)
+            if artifact is not None:
+                self._mutate_project(
+                    project.project_id,
+                    lambda current: current.validated_copy(
+                        update={"state": ProjectState.DONE, "updated_at": _utc_now()}
+                    )
+                    if current.state is ProjectState.QC
+                    else current,
+                )
+                return
+
+            def qc_failed(current: Project) -> Project:
+                if current.state is not ProjectState.QC:
+                    return current
+                metadata = dict(current.metadata)
+                metadata["last_final_render_error"] = "final QC recovery found no valid artifact"
+                return current.validated_copy(
+                    update={
+                        "state": ProjectState.READY,
+                        "metadata": metadata,
+                        "updated_at": _utc_now(),
+                    }
+                )
+
+            self._mutate_project(project.project_id, qc_failed)
+            return
+
+        if project.state is not ProjectState.RENDERING:
+            return
+        digest = project.metadata.get("active_final_plan_digest")
+        artifact = None
+        if isinstance(digest, str):
+            artifact = self._matching_artifact(
+                project.project_id,
+                purpose="final",
+                plan_digest=digest,
+            )
+        if artifact is not None and isinstance(digest, str):
+            self._record_final_success(project.project_id, artifact, digest)
+            return
+
+        # A new process owns the runtime root, so a persisted 'running' job cannot still
+        # have a live PR7 executor. Retire such orphan claims; queued jobs remain reusable.
+        if isinstance(digest, str):
+            for job in self._matching_jobs(
+                project.project_id,
+                purpose="final",
+                plan_digest=digest,
+                states=("running",),
+            ):
+                try:
+                    transition_job_state(
+                        self.library.database,
+                        job.job_id,
+                        expected_state="running",
+                        state="failed",
+                    )
+                except StorageConflictError:
+                    pass
+
+        def ready(current: Project) -> Project:
+            if current.state is not ProjectState.RENDERING:
+                return current
+            metadata = dict(current.metadata)
+            metadata.pop("active_final_plan_digest", None)
+            metadata["last_final_render_error"] = "final render recovered after process restart"
+            return current.validated_copy(
+                update={
+                    "state": ProjectState.READY,
+                    "metadata": metadata,
+                    "updated_at": _utc_now(),
+                }
+            )
+
+        self._mutate_project(project.project_id, ready)
+
+    def reconcile_persisted_state(self) -> None:
+        """Recover PR10-only render claims once a new API process owns the runtime root."""
+
+        projects = self._list_projects()
+        pr10_ids = {
+            project.project_id
+            for project in projects
+            if bool(project.metadata.get("pr10_review_initialized"))
+        }
+
+        # Reset in-flight preview compute claims. If a queued immutable PR7 job survived,
+        # the next request adopts it; a crashed running job is retired below.
+        for project in projects:
+            if project.project_id not in pr10_ids:
+                continue
+            preview = self._task(project, _PREVIEW_TASK)
+            if (
+                preview is not None
+                and preview.status is ReviewStatus.OPEN
+                and preview.payload.get("status") == "rendering"
+            ):
+                def reset_preview(current: Project) -> Project:
+                    task = self._task(current, _PREVIEW_TASK)
+                    if (
+                        task is None
+                        or task.status is not ReviewStatus.OPEN
+                        or task.payload.get("status") != "rendering"
+                    ):
+                        return current
+                    reset = task.validated_copy(update={"payload": {"status": "not_rendered"}})
+                    return current.validated_copy(
+                        update={
+                            "review_tasks": self._replace_task(current, reset),
+                            "updated_at": _utc_now(),
+                        }
+                    )
+
+                self._mutate_project(project.project_id, reset_preview)
+
+        # Retire orphaned running preview jobs as well; final running jobs are retired by
+        # the project-specific recovery path so their digest can first adopt a success.
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT job_id, project_id, payload_json FROM jobs WHERE state = 'running'"
+            ).fetchall()
+        for row in rows:
+            project_id = row["project_id"]
+            if project_id not in pr10_ids:
+                continue
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get("purpose") != "preview":
+                continue
+            try:
+                transition_job_state(
+                    self.library.database,
+                    str(row["job_id"]),
+                    expected_state="running",
+                    state="failed",
+                )
+            except StorageConflictError:
+                pass
+
+        for project in self._list_projects():
+            if project.project_id in pr10_ids and project.state in {
+                ProjectState.RENDERING,
+                ProjectState.QC,
+            }:
+                self._recover_project_after_restart(project)
 
     def artifact_path(self, job_id: str):
         try:

@@ -30,13 +30,18 @@ def create_app(
         max_upload_bytes=max_upload_bytes,
     )
     try:
-        install_review_routes(
+        review = install_review_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,
             ffmpeg_path=ffmpeg_path,
             ffprobe_path=ffprobe_path,
         )
+        # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
+        # therefore the safe crash-recovery point for PR10 render/preview claims: no old
+        # process can still be executing jobs in this runtime root while reconciliation
+        # adopts succeeded receipts or retires orphaned running states.
+        review.reconcile_persisted_state()
         install_pwa_routes(
             app,
             auth=app.state.auth,

@@ -3,7 +3,7 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v6`;
+const CACHE_NAME = `${CACHE_PREFIX}v7`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -30,6 +30,7 @@ const SHELL_ASSETS = [
   appUrl("styles.css"),
   appUrl("shared.js"),
   appUrl("app.js"),
+  appUrl("review.js"),
   appUrl("manifest.webmanifest"),
   appUrl("icons/icon-192.png"),
   appUrl("icons/icon-512.png"),
