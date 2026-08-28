@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from content_forge.core import Asset, AssetRef, FitMode, NormalizedRect, Project
+from content_forge.core import Asset, AssetRef, FitMode, MediaType, NormalizedRect, Project
 from content_forge.timeline import AssetResolver, ResolvedTemplate
 
 from .initial_pack import (
@@ -18,8 +18,10 @@ from .initial_pack import (
     SYNC_STACK_TEMPLATE_ID,
     InitialTemplateError,
     _hook_text,
+    _reaction_asset_id,
     _resolve_header_layout,
     _select_variant,
+    _validate_visual_asset,
     initial_template_definitions,
     resolve_art_story,
     resolve_content_frame as _resolve_content_frame,
@@ -187,6 +189,22 @@ def resolve_sync_stack(
     variant_id: str | None = None,
 ) -> ResolvedTemplate:
     _require_output_aspect_lock(project, SYNC_STACK_TEMPLATE_ID)
+    if len(project.scenes) != 1 or project.scenes[0].media is None:
+        raise InitialTemplateError("sync_stack requires exactly one source media scene")
+    source_scene = project.scenes[0]
+    source_asset = _validate_visual_asset(assets, source_scene.media.asset_id)
+    if source_asset.media_type is MediaType.VIDEO:
+        if source_scene.trim_start_seconds != 0.0 or source_scene.trim_duration_seconds is not None:
+            raise InitialTemplateError(
+                "sync_stack does not support trimmed video until asset overlays share the scene source timebase"
+            )
+        if source_asset.duration_seconds is None:
+            raise InitialTemplateError("sync_stack video duration metadata is required")
+        if source_asset.duration_seconds + 1e-6 < source_scene.duration_seconds:
+            raise InitialTemplateError(
+                "sync_stack source video is shorter than the synchronized scene duration"
+            )
+
     resolved = _resolve_sync_stack(
         project,
         assets,
@@ -196,7 +214,13 @@ def resolve_sync_stack(
     if resolved.scenes is None or len(resolved.scenes) != 1:
         raise InitialTemplateError("sync_stack resolver returned an invalid scene graph")
     scene = resolved.scenes[0].validated_copy(update={"fit_mode": FitMode.CONTAIN})
-    return _rebuild(resolved, scenes=(scene,))
+    overlays = tuple(
+        overlay.validated_copy(update={"duration_seconds": source_scene.duration_seconds})
+        if overlay.asset_ref is not None
+        else overlay
+        for overlay in resolved.overlays
+    )
+    return _rebuild(resolved, scenes=(scene,), overlays=overlays)
 
 
 def resolve_reaction_bottom(
@@ -207,6 +231,19 @@ def resolve_reaction_bottom(
     variant_id: str | None = None,
 ) -> ResolvedTemplate:
     _require_output_aspect_lock(project, REACTION_BOTTOM_TEMPLATE_ID)
+    if len(project.scenes) != 1 or project.scenes[0].media is None:
+        raise InitialTemplateError("reaction_bottom requires exactly one primary media scene")
+    source_scene = project.scenes[0]
+    reaction_id = _reaction_asset_id(project)
+    reaction_asset = _validate_visual_asset(assets, reaction_id)
+    if reaction_asset.media_type is MediaType.VIDEO:
+        if reaction_asset.duration_seconds is None:
+            raise InitialTemplateError("reaction_bottom video duration metadata is required")
+        if reaction_asset.duration_seconds + 1e-6 < source_scene.duration_seconds:
+            raise InitialTemplateError(
+                "reaction_bottom video is shorter than the primary scene duration"
+            )
+
     resolved = _resolve_reaction_bottom(
         project,
         assets,
@@ -215,11 +252,14 @@ def resolve_reaction_bottom(
     )
     if len(resolved.overlays) != 1:
         raise InitialTemplateError("reaction_bottom resolver returned an invalid overlay graph")
-    reaction_id = resolved.properties.get("reaction_asset_id")
-    if not isinstance(reaction_id, str):
-        raise InitialTemplateError("reaction_bottom resolver omitted reaction asset identity")
+    resolved_reaction_id = resolved.properties.get("reaction_asset_id")
+    if not isinstance(resolved_reaction_id, str) or resolved_reaction_id != reaction_id:
+        raise InitialTemplateError("reaction_bottom resolver returned mismatched reaction identity")
     reaction = resolved.overlays[0].validated_copy(
-        update={"asset_ref": _reaction_asset_ref(project, reaction_id)}
+        update={
+            "asset_ref": _reaction_asset_ref(project, reaction_id),
+            "duration_seconds": source_scene.duration_seconds,
+        }
     )
     return _rebuild(resolved, overlays=(reaction,))
 
