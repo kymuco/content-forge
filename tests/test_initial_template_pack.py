@@ -10,6 +10,7 @@ from content_forge.core import (
     EntityKind,
     FitMode,
     MediaType,
+    OutputProfile,
     Project,
     Scene,
     SourceRecord,
@@ -90,7 +91,7 @@ def _project(
             )
             for index, asset in enumerate(assets)
         ),
-        source_refs=tuple(AssetRef(asset_id=record.asset_id) for record in source_records),
+        source_refs=tuple(AssetRef(asset_id=record.asset_id, source_id=record.source_id) for record in source_records),
         source_records=source_records,
         output_profiles=(shorts_preview_profile(), shorts_final_profile()),
         metadata=metadata or {},
@@ -286,7 +287,7 @@ def test_sync_stack_builds_three_aspect_safe_synchronized_copies_without_rendere
     assert plan.template_properties["copies"] == 3
     assert len(plan.scenes) == 1
     assert len([item for item in plan.overlays if item.asset_id == asset.asset_id]) == 2
-    assert plan.scenes[0].fit_mode is FitMode.STRETCH
+    assert plan.scenes[0].fit_mode is FitMode.CONTAIN
     rects = plan.template_properties["aspect_safe_rects"]
     assert len(rects) == 3
     source_aspect = asset.width / asset.height
@@ -311,6 +312,27 @@ def test_sync_stack_rejects_unbounded_copy_count_and_missing_dimensions() -> Non
         _compile(project, (unknown,))
 
 
+def test_profile_derived_overlay_templates_reject_preview_final_aspect_drift() -> None:
+    asset = _image(width=1280, height=720)
+    square = OutputProfile(profile_id="square", width=720, height=720, fps=30)
+    for template_id, metadata in (
+        (SYNC_STACK_TEMPLATE_ID, {"sync_stack.copies": 2}),
+        (REACTION_BOTTOM_TEMPLATE_ID, {"reaction_bottom.reaction_asset_id": _image(sha="d").asset_id}),
+    ):
+        project = _project(template_id, (asset,), hook=None, metadata=metadata)
+        project = project.validated_copy(
+            update={"output_profiles": (shorts_preview_profile(), square)}
+        )
+        extra = _image(sha="d") if template_id == REACTION_BOTTOM_TEMPLATE_ID else None
+        assets = (asset,) if extra is None else (asset, extra)
+        if extra is not None:
+            project = project.validated_copy(
+                update={"metadata": {"reaction_bottom.reaction_asset_id": extra.asset_id}}
+            )
+        with pytest.raises(InitialTemplateError, match="share one canvas aspect ratio"):
+            _compile(project, assets)
+
+
 def test_reaction_bottom_requires_distinct_stable_reaction_asset_and_preserves_aspect() -> None:
     main = _image(sha="a", width=720, height=1280)
     reaction = _image(sha="b", width=640, height=360)
@@ -332,6 +354,40 @@ def test_reaction_bottom_requires_distinct_stable_reaction_asset_and_preserves_a
     assert ("media_overlay", "1.0") in {
         (item["component_id"], item["version"]) for item in evidence["components"]
     }
+
+
+def test_reaction_bottom_preserves_unambiguous_source_lineage() -> None:
+    main = _image(sha="a")
+    reaction = _image(sha="b", width=640, height=360)
+    record = SourceRecord(asset_id=reaction.asset_id, source_url="https://example.test/reaction")
+    project = _project(
+        REACTION_BOTTOM_TEMPLATE_ID,
+        (main,),
+        hook=None,
+        metadata={"reaction_bottom.reaction_asset_id": reaction.asset_id},
+        source_records=(record,),
+    )
+
+    plan = _compile(project, (main, reaction))
+
+    assert plan.overlays[0].source_id == record.source_id
+
+
+def test_reaction_bottom_rejects_ambiguous_source_lineage() -> None:
+    main = _image(sha="a")
+    reaction = _image(sha="b", width=640, height=360)
+    first = SourceRecord(asset_id=reaction.asset_id, source_url="https://example.test/one")
+    second = SourceRecord(asset_id=reaction.asset_id, source_url="https://example.test/two")
+    project = _project(
+        REACTION_BOTTOM_TEMPLATE_ID,
+        (main,),
+        hook=None,
+        metadata={"reaction_bottom.reaction_asset_id": reaction.asset_id},
+        source_records=(first, second),
+    )
+
+    with pytest.raises(InitialTemplateError, match="ambiguous project source provenance"):
+        _compile(project, (main, reaction))
 
 
 def test_reaction_bottom_rejects_missing_invalid_or_self_reaction_identity() -> None:
