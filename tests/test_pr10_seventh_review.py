@@ -209,9 +209,9 @@ def test_qc_recovery_rejects_incomplete_final_identity(tmp_path) -> None:
     service.reconcile_persisted_state()
 
     recovered = service.get_project(project.project_id)
-    assert recovered.state is ProjectState.READY
+    _assert_stale_final_reopened(recovered)
     assert recovered.metadata["last_final_render_error"] == (
-        "final QC recovery found no valid artifact"
+        "incomplete final QC recovery lost current approved preview; returned project to review"
     )
 
 
