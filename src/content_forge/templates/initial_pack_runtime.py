@@ -23,7 +23,7 @@ from .initial_pack import (
     _select_variant,
     _validate_visual_asset,
     initial_template_definitions,
-    resolve_art_story,
+    resolve_art_story as _resolve_art_story,
     resolve_content_frame as _resolve_content_frame,
     resolve_panel_sequence,
     resolve_reaction_bottom as _resolve_reaction_bottom,
@@ -83,6 +83,34 @@ def _reaction_asset_ref(project: Project, asset_id: str) -> AssetRef:
     if source_ids:
         return AssetRef(asset_id=asset_id, source_id=next(iter(source_ids)), role="reaction")
     return AssetRef(asset_id=asset_id, role="reaction")
+
+
+def _art_story_credit_project(project: Project) -> Project:
+    used_asset_ids = {
+        scene.media.asset_id
+        for scene in project.scenes
+        if scene.media is not None
+    }
+    records = tuple(
+        record for record in project.source_records if record.asset_id in used_asset_ids
+    )
+    for record in records:
+        if record.requires_credit is True and (
+            record.credit_text is None or not record.credit_text.strip()
+        ):
+            raise InitialTemplateError(
+                f"art_story source {record.source_id} requires non-empty credit_text"
+            )
+    source_ids = {record.source_id for record in records}
+    refs = tuple(
+        ref
+        for ref in project.source_refs
+        if ref.asset_id in used_asset_ids
+        and (ref.source_id is None or ref.source_id in source_ids)
+    )
+    return project.validated_copy(
+        update={"source_records": records, "source_refs": refs}
+    )
 
 
 def resolve_hook_topbar(
@@ -178,6 +206,21 @@ def resolve_content_frame(
             profile_id=profile_id,
             variant_id=variant_id,
         )
+    )
+
+
+def resolve_art_story(
+    project: Project,
+    assets: AssetSource,
+    *,
+    profile_id: str | None = None,
+    variant_id: str | None = None,
+) -> ResolvedTemplate:
+    return _resolve_art_story(
+        _art_story_credit_project(project),
+        assets,
+        profile_id=profile_id,
+        variant_id=variant_id,
     )
 
 
@@ -283,6 +326,7 @@ def initial_template_registrations() -> tuple[TemplateRegistration, ...]:
 
 __all__ = [
     "initial_template_registrations",
+    "resolve_art_story",
     "resolve_content_frame",
     "resolve_hook_topbar",
     "resolve_meme_white_header",
