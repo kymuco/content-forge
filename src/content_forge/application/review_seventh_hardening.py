@@ -1,11 +1,11 @@
-"""Seventh/eighth-pass PR10 hardening for final receipts and bulk preparation."""
+"""Seventh/ninth-pass PR10 hardening for final receipts and bulk preparation."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 
-from content_forge.core import ProjectState
+from content_forge.core import AttentionMode, ProjectState, ReviewStatus
 from content_forge.orchestration import RenderJobIntegrityError
 from content_forge.timeline import render_plan_digest
 
@@ -13,10 +13,20 @@ from . import review as _review
 
 
 _MANUAL_SETUP_FINGERPRINT = "pr10_manual_setup_input_fingerprint"
+_FINAL_RECEIPT_KEYS = (
+    "final_render_job_id",
+    "final_render_plan_digest",
+    "final_output_sha256",
+)
+_APPROVED_PREVIEW_KEYS = (
+    "approved_preview_job_id",
+    "approved_preview_plan_digest",
+    "approved_preview_revision_digest",
+)
 
 
 class ReviewService(_review.ReviewService):
-    """Close final-receipt and complete-project preparation gaps."""
+    """Close final-receipt, recovery, and complete-project preparation gaps."""
 
     def _manual_setup_input_fingerprint(self, project) -> str:
         """Digest only canonical inputs that can change PR10 setup/renderability."""
@@ -81,6 +91,92 @@ class ReviewService(_review.ReviewService):
         prepared = super().bootstrap_project(project_id)
         return self._sync_manual_setup_fingerprint(prepared.project_id)
 
+    def _current_final_plan_digest(self, project) -> str | None:
+        """Compile today's canonical final semantics without trusting persisted receipts."""
+
+        try:
+            current_plan = self._compile_plan(
+                project,
+                _review._base.SHORTS_FINAL_PROFILE_ID,
+            )
+        except (_review.ReviewError, TypeError, ValueError):
+            return None
+        return render_plan_digest(current_plan)
+
+    @staticmethod
+    def _has_complete_final_receipt(project) -> bool:
+        return all(
+            isinstance(project.metadata.get(key), str)
+            and bool(project.metadata.get(key))
+            for key in _FINAL_RECEIPT_KEYS
+        )
+
+    def _final_receipt_is_semantically_stale(self, project) -> bool:
+        """Differentiate a stale semantic receipt from a missing/corrupt artifact."""
+
+        if not self._has_complete_final_receipt(project):
+            return False
+        expected_digest = project.metadata.get("final_render_plan_digest")
+        current_digest = self._current_final_plan_digest(project)
+        return current_digest is None or current_digest != expected_digest
+
+    def _active_final_claim_is_semantically_stale(self, project) -> bool:
+        expected_digest = project.metadata.get("active_final_plan_digest")
+        if not isinstance(expected_digest, str) or not expected_digest:
+            return False
+        current_digest = self._current_final_plan_digest(project)
+        return current_digest is None or current_digest != expected_digest
+
+    def _reopen_stale_final(self, project_id: str, *, reason: str):
+        """Return stale final state to an actionable canonical review lifecycle."""
+
+        def reopen(current):
+            tasks = []
+            for task in current.review_tasks:
+                replacement = task
+                if task.task_type == _review._base._PREVIEW_TASK:
+                    replacement = task.validated_copy(
+                        update={
+                            "status": ReviewStatus.OPEN,
+                            "accepted_value": None,
+                            "resolved_at": None,
+                            "payload": {"status": "not_rendered"},
+                        }
+                    )
+                elif (
+                    task.attention is AttentionMode.REVIEW
+                    and task.task_type in _review._base._EDIT_TASKS
+                ):
+                    try:
+                        payload = self._canonical_edit_payload(current, task.task_type)
+                    except _review.ReviewError:
+                        payload = dict(task.payload)
+                    replacement = task.validated_copy(
+                        update={
+                            "status": ReviewStatus.OPEN,
+                            "accepted_value": None,
+                            "resolved_at": None,
+                            "payload": payload,
+                        }
+                    )
+                tasks.append(replacement)
+
+            metadata = dict(current.metadata)
+            for key in (*_FINAL_RECEIPT_KEYS, *_APPROVED_PREVIEW_KEYS):
+                metadata.pop(key, None)
+            metadata.pop("active_final_plan_digest", None)
+            metadata["last_final_render_error"] = reason[:1024]
+            return current.validated_copy(
+                update={
+                    "state": ProjectState.NEEDS_REVIEW,
+                    "review_tasks": tuple(tasks),
+                    "metadata": metadata,
+                    "updated_at": _review._base._utc_now(),
+                }
+            )
+
+        return self._mutate_project(project_id, reopen)
+
     def _validated_final_artifact(self, project):
         """Accept a final artifact only for the complete current semantic final plan."""
 
@@ -93,19 +189,8 @@ class ReviewService(_review.ReviewService):
         ):
             return None
 
-        # Stored receipt fields authenticate an artifact instance, but they are not enough
-        # to prove that the artifact still represents the current canonical Project. A
-        # repaired/imported/generically-saved manifest may retain an old complete receipt
-        # after changing render inputs, so adoption/replay also binds to today's compiled
-        # final plan.
-        try:
-            current_plan = self._compile_plan(
-                project,
-                _review._base.SHORTS_FINAL_PROFILE_ID,
-            )
-        except _review.ReviewError:
-            return None
-        if render_plan_digest(current_plan) != expected_digest:
+        current_digest = self._current_final_plan_digest(project)
+        if current_digest is None or current_digest != expected_digest:
             return None
 
         try:
@@ -127,11 +212,87 @@ class ReviewService(_review.ReviewService):
             return None
         return artifact
 
+    def render_final(self, project_id: str) -> dict[str, object]:
+        """Never strand a DONE project whose retained receipt is semantically stale."""
+
+        project = self.get_project(project_id)
+        if (
+            project.state is ProjectState.DONE
+            and self._final_receipt_is_semantically_stale(project)
+        ):
+            self._reopen_stale_final(
+                project_id,
+                reason="stale final receipt returned project to review",
+            )
+            raise _review.ReviewConflictError(
+                "final receipt is stale; project returned to review"
+            )
+        return super().render_final(project_id)
+
+    def _recover_project_after_restart(self, project) -> None:
+        """Reject stale semantic final claims before any QC/adoption transition."""
+
+        if (
+            project.state is ProjectState.QC
+            and self._final_receipt_is_semantically_stale(project)
+        ):
+            self._reopen_stale_final(
+                project.project_id,
+                reason="stale final QC receipt returned project to review",
+            )
+            return
+
+        if (
+            project.state is ProjectState.RENDERING
+            and self._active_final_claim_is_semantically_stale(project)
+        ):
+            digest = project.metadata.get("active_final_plan_digest")
+            if isinstance(digest, str):
+                for job in self._matching_jobs(
+                    project.project_id,
+                    purpose="final",
+                    plan_digest=digest,
+                    states=("running",),
+                ):
+                    try:
+                        _review._base.transition_job_state(
+                            self.library.database,
+                            job.job_id,
+                            expected_state="running",
+                            state="failed",
+                        )
+                    except _review._base.StorageConflictError:
+                        pass
+            self._reopen_stale_final(
+                project.project_id,
+                reason="stale active final claim returned project to review",
+            )
+            return
+
+        return super()._recover_project_after_restart(project)
+
+    @staticmethod
+    def _record_bulk_failure(
+        failures: list[dict[str, str]],
+        project_id: str,
+        exc: Exception,
+    ) -> None:
+        if len(failures) < 20:
+            failures.append(
+                {
+                    "project_id": project_id,
+                    "detail": str(exc)[:512] or type(exc).__name__,
+                }
+            )
+
     def prepare_inbox_projects(self) -> dict[str, object]:
-        """Prepare every safe Project whose relevant setup inputs require evaluation."""
+        """Prepare every safe Project while quarantining per-project read failures."""
 
         projects = self._list_projects()
         eligible = []
+        eligible_count = 0
+        failed = 0
+        failures: list[dict[str, str]] = []
         for project in projects:
             if project.state not in {ProjectState.INBOX, ProjectState.NEEDS_REVIEW}:
                 continue
@@ -139,38 +300,38 @@ class ReviewService(_review.ReviewService):
             pending = project.metadata.get("pr10_manual_reentry_pending") is True
             renderable = bool(project.metadata.get("review_renderable"))
             if pending or not initialized:
+                eligible_count += 1
                 eligible.append(project)
                 continue
             if renderable:
                 continue
-            current_fingerprint = self._manual_setup_input_fingerprint(project)
+            try:
+                current_fingerprint = self._manual_setup_input_fingerprint(project)
+            except Exception as exc:
+                eligible_count += 1
+                failed += 1
+                self._record_bulk_failure(failures, project.project_id, exc)
+                continue
             if project.metadata.get(_MANUAL_SETUP_FINGERPRINT) != current_fingerprint:
+                eligible_count += 1
                 eligible.append(project)
 
         processed = 0
         changed = 0
-        failed = 0
-        failures: list[dict[str, str]] = []
         for project in eligible:
             try:
                 before = self.get_project(project.project_id)
                 after = self.bootstrap_project(project.project_id)
             except (_review.ReviewError, TypeError, ValueError) as exc:
                 failed += 1
-                if len(failures) < 20:
-                    failures.append(
-                        {
-                            "project_id": project.project_id,
-                            "detail": str(exc)[:512] or type(exc).__name__,
-                        }
-                    )
+                self._record_bulk_failure(failures, project.project_id, exc)
                 continue
             processed += 1
             if after != before:
                 changed += 1
 
         return {
-            "eligible": len(eligible),
+            "eligible": eligible_count,
             "processed": processed,
             "changed": changed,
             "failed": failed,
