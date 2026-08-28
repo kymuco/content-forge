@@ -53,9 +53,9 @@ Inbox                Review Queue
 
 ## Development status
 
-PR1–PR7 are complete on `main`: canonical domain contracts, content-addressed local storage, provenance, deterministic timeline compilation, the generic FFmpeg backend, the first `hook_overlay` template, and durable authenticated render-attempt artifacts are implemented.
+PR1–PR10 are complete on `main`. The repository now includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, and the review/proxy-preview/final-production lifecycle.
 
-The current milestone is **Milestone 2 — Phone-first production workflow**. PR8 introduces the first application/service boundary: authenticated local FastAPI, durable Inbox intake, automatic asset ingest/probe/thumbnail preparation, and `INBOX` project creation.
+The next implementation step is **PR11 — Template registry, skins, slots, and component contracts**, which begins **Milestone 3 — Template/component system and initial format coverage**.
 
 The intended v0.1 vertical slice remains:
 
@@ -87,7 +87,7 @@ content-forge-api --lan \
   --ssl-keyfile /path/to/content-forge.key
 ```
 
-The certificate must be trusted by the phone and valid for the hostname/IP used to connect. PR9 can improve certificate/onboarding UX; PR8 does not send bearer credentials over plaintext LAN HTTP.
+The certificate must be trusted by the phone and valid for the hostname/IP used to connect. Bearer credentials are never sent over plaintext LAN HTTP; PR9 adds the current PWA/pairing/onboarding flow around this boundary.
 
 Sensitive reads and writes require a paired bearer session. Pairing challenge creation additionally requires a loopback peer plus loopback `Host` and browser `Origin` (when present), closing the browser/DNS-rebinding bootstrap path. The API never returns raw runtime filesystem paths or stored token digests.
 
@@ -95,7 +95,7 @@ PR8 enforces one live API owner per runtime root with an OS advisory lock acquir
 
 Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance operational filesystem or SQLite storage failures preserve resumable state instead of discarding the only verified copy. New canonical blobs and thumbnails also make their POSIX directory entries durable before the corresponding SQLite metadata receipt is committed.
 
-See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the current PR8 contract.
+See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, and [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the current review/preview production contract.
 
 ## Initial content families
 
@@ -126,6 +126,8 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/safety-and-provenance.md`](docs/safety-and-provenance.md) — source tracking, credits, permissions, platform risk
 - [`docs/v0.1-spec.md`](docs/v0.1-spec.md) — first implementation contract
 - [`docs/pr8-local-api.md`](docs/pr8-local-api.md) — authenticated local API and Inbox contract
+- [`docs/pr9-pwa.md`](docs/pr9-pwa.md) — PWA, Android share target, pairing, and phone Inbox flow
+- [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) — review queue, proxy preview, approval, and production-decision contract
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 

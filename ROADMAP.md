@@ -4,9 +4,9 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR7: **complete** on `main`.
-- PR8: **in progress** — authenticated local FastAPI, durable Inbox ingest, media preparation, and application-service boundary.
-- Current milestone: **Milestone 2 — Phone-first production workflow**.
+- PR1–PR10: **complete** on `main`.
+- Next step: **PR11 — Template registry, skins, slots, and component contracts**.
+- Current milestone: **Milestone 3 — Template/component system and initial format coverage**.
 
 ## Milestone 0 — Foundation
 
@@ -129,7 +129,7 @@ Exit condition: a persisted preview/final render attempt can be executed and rec
 
 ### PR8 — Authenticated local FastAPI, durable Inbox ingest, and media preparation
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
@@ -152,6 +152,8 @@ Exit condition: authenticated media sent over a protected local connection reach
 
 ### PR9 — PWA shell and share-to-Inbox flow
 
+Status: **complete**
+
 Deliverables:
 
 - responsive mobile-first web UI;
@@ -164,6 +166,8 @@ Deliverables:
 Exit condition: normal flow on Android is `Share -> Content Forge -> Inbox`.
 
 ### PR10 — Review queue and proxy preview
+
+Status: **complete**
 
 Deliverables:
 
@@ -181,6 +185,8 @@ Exit condition: a project can be completed without sitting at the desktop unless
 ## Milestone 3 — Template/component system and initial format coverage
 
 ### PR11 — Template registry, skins, slots, and component contracts
+
+Status: **next**
 
 Deliverables:
 
