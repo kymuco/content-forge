@@ -105,6 +105,7 @@ class ReviewService(_review.ReviewService):
 
         current = self.get_project(project_id)
         if self._manual_setup_inputs_unchanged(current):
+            self._validate_reserved_task_authority(current)
             return current
         prepared = super().bootstrap_project(project_id)
         return self._sync_manual_setup_fingerprint(prepared.project_id)
