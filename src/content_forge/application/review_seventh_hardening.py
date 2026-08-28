@@ -85,9 +85,27 @@ class ReviewService(_review.ReviewService):
 
         return self._mutate_project(project_id, sync)
 
-    def bootstrap_project(self, project_id: str):
-        """Bootstrap/recheck and remember the exact non-renderable setup snapshot."""
+    def _manual_setup_inputs_unchanged(self, project) -> bool:
+        """Make direct bootstrap idempotent for an already-checked MANUAL snapshot."""
 
+        if (
+            project.metadata.get("pr10_manual_reentry_pending") is True
+            or not bool(project.metadata.get("pr10_review_initialized"))
+            or bool(project.metadata.get("review_renderable"))
+            or project.state not in self._MANUAL_RECHECK_STATES
+        ):
+            return False
+        expected = project.metadata.get(_MANUAL_SETUP_FINGERPRINT)
+        if not isinstance(expected, str) or not expected:
+            return False
+        return expected == self._manual_setup_input_fingerprint(project)
+
+    def bootstrap_project(self, project_id: str):
+        """Bootstrap/recheck only when the canonical manual-setup inputs changed."""
+
+        current = self.get_project(project_id)
+        if self._manual_setup_inputs_unchanged(current):
+            return current
         prepared = super().bootstrap_project(project_id)
         return self._sync_manual_setup_fingerprint(prepared.project_id)
 
@@ -126,6 +144,46 @@ class ReviewService(_review.ReviewService):
             return False
         current_digest = self._current_final_plan_digest(project)
         return current_digest is None or current_digest != expected_digest
+
+    def _approved_preview_identity_is_current(self, project) -> bool:
+        """Prove that READY recovery still has the exact explicit preview approval."""
+
+        job_id = project.metadata.get("approved_preview_job_id")
+        digest = project.metadata.get("approved_preview_plan_digest")
+        revision = project.metadata.get("approved_preview_revision_digest")
+        if not all(
+            isinstance(value, str) and bool(value)
+            for value in (job_id, digest, revision)
+        ):
+            return False
+
+        preview = self._task(project, _review._base._PREVIEW_TASK)
+        if (
+            preview is None
+            or preview.status is not ReviewStatus.RESOLVED
+            or preview.accepted_value != job_id
+        ):
+            return False
+
+        # Approval is recorded in READY. RENDERING/QC/DONE are lifecycle-only changes and
+        # final receipt fields are already normalized out of the revision digest, so project
+        # those states back to READY before comparing the durable approval revision.
+        revision_project = (
+            project
+            if project.state is ProjectState.READY
+            else project.validated_copy(update={"state": ProjectState.READY})
+        )
+        if _review._base._preview_revision_digest(revision_project) != revision:
+            return False
+
+        try:
+            current_preview = self._compile_plan(
+                project,
+                _review._base.SHORTS_PREVIEW_PROFILE_ID,
+            )
+        except (_review.ReviewError, TypeError, ValueError):
+            return False
+        return render_plan_digest(current_preview) == digest
 
     def _reopen_stale_final(self, project_id: str, *, reason: str):
         """Return stale final state to an actionable canonical review lifecycle."""
@@ -224,6 +282,12 @@ class ReviewService(_review.ReviewService):
                 reason="stale final QC failure returned project to review",
             )
             return
+        if not self._approved_preview_identity_is_current(project):
+            self._reopen_stale_final(
+                project_id,
+                reason="final QC failure lost current approved preview; returned project to review",
+            )
+            return
 
         detail = str(exc)[:1024] or type(exc).__name__
 
@@ -258,7 +322,7 @@ class ReviewService(_review.ReviewService):
             raise
 
     def render_final(self, project_id: str) -> dict[str, object]:
-        """Never strand a DONE project whose retained receipt is semantically stale."""
+        """Never strand final recovery without a current explicit preview approval."""
 
         project = self.get_project(project_id)
         if (
@@ -272,6 +336,35 @@ class ReviewService(_review.ReviewService):
             raise _review.ReviewConflictError(
                 "final receipt is stale; project returned to review"
             )
+
+        if project.state is ProjectState.DONE and not self._approved_preview_identity_is_current(
+            project
+        ):
+            artifact = self._validated_final_artifact(project)
+            if artifact is None:
+                self._reopen_stale_final(
+                    project_id,
+                    reason=(
+                        "unrecoverable final receipt lost current approved preview; "
+                        "returned project to review"
+                    ),
+                )
+                raise _review.ReviewConflictError(
+                    "final recovery lost approved preview; project returned to review"
+                )
+
+        if (
+            project.state is ProjectState.READY
+            and not self._approved_preview_identity_is_current(project)
+        ):
+            self._reopen_stale_final(
+                project_id,
+                reason="ready project lost current approved preview; returned project to review",
+            )
+            raise _review.ReviewConflictError(
+                "approved preview is unavailable; project returned to review"
+            )
+
         return super().render_final(project_id)
 
     def _recover_project_after_restart(self, project) -> None:
@@ -284,6 +377,20 @@ class ReviewService(_review.ReviewService):
             self._reopen_stale_final(
                 project.project_id,
                 reason="stale final QC receipt returned project to review",
+            )
+            return
+
+        if (
+            project.state is ProjectState.QC
+            and not self._approved_preview_identity_is_current(project)
+            and self._validated_final_artifact(project) is None
+        ):
+            self._reopen_stale_final(
+                project.project_id,
+                reason=(
+                    "incomplete final QC recovery lost current approved preview; "
+                    "returned project to review"
+                ),
             )
             return
 
