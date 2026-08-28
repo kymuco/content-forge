@@ -19,6 +19,7 @@ from content_forge.core import (
     Variant,
 )
 from content_forge.storage import LocalLibrary
+from content_forge.timeline import render_plan_digest
 
 
 def _task(project: Project, task_type: str) -> ReviewTask:
@@ -142,8 +143,22 @@ def test_restart_recovery_quarantines_malformed_render_job_row(tmp_path) -> None
         )
     )
     prepared = service.bootstrap_project(project.project_id)
+    hook = _task(prepared, "hook")
+    prepared = service.resolve_task(
+        prepared.project_id,
+        hook.review_task_id,
+        "malformed-job recovery hook",
+    )
+    crop = _task(prepared, "crop_confirmation")
+    prepared = service.resolve_task(
+        prepared.project_id,
+        crop.review_task_id,
+        {"crops": {scene.scene_id: None for scene in prepared.scenes}},
+    )
+    current_digest = render_plan_digest(service._compile_plan(prepared, "shorts_final"))
+
     metadata = dict(prepared.metadata)
-    metadata["active_final_plan_digest"] = "c" * 64
+    metadata["active_final_plan_digest"] = current_digest
     rendering = library.save_project(
         prepared.validated_copy(
             update={
