@@ -58,6 +58,15 @@ def _resolve_final_inputs(service: ReviewService, project: Project) -> Project:
     )
 
 
+def _manual_reentry_count(library: LocalLibrary) -> int:
+    with library.database.connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM jobs WHERE job_type = 'review_manual_reentry'"
+        ).fetchone()
+    assert row is not None
+    return int(row["count"])
+
+
 def test_incomplete_qc_receipt_with_stale_digest_reopens_review(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     bootstrap = ReviewService(library)
@@ -98,6 +107,45 @@ def test_incomplete_qc_receipt_with_stale_digest_reopens_review(tmp_path) -> Non
     assert loader.load_count == 0
 
 
+def test_incomplete_qc_without_current_approval_reopens_review(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    bootstrap = ReviewService(library)
+    project = bootstrap.bootstrap_project(_visual_project(library).project_id)
+    project = _resolve_final_inputs(bootstrap, project)
+
+    metadata = dict(project.metadata)
+    for key in (
+        "final_render_job_id",
+        "final_render_plan_digest",
+        "final_output_sha256",
+        "approved_preview_job_id",
+        "approved_preview_plan_digest",
+        "approved_preview_revision_digest",
+    ):
+        metadata.pop(key, None)
+    library.save_project(
+        project.validated_copy(
+            update={"state": ProjectState.QC, "metadata": metadata}
+        )
+    )
+
+    loader = MissingArtifactLoader()
+    service = ReviewService(library, orchestrator=loader)
+    service.reconcile_persisted_state()
+
+    recovered = service.get_project(project.project_id)
+    assert recovered.state is ProjectState.NEEDS_REVIEW
+    assert recovered.metadata["last_final_render_error"] == (
+        "incomplete final QC recovery lost current approved preview; returned project to review"
+    )
+    assert _task(recovered, "hook").status is ReviewStatus.OPEN
+    assert _task(recovered, "crop_confirmation").status is ReviewStatus.OPEN
+    preview = _task(recovered, "preview_approval")
+    assert preview.status is ReviewStatus.OPEN
+    assert preview.payload == {"status": "not_rendered"}
+    assert loader.load_count == 0
+
+
 def test_post_render_qc_failure_recovers_ready_in_same_call(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     bootstrap = ReviewService(library)
@@ -127,12 +175,31 @@ def test_post_render_qc_failure_recovers_ready_in_same_call(tmp_path) -> None:
         service._record_final_success(project.project_id, artifact, final_digest)
 
     recovered = service.get_project(project.project_id)
-    assert recovered.state is ProjectState.READY
+    assert recovered.state is ProjectState.NEEDS_REVIEW
     assert "active_final_plan_digest" not in recovered.metadata
     assert "final_render_job_id" not in recovered.metadata
     assert "final_render_plan_digest" not in recovered.metadata
     assert "final_output_sha256" not in recovered.metadata
     assert recovered.metadata["last_final_render_error"] == (
-        "final artifact failed QC integrity validation"
+        "final QC failure lost current approved preview; returned project to review"
     )
+    assert _task(recovered, "preview_approval").status is ReviewStatus.OPEN
     assert loader.load_count == 1
+
+
+def test_direct_manual_bootstrap_is_idempotent_for_unchanged_setup(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    project = library.save_project(Project(content_kind="note", state=ProjectState.INBOX))
+    service = ReviewService(library)
+
+    first = service.bootstrap_project(project.project_id)
+    assert first.metadata["pr10_review_initialized"] is True
+    assert first.metadata["review_renderable"] is False
+    fingerprint = first.metadata.get("pr10_manual_setup_input_fingerprint")
+    assert isinstance(fingerprint, str) and fingerprint
+    assert _manual_reentry_count(library) == 0
+
+    repeated = service.bootstrap_project(project.project_id)
+    assert repeated == first
+    assert repeated.metadata["pr10_manual_setup_input_fingerprint"] == fingerprint
+    assert _manual_reentry_count(library) == 0
