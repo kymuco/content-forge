@@ -3,7 +3,7 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v7`;
+const CACHE_NAME = `${CACHE_PREFIX}v8`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
