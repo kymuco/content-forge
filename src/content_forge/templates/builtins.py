@@ -25,7 +25,8 @@ from .hook_overlay import (
     HookOverlayTemplateError,
     resolve_hook_overlay,
 )
-from .initial_pack import MEDIA_OVERLAY_COMPONENT, initial_template_registrations
+from .initial_pack import MEDIA_OVERLAY_COMPONENT
+from .initial_pack_runtime import initial_template_registrations
 from .registry import (
     ComponentRegistry,
     RegistryBundle,
