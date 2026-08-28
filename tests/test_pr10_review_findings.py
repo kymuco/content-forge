@@ -413,7 +413,7 @@ def test_pr10_worker_upgrade_versions_and_precaches_review_script(tmp_path) -> N
     try:
         worker = client.get("/app/sw.js")
         assert worker.status_code == 200
-        assert "${CACHE_PREFIX}v7" in worker.text
+        assert "${CACHE_PREFIX}v8" in worker.text
         assert 'appUrl("review.js")' in worker.text
     finally:
         app.state.runtime_lease.close()
