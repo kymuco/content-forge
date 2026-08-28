@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 from content_forge.core import Asset, AssetRef, FitMode, NormalizedRect, Project
 from content_forge.timeline import AssetResolver, ResolvedTemplate
@@ -34,34 +33,6 @@ from .registry import TemplateRegistration
 AssetSource = Mapping[str, Asset] | AssetResolver
 
 
-def _plain_json(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _plain_json(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_plain_json(item) for item in value]
-    return value
-
-
-def _canonical_properties(properties: Mapping[str, object]) -> dict[str, object]:
-    """Keep nested geometry evidence stable across repeated frozen-model validation."""
-
-    canonical: dict[str, object] = {}
-    for key, value in properties.items():
-        if isinstance(value, Mapping) or (
-            isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
-        ):
-            canonical[key] = json.dumps(
-                _plain_json(value),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
-        else:
-            canonical[key] = value
-    return canonical
-
-
 def _rebuild(
     resolved: ResolvedTemplate,
     *,
@@ -69,17 +40,19 @@ def _rebuild(
     overlays=None,
     extra_properties: Mapping[str, object] | None = None,
 ) -> ResolvedTemplate:
-    properties = _canonical_properties(resolved.properties)
+    """Rebuild from JSON serialization so nested frozen metadata stays valid JsonValue."""
+
+    payload = resolved.model_dump(mode="json")
+    if scenes is not None:
+        payload["scenes"] = [scene.model_dump(mode="json") for scene in scenes]
+    if overlays is not None:
+        payload["overlays"] = [overlay.model_dump(mode="json") for overlay in overlays]
     if extra_properties:
+        properties = payload.get("properties")
+        if not isinstance(properties, dict):
+            raise InitialTemplateError("template resolver returned invalid JSON properties")
         properties.update(extra_properties)
-    return ResolvedTemplate(
-        template_id=resolved.template_id,
-        version=resolved.version,
-        scenes=resolved.scenes if scenes is None else scenes,
-        overlays=resolved.overlays if overlays is None else overlays,
-        audio_tracks=resolved.audio_tracks,
-        properties=properties,
-    )
+    return ResolvedTemplate.model_validate(payload)
 
 
 def _require_output_aspect_lock(project: Project, template_id: str) -> None:
