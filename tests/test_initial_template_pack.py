@@ -90,6 +90,7 @@ def _project(
             )
             for index, asset in enumerate(assets)
         ),
+        source_refs=tuple(AssetRef(asset_id=record.asset_id) for record in source_records),
         source_records=source_records,
         output_profiles=(shorts_preview_profile(), shorts_final_profile()),
         metadata=metadata or {},
