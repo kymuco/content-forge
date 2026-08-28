@@ -40,6 +40,10 @@ _BOOTSTRAP_FORBIDDEN_UNINITIALIZED = frozenset(
     {ProjectState.READY, ProjectState.RENDERING, ProjectState.QC, ProjectState.DONE}
 )
 _MANUAL_REENTRY_PENDING = "pr10_manual_reentry_pending"
+_MANUAL_REENTRY_RECEIPT = "pr10_manual_reentry_receipt_job_id"
+_MANUAL_REENTRY_JOB_TYPE = "review_manual_reentry"
+_MANUAL_REENTRY_JOB_STATE = "running"
+_MANUAL_REENTRY_DONE_STATE = "succeeded"
 
 
 class ReviewService(_base.ReviewService):
@@ -87,19 +91,89 @@ class ReviewService(_base.ReviewService):
                 + ", ".join(reserved)
             )
 
+    @staticmethod
+    def _job_payload_json(job: _base.StoredJob) -> str:
+        payload = job.model_dump(mode="json")["payload"]
+        return _base.json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    def _manual_reentry_receipt(
+        self,
+        project: Project,
+    ) -> tuple[_base.StoredJob, str]:
+        """Load and validate the independent SQLite proof for a MANUAL re-entry."""
+
+        if project.metadata.get(_MANUAL_REENTRY_PENDING) is not True:
+            raise ReviewConflictError("manual re-entry checkpoint is not active")
+        receipt_id = project.metadata.get(_MANUAL_REENTRY_RECEIPT)
+        if not isinstance(receipt_id, str):
+            raise ReviewConflictError("manual re-entry checkpoint has no durable receipt")
+        if project.state not in self._MANUAL_RECHECK_STATES:
+            raise ReviewConflictError(
+                "manual re-entry checkpoint is outside an editable review state"
+            )
+
+        self._validate_reserved_task_authority(project)
+        source_setup = self._task(project, "source_setup")
+        bootstrap = self._task(project, _base._AUTO_BOOTSTRAP_TASK)
+        if (
+            source_setup is None
+            or source_setup.status is not ReviewStatus.OPEN
+            or bootstrap is None
+            or bootstrap.status is not ReviewStatus.RESOLVED
+            or bootstrap.accepted_value != "manual_setup_required"
+        ):
+            raise ReviewConflictError("manual re-entry task lifecycle is not resumable")
+
+        with self.library.database.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?",
+                (receipt_id,),
+            ).fetchone()
+        if row is None:
+            raise ReviewConflictError("manual re-entry durable receipt is missing")
+
+        try:
+            raw_payload = str(row["payload_json"])
+            receipt = _base.StoredJob(
+                job_id=row["job_id"],
+                project_id=row["project_id"],
+                job_type=row["job_type"],
+                state=row["state"],
+                payload=_base.json.loads(raw_payload),
+                created_at=_base.datetime.fromisoformat(row["created_at"]),
+                updated_at=_base.datetime.fromisoformat(row["updated_at"]),
+            )
+        except Exception as exc:
+            raise ReviewConflictError("manual re-entry durable receipt is malformed") from exc
+
+        if (
+            receipt.project_id != project.project_id
+            or receipt.job_type != _MANUAL_REENTRY_JOB_TYPE
+            or receipt.state != _MANUAL_REENTRY_JOB_STATE
+            or receipt.payload.get("purpose") != "pr10_manual_reentry"
+            or receipt.payload.get("source_setup_task_id")
+            != source_setup.review_task_id
+            or receipt.payload.get("bootstrap_task_id") != bootstrap.review_task_id
+            or receipt.payload.get("receipt_version") != 1
+        ):
+            raise ReviewConflictError("manual re-entry durable receipt does not match project")
+        return receipt, raw_payload
+
     def _validate_mutation_authority(self, project: Project) -> None:
         """Validate authority at the exact CAS mutation snapshot."""
 
+        pending = project.metadata.get(_MANUAL_REENTRY_PENDING) is True
         initialized = bool(project.metadata.get("pr10_review_initialized"))
-        pending = bool(project.metadata.get(_MANUAL_REENTRY_PENDING))
-        if initialized:
-            self._validate_reserved_task_authority(project)
-            return
         if pending:
-            if project.state not in self._MANUAL_RECHECK_STATES:
-                raise ReviewConflictError(
-                    "manual re-entry checkpoint is outside an editable review state"
-                )
+            self._manual_reentry_receipt(project)
+            return
+        if initialized:
             self._validate_reserved_task_authority(project)
             return
         self._reject_uninitialized_reserved_tasks(project)
@@ -122,10 +196,177 @@ class ReviewService(_base.ReviewService):
     def _require_initialized_authority(self, project: Project) -> Project:
         """Require the PR10 initialization receipt before any reserved-task operation."""
 
+        if project.metadata.get(_MANUAL_REENTRY_PENDING) is True:
+            raise ReviewConflictError("manual re-entry must finish before phone review")
         if not bool(project.metadata.get("pr10_review_initialized")):
             raise ReviewConflictError("project is not initialized for PR10 review")
         self._validate_reserved_task_authority(project)
         return project
+
+    def _validate_manual_reentry_source(self, project: Project) -> None:
+        """Require the exact canonical non-renderable lifecycle before issuing a receipt."""
+
+        self._require_initialized_authority(project)
+        if (
+            bool(project.metadata.get("review_renderable"))
+            or project.state not in self._MANUAL_RECHECK_STATES
+        ):
+            raise ReviewConflictError("project is not eligible for manual re-entry")
+        reserved = {
+            task.task_type
+            for task in project.review_tasks
+            if task.task_type in _TASK_AUTHORITY
+        }
+        if reserved != {_base._AUTO_BOOTSTRAP_TASK, "source_setup"}:
+            raise ReviewConflictError("manual re-entry source has unexpected reserved tasks")
+        source_setup = self._task(project, "source_setup")
+        bootstrap = self._task(project, _base._AUTO_BOOTSTRAP_TASK)
+        if (
+            source_setup is None
+            or source_setup.status is not ReviewStatus.OPEN
+            or bootstrap is None
+            or bootstrap.status is not ReviewStatus.RESOLVED
+            or bootstrap.accepted_value != "manual_setup_required"
+        ):
+            raise ReviewConflictError("manual re-entry source lifecycle is not canonical")
+
+    def _begin_manual_reentry(self, project_id: str, *, retries: int = 3) -> Project:
+        """Atomically create an independent receipt and clear PR10 initialization."""
+
+        last: ReviewConflictError | None = None
+        for _ in range(retries):
+            current, expected_json = self._project_snapshot(project_id)
+            self._validate_manual_reentry_source(current)
+            source_setup = self._task(current, "source_setup")
+            bootstrap = self._task(current, _base._AUTO_BOOTSTRAP_TASK)
+            assert source_setup is not None and bootstrap is not None
+
+            receipt = _base.StoredJob(
+                project_id=project_id,
+                job_type=_MANUAL_REENTRY_JOB_TYPE,
+                state=_MANUAL_REENTRY_JOB_STATE,
+                payload={
+                    "purpose": "pr10_manual_reentry",
+                    "receipt_version": 1,
+                    "source_setup_task_id": source_setup.review_task_id,
+                    "bootstrap_task_id": bootstrap.review_task_id,
+                },
+            )
+            metadata = dict(current.metadata)
+            metadata[_MANUAL_REENTRY_PENDING] = True
+            metadata[_MANUAL_REENTRY_RECEIPT] = receipt.job_id
+            metadata.pop("pr10_review_initialized", None)
+            updated = current.validated_copy(
+                update={"metadata": metadata, "updated_at": _base._utc_now()}
+            )
+            serialized = _base.dump_json(updated)
+            try:
+                with self.library.database.transaction() as connection:
+                    changed = connection.execute(
+                        """
+                        UPDATE projects
+                        SET content_kind = ?, state = ?, manifest_json = ?, updated_at = ?
+                        WHERE project_id = ? AND manifest_json = ?
+                        """,
+                        (
+                            updated.content_kind,
+                            updated.state.value,
+                            serialized,
+                            updated.updated_at.isoformat(),
+                            updated.project_id,
+                            expected_json,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise ReviewConflictError(
+                            f"project changed concurrently: {project_id}"
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO jobs(
+                            job_id, project_id, job_type, state,
+                            payload_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            receipt.job_id,
+                            receipt.project_id,
+                            receipt.job_type,
+                            receipt.state,
+                            self._job_payload_json(receipt),
+                            receipt.created_at.isoformat(),
+                            receipt.updated_at.isoformat(),
+                        ),
+                    )
+                return updated
+            except ReviewConflictError as exc:
+                last = exc
+        raise last or ReviewConflictError(f"project changed concurrently: {project_id}")
+
+    def _complete_manual_reentry(
+        self,
+        project_id: str,
+        mutation,
+        *,
+        retries: int = 3,
+    ) -> Project:
+        """Atomically finalize the Project and consume its active SQLite receipt."""
+
+        last: ReviewConflictError | None = None
+        for _ in range(retries):
+            current, expected_json = self._project_snapshot(project_id)
+            receipt, expected_payload_json = self._manual_reentry_receipt(current)
+            updated = mutation(current)
+            if updated == current:
+                raise ReviewConflictError("manual re-entry finalization made no progress")
+            serialized = _base.dump_json(updated)
+            receipt_updated_at = _base._utc_now()
+            try:
+                with self.library.database.transaction() as connection:
+                    changed = connection.execute(
+                        """
+                        UPDATE projects
+                        SET content_kind = ?, state = ?, manifest_json = ?, updated_at = ?
+                        WHERE project_id = ? AND manifest_json = ?
+                        """,
+                        (
+                            updated.content_kind,
+                            updated.state.value,
+                            serialized,
+                            updated.updated_at.isoformat(),
+                            updated.project_id,
+                            expected_json,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        raise ReviewConflictError(
+                            f"project changed concurrently: {project_id}"
+                        )
+                    receipt_changed = connection.execute(
+                        """
+                        UPDATE jobs
+                        SET state = ?, updated_at = ?
+                        WHERE job_id = ? AND project_id = ? AND job_type = ?
+                          AND state = ? AND payload_json = ?
+                        """,
+                        (
+                            _MANUAL_REENTRY_DONE_STATE,
+                            receipt_updated_at.isoformat(),
+                            receipt.job_id,
+                            project_id,
+                            _MANUAL_REENTRY_JOB_TYPE,
+                            _MANUAL_REENTRY_JOB_STATE,
+                            expected_payload_json,
+                        ),
+                    ).rowcount
+                    if receipt_changed != 1:
+                        raise ReviewConflictError(
+                            "manual re-entry durable receipt changed concurrently"
+                        )
+                return updated
+            except ReviewConflictError as exc:
+                last = exc
+        raise last or ReviewConflictError(f"project changed concurrently: {project_id}")
 
     def _canonical_edit_payload(
         self,
@@ -178,8 +419,11 @@ class ReviewService(_base.ReviewService):
             now = _base._utc_now()
             metadata = dict(project.metadata)
             changed = False
-            if manual_reentry and metadata.pop(_MANUAL_REENTRY_PENDING, None) is not None:
-                changed = True
+            if manual_reentry:
+                if metadata.pop(_MANUAL_REENTRY_PENDING, None) is not None:
+                    changed = True
+                if metadata.pop(_MANUAL_REENTRY_RECEIPT, None) is not None:
+                    changed = True
 
             renderable = bool(project.metadata.get("review_renderable"))
             tasks = []
@@ -250,6 +494,8 @@ class ReviewService(_base.ReviewService):
                 }
             )
 
+        if manual_reentry:
+            return self._complete_manual_reentry(project_id, finalize)
         return self._mutate_project(project_id, finalize)
 
     def bootstrap_project(self, project_id: str) -> Project:
@@ -257,21 +503,17 @@ class ReviewService(_base.ReviewService):
 
         current = self.get_project(project_id)
         initialized = bool(current.metadata.get("pr10_review_initialized"))
-        pending = bool(current.metadata.get(_MANUAL_REENTRY_PENDING))
+        pending = current.metadata.get(_MANUAL_REENTRY_PENDING) is True
 
         if pending:
-            self._validate_reserved_task_authority(current)
-            if current.state not in self._MANUAL_RECHECK_STATES:
-                raise ReviewConflictError(
-                    "manual re-entry checkpoint is outside an editable review state"
-                )
+            self._manual_reentry_receipt(current)
             if initialized:
                 return self._finalize_bootstrap_payloads(
                     project_id,
                     manual_reentry=True,
                 )
             prepared = super().bootstrap_project(project_id)
-            self._validate_reserved_task_authority(prepared)
+            self._manual_reentry_receipt(prepared)
             return self._finalize_bootstrap_payloads(
                 project_id,
                 manual_reentry=True,
@@ -301,27 +543,12 @@ class ReviewService(_base.ReviewService):
             return current
 
         if should_recheck:
-
-            def begin_recheck(project: Project) -> Project:
-                self._validate_reserved_task_authority(project)
-                if (
-                    not bool(project.metadata.get("pr10_review_initialized"))
-                    or bool(project.metadata.get("review_renderable"))
-                    or project.state not in self._MANUAL_RECHECK_STATES
-                ):
-                    return project
-                metadata = dict(project.metadata)
-                metadata[_MANUAL_REENTRY_PENDING] = True
-                metadata.pop("pr10_review_initialized", None)
-                return project.validated_copy(
-                    update={"metadata": metadata, "updated_at": _base._utc_now()}
-                )
-
-            begun = self._mutate_project(project_id, begin_recheck)
-            if not bool(begun.metadata.get(_MANUAL_REENTRY_PENDING)):
+            begun = self._begin_manual_reentry(project_id)
+            if begun.metadata.get(_MANUAL_REENTRY_PENDING) is not True:
                 return begun
-            # Re-enter through the durable checkpoint path. If the process exits before
-            # or after base bootstrap, the next call observes the same marker and resumes.
+            # Re-enter through the durable receipt path. If the process exits before
+            # or after base bootstrap, the next call observes the same independently
+            # authenticated checkpoint and resumes safely.
             return self.bootstrap_project(project_id)
 
         prepared = super().bootstrap_project(project_id)
@@ -331,55 +558,134 @@ class ReviewService(_base.ReviewService):
             manual_reentry=False,
         )
 
+    def _list_projects(self) -> tuple[Project, ...]:
+        """Enumerate projects per row so one malformed manifest is quarantined."""
+
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT project_id, manifest_json FROM projects "
+                "ORDER BY updated_at DESC, project_id"
+            ).fetchall()
+        projects: list[Project] = []
+        for row in rows:
+            try:
+                project = _base.load_json(Project, str(row["manifest_json"]))
+            except Exception:
+                continue
+            if project.project_id != str(row["project_id"]):
+                continue
+            projects.append(project)
+        return tuple(projects)
+
+    def _matching_jobs(
+        self,
+        project_id: str,
+        *,
+        purpose: str,
+        plan_digest: str,
+        states: tuple[str, ...],
+    ) -> tuple[_base.StoredJob, ...]:
+        """Scan persisted jobs per row and quarantine malformed render records."""
+
+        if not states:
+            return ()
+        placeholders = ",".join("?" for _ in states)
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM jobs
+                WHERE project_id = ? AND job_type = 'render'
+                  AND state IN ({placeholders})
+                ORDER BY updated_at DESC, job_id DESC
+                """,
+                (project_id, *states),
+            ).fetchall()
+        matches: list[_base.StoredJob] = []
+        for row in rows:
+            try:
+                job = _base.StoredJob(
+                    job_id=row["job_id"],
+                    project_id=row["project_id"],
+                    job_type=row["job_type"],
+                    state=row["state"],
+                    payload=_base.json.loads(row["payload_json"]),
+                    created_at=_base.datetime.fromisoformat(row["created_at"]),
+                    updated_at=_base.datetime.fromisoformat(row["updated_at"]),
+                )
+            except Exception:
+                continue
+            if (
+                job.payload.get("purpose") == purpose
+                and job.payload.get("render_plan_digest") == plan_digest
+            ):
+                matches.append(job)
+        return tuple(matches)
+
     def list_queue(
         self,
         *,
         limit: int = 100,
         include_auto: bool = False,
     ) -> dict[str, object]:
-        """Expose only actionable PR10 authority; quarantine invalid/uninitialized state."""
+        """Authority-filter the full ordered queue before applying the caller limit."""
 
         if limit < 1 or limit > 500:
             raise ReviewValidationError("limit must be between 1 and 500")
 
-        raw = super().list_queue(limit=500, include_auto=include_auto)
-        projects = {project.project_id: project for project in self._list_projects()}
-        valid_initialized: set[str] = set()
-        invalid_initialized: set[str] = set()
-        for project in projects.values():
-            if not bool(project.metadata.get("pr10_review_initialized")):
+        projects = self._list_projects()
+        valid_projects: list[Project] = []
+        for project in projects:
+            if (
+                not bool(project.metadata.get("pr10_review_initialized"))
+                or project.metadata.get(_MANUAL_REENTRY_PENDING) is True
+            ):
                 continue
             try:
                 self._validate_reserved_task_authority(project)
             except ReviewConflictError:
-                invalid_initialized.add(project.project_id)
-            else:
-                valid_initialized.add(project.project_id)
-
-        items: list[dict[str, object]] = []
-        for item in raw["items"]:
-            project_id = str(item["project_id"])
-            project = projects.get(project_id)
-            if project is None or project_id in invalid_initialized:
                 continue
-            task = item.get("task")
-            task_type = task.get("task_type") if isinstance(task, dict) else None
-            if task_type in _TASK_AUTHORITY and project_id not in valid_initialized:
+            valid_projects.append(project)
+
+        queue: list[dict[str, object]] = []
+        for project in valid_projects:
+            if project.state in _base._TERMINAL_REVIEW_STATES:
                 continue
-            items.append(item)
+            for task in project.review_tasks:
+                if task.status is not ReviewStatus.OPEN:
+                    continue
+                if not include_auto and task.attention is AttentionMode.AUTO:
+                    continue
+                queue.append(
+                    {
+                        "project_id": project.project_id,
+                        "project_state": project.state.value,
+                        "content_kind": str(project.content_kind),
+                        "task": task.model_dump(mode="json"),
+                    }
+                )
+        queue.sort(
+            key=lambda item: (
+                0 if item["task"]["blocking"] else 1,
+                _base._PRIORITY_RANK[ReviewPriority(item["task"]["priority"])],
+                _base._ATTENTION_RANK[AttentionMode(item["task"]["attention"])],
+                item["task"]["created_at"],
+                item["project_id"],
+                item["task"]["review_task_id"],
+            )
+        )
 
-        ready_projects = []
-        for project_id in sorted(valid_initialized):
-            project = projects[project_id]
-            if self._is_final_render_candidate(project):
-                ready_projects.append(self.project_summary(project))
-
-        return {"items": items[:limit], "ready_projects": ready_projects}
+        ready_projects = [
+            self.project_summary(project)
+            for project in sorted(valid_projects, key=lambda item: item.project_id)
+            if self._is_final_render_candidate(project)
+        ]
+        return {"items": queue[:limit], "ready_projects": ready_projects}
 
     def _is_final_render_candidate(self, project: Project) -> bool:
         if (
             project.state is not ProjectState.READY
             or not bool(project.metadata.get("pr10_review_initialized"))
+            or project.metadata.get(_MANUAL_REENTRY_PENDING) is True
             or not bool(project.metadata.get("review_renderable"))
         ):
             return False
@@ -474,13 +780,16 @@ class ReviewService(_base.ReviewService):
         return super().render_final(project_id)
 
     def reconcile_persisted_state(self) -> None:
-        """Recover valid PR10 projects while quarantining invalid manifests."""
+        """Recover valid PR10 projects while quarantining invalid project/job rows."""
 
         projects = self._list_projects()
         valid_projects: list[Project] = []
         valid_ids: set[str] = set()
         for project in projects:
-            if not bool(project.metadata.get("pr10_review_initialized")):
+            if (
+                not bool(project.metadata.get("pr10_review_initialized"))
+                or project.metadata.get(_MANUAL_REENTRY_PENDING) is True
+            ):
                 continue
             try:
                 self._validate_reserved_task_authority(project)
@@ -528,7 +837,8 @@ class ReviewService(_base.ReviewService):
                     valid_ids.discard(project.project_id)
 
         # Retire orphaned running preview jobs only for the still-validated set. Final jobs
-        # are handled by the project-specific recovery path below.
+        # are handled by the project-specific recovery path below. Malformed jobs are
+        # quarantined per row and never become an API-wide startup dependency.
         with self.library.database.connection() as connection:
             rows = connection.execute(
                 "SELECT job_id, project_id, payload_json FROM jobs WHERE state = 'running'"
@@ -539,9 +849,9 @@ class ReviewService(_base.ReviewService):
                 continue
             try:
                 payload = _base.json.loads(row["payload_json"])
-            except (TypeError, _base.json.JSONDecodeError):
+            except (TypeError, ValueError):
                 continue
-            if payload.get("purpose") != "preview":
+            if not isinstance(payload, dict) or payload.get("purpose") != "preview":
                 continue
             try:
                 _base.transition_job_state(
@@ -550,8 +860,8 @@ class ReviewService(_base.ReviewService):
                     expected_state="running",
                     state="failed",
                 )
-            except _base.StorageConflictError:
-                pass
+            except (_base.StorageConflictError, TypeError, ValueError):
+                continue
 
         for project in self._list_projects():
             if (
@@ -561,8 +871,9 @@ class ReviewService(_base.ReviewService):
                 try:
                     self._require_initialized_authority(project)
                     self._recover_project_after_restart(project)
-                except ReviewConflictError:
-                    # Preserve/quarantine the independent manifest without blocking startup.
+                except (ReviewError, _base.StorageConflictError, TypeError, ValueError):
+                    # Quarantine only the independently broken project/job path while
+                    # allowing every other valid Project to finish restart recovery.
                     continue
 
 
