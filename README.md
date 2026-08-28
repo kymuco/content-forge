@@ -14,7 +14,7 @@ The project starts with YouTube Shorts-style workflows, but the core model is in
 - **One scene/timeline runtime.** Video, images, image sequences, text, reactions, subtitles, TTS, music, and transitions compile into the same render plan.
 - **LLMs are optional providers, not infrastructure.** `chatgpt-web-adapter` can help with hooks, OCR cleanup, translation, metadata, and classification without making rendering depend on an LLM.
 - **Human attention is explicit.** Automation proceeds until a real judgment is needed, then creates a small review task instead of silently guessing.
-- **Reproducible output.** Projects retain source hashes, accepted text, template versions, provider parameters, and render metadata.
+- **Reproducible output.** Projects retain source hashes, accepted text, exact template/component versions and definition evidence, provider parameters, and render metadata.
 - **Extensible by composition.** New content formats should usually require a template, component, provider, or workflow plugin—not changes to the core renderer.
 
 ## Current architecture
@@ -34,13 +34,15 @@ Inbox                Review Queue
             |
    Sources / Variants
             |
+          Template
+            |
+ versioned registry
+            |
           Timeline
    +--------+--------+
    |        |        |
  Scenes  Overlays  Audio
    +--------+--------+
-            |
-         Template
             |
       Render Compiler
             |
@@ -53,9 +55,9 @@ Inbox                Review Queue
 
 ## Development status
 
-PR1–PR10 are complete on `main`. The repository now includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, and the review/proxy-preview/final-production lifecycle.
+PR1–PR11 are complete in the intended post-merge repository state. The repository includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, the review/proxy-preview/final-production lifecycle, and the exact-version template/component/skin registry boundary.
 
-The next implementation step is **PR11 — Template registry, skins, slots, and component contracts**, which begins **Milestone 3 — Template/component system and initial format coverage**.
+The next implementation step is **PR12 — Initial template pack**, continuing **Milestone 3 — Template/component system and initial format coverage**.
 
 The intended v0.1 vertical slice remains:
 
@@ -95,7 +97,7 @@ PR8 enforces one live API owner per runtime root with an OS advisory lock acquir
 
 Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance operational filesystem or SQLite storage failures preserve resumable state instead of discarding the only verified copy. New canonical blobs and thumbnails also make their POSIX directory entries durable before the corresponding SQLite metadata receipt is committed.
 
-See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, and [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the current review/preview production contract.
+See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the review/preview production contract, and [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) for the versioned template/component extension boundary.
 
 ## Initial content families
 
@@ -128,6 +130,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr8-local-api.md`](docs/pr8-local-api.md) — authenticated local API and Inbox contract
 - [`docs/pr9-pwa.md`](docs/pr9-pwa.md) — PWA, Android share target, pairing, and phone Inbox flow
 - [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) — review queue, proxy preview, approval, and production-decision contract
+- [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) — exact-version template/component/skin registry and provenance contract
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 

@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR10: **complete** on `main`.
-- Next step: **PR11 — Template registry, skins, slots, and component contracts**.
+- PR1–PR11: **complete** in the intended post-merge repository state.
+- Next step: **PR12 — Initial template pack**.
 - Current milestone: **Milestone 3 — Template/component system and initial format coverage**.
 
 ## Milestone 0 — Foundation
@@ -186,7 +186,7 @@ Exit condition: a project can be completed without sitting at the desktop unless
 
 ### PR11 — Template registry, skins, slots, and component contracts
 
-Status: **next**
+Status: **complete**
 
 Deliverables:
 
@@ -200,6 +200,8 @@ Deliverables:
 Exit condition: adding a simple visual format no longer requires changes to core timeline or renderer code.
 
 ### PR12 — Initial template pack
+
+Status: **next**
 
 Add the formats already identified during research:
 
