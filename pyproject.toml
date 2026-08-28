@@ -32,6 +32,7 @@ content-forge-api = "content_forge.api.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"content_forge.templates" = ["assets/*"]
 "content_forge.web" = ["static/*", "static/icons/*"]
 
 [tool.pytest.ini_options]
