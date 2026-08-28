@@ -112,11 +112,11 @@ class ReviewService(_review.ReviewService):
         )
 
     def _final_receipt_is_semantically_stale(self, project) -> bool:
-        """Differentiate a stale semantic receipt from a missing/corrupt artifact."""
+        """Classify any retained final-plan digest before artifact completeness."""
 
-        if not self._has_complete_final_receipt(project):
-            return False
         expected_digest = project.metadata.get("final_render_plan_digest")
+        if not isinstance(expected_digest, str) or not expected_digest:
+            return False
         current_digest = self._current_final_plan_digest(project)
         return current_digest is None or current_digest != expected_digest
 
@@ -211,6 +211,51 @@ class ReviewService(_review.ReviewService):
         ):
             return None
         return artifact
+
+    def _recover_failed_final_qc(self, project_id: str, exc: BaseException) -> None:
+        """Make a failed post-render QC transition actionable in the same request."""
+
+        project = self.get_project(project_id)
+        if project.state is not ProjectState.QC:
+            return
+        if self._final_receipt_is_semantically_stale(project):
+            self._reopen_stale_final(
+                project_id,
+                reason="stale final QC failure returned project to review",
+            )
+            return
+
+        detail = str(exc)[:1024] or type(exc).__name__
+
+        def recover(current):
+            if current.state is not ProjectState.QC:
+                return current
+            metadata = dict(current.metadata)
+            for key in _FINAL_RECEIPT_KEYS:
+                metadata.pop(key, None)
+            metadata.pop("active_final_plan_digest", None)
+            metadata["last_final_render_error"] = detail
+            return current.validated_copy(
+                update={
+                    "state": ProjectState.READY,
+                    "metadata": metadata,
+                    "updated_at": _review._base._utc_now(),
+                }
+            )
+
+        self._mutate_project(project_id, recover)
+
+    def _record_final_success(self, project_id: str, artifact, final_digest: str):
+        """Never leave a request stranded in QC when post-render validation fails."""
+
+        try:
+            return super()._record_final_success(project_id, artifact, final_digest)
+        except BaseException as exc:
+            try:
+                self._recover_failed_final_qc(project_id, exc)
+            except Exception:
+                pass
+            raise
 
     def render_final(self, project_id: str) -> dict[str, object]:
         """Never strand a DONE project whose retained receipt is semantically stale."""
