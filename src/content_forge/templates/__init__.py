@@ -52,11 +52,11 @@ from .initial_pack import (
     SYNC_STACK_TEMPLATE_ID,
     InitialTemplateError,
     initial_template_definitions,
-    resolve_art_story,
     resolve_panel_sequence,
 )
 from .initial_pack_runtime import (
     initial_template_registrations,
+    resolve_art_story,
     resolve_content_frame,
     resolve_hook_topbar,
     resolve_meme_white_header,
