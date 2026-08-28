@@ -182,9 +182,10 @@ def test_qc_recovery_rejects_incomplete_final_identity(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     bootstrap = ReviewService(library)
     project = bootstrap.bootstrap_project(_visual_project(library).project_id)
+    project = _resolve_final_inputs(bootstrap, project)
 
     job_id = "job_01seventhpassfinalreceipt000000000000"
-    digest = "d" * 64
+    digest = render_plan_digest(bootstrap._compile_plan(project, "shorts_final"))
     output_sha = "e" * 64
     artifact = SimpleNamespace(
         job_id=job_id,
