@@ -55,6 +55,17 @@
       <div class="row"><button id="retry-queue-button" class="ghost" type="button">Retry queued shares</button></div>
       <p id="capture-status" class="status"></p>
     </section>
+    <section id="review-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">REVIEW</p><h2>Decisions & preview</h2></div>
+        <span id="review-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Handle small blocking decisions on the phone, render the 540×960 proxy, then approve before final output.</p>
+      <div class="row"><button id="prepare-review-button" class="secondary" type="button">Prepare Inbox projects</button></div>
+      <div id="review-list" class="review-list" aria-live="polite"></div>
+      <div id="ready-projects" class="review-list"></div>
+      <p id="review-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -65,5 +76,6 @@
   <script src="config.js"></script>
   <script src="shared.js"></script>
   <script src="app.js"></script>
+  <script src="review.js"></script>
 </body>
 </html>
