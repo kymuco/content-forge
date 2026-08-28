@@ -68,36 +68,28 @@
   }
 
   async function prepareInbox() {
-    setStatus("Preparing Inbox projects for review…");
-    const inbox = await apiJson("inbox?limit=100");
-    const ids = [...new Set(
-      (inbox.items || [])
-        .map((item) => item.project_id)
-        .filter((value) => typeof value === "string" && value)
-    )];
-    if (!ids.length) {
+    setStatus("Preparing all eligible projects for review…");
+    const result = await apiJson("review-prepare", { method: "POST" });
+    const eligible = Number(result.eligible || 0);
+    const processed = Number(result.processed || 0);
+    const changed = Number(result.changed || 0);
+    const failed = Number(result.failed || 0);
+    if (!eligible) {
       setStatus("No Inbox projects are ready to prepare.");
       return;
     }
-    let prepared = 0;
-    const failures = [];
-    for (const projectId of ids) {
-      try {
-        await apiJson(`projects/${encodeURIComponent(projectId)}/review/bootstrap`, {
-          method: "POST",
-        });
-        prepared += 1;
-      } catch (error) {
-        failures.push(error.message || String(error));
-      }
-    }
-    if (failures.length) {
+    if (failed) {
+      const failures = Array.isArray(result.failures) ? result.failures : [];
+      const first = failures[0] && failures[0].detail ? ` ${failures[0].detail}` : "";
       setStatus(
-        `${prepared} project(s) prepared; ${failures.length} need attention. ${failures[0]}`,
+        `${processed} project(s) processed; ${changed} changed; ${failed} need attention.${first}`,
         "error"
       );
     } else {
-      setStatus(`${prepared} project(s) prepared for review.`, "success");
+      setStatus(
+        `${processed} project(s) processed; ${changed} changed for review.`,
+        "success"
+      );
     }
     await refreshReview();
   }
