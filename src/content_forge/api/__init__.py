@@ -11,6 +11,7 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
 
 
@@ -36,6 +37,11 @@ def create_app(
             library=app.state.library,
             ffmpeg_path=ffmpeg_path,
             ffprobe_path=ffprobe_path,
+        )
+        install_review_prepare_route(
+            app,
+            auth=app.state.auth,
+            review=review,
         )
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old
