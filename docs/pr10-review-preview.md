@@ -32,6 +32,8 @@ For a prepared image/video Inbox project, explicit bootstrap selects or creates 
 
 Bootstrap is idempotent and never changes asset bytes or source provenance. If the current project cannot be represented by this built-in visual workflow, PR10 creates a blocking `MANUAL` `source_setup` task instead of guessing a transformation.
 
+The PWA bulk-prepare action is server-side and enumerates the complete safe Project set rather than a capped intake-history page. Non-renderable projects retain a deterministic fingerprint of only setup-relevant inputs; unchanged projects are skipped without issuing another MANUAL re-entry receipt, while a real source/template/scene/profile/asset change permits one durable recheck. A malformed project or asset encountered while selecting one candidate is quarantined as a bounded per-project failure and does not prevent independent eligible projects from being prepared.
+
 ## Attention semantics and queue order
 
 `AUTO` records deterministic work. `timeline_bootstrap` is retained as a resolved AUTO task but hidden from the ordinary human queue.
@@ -94,6 +96,10 @@ inbox
 ```
 
 Final render is permitted only while the currently compiled preview digest still equals the explicitly approved digest. Final output uses the same project/template/variant semantics with `shorts_final` 1080×1920 and the PR7 render-attempt boundary.
+
+A final receipt is authoritative only when its complete stored `{job, render-plan digest, output SHA-256}` identity matches both the authenticated PR7 artifact and the **currently compiled canonical final plan**. Restart recovery applies the same semantic check before adopting a persisted `RENDERING` claim into QC. Therefore a repair/import/generic save cannot retain an older final receipt or active digest and silently replay it against changed render inputs.
+
+Semantic staleness and artifact loss are intentionally different recovery classes. If the canonical plan is unchanged but the completed artifact is missing/corrupt, the already-approved project may return to `ready` for a fresh immutable final attempt. If the canonical plan itself changed, PR10 clears stale final and preview receipts, reopens the bounded edit plus `preview_approval` lifecycle from current canonical values, and returns the project to `needs_review`; it is never stranded as an unactionable READY/QC/DONE project.
 
 PR7 output hash/dimension/ffprobe verification is the QC baseline available in PR10, so a verified artifact advances `rendering → qc → done`. Runtime render failure returns the project to `ready` with a bounded diagnostic rather than publishing synthetic success.
 
