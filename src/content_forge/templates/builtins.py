@@ -1,8 +1,4 @@
-"""Built-in PR11 registry definitions.
-
-The registry stores declarative contracts plus resolver callables. It does not introduce
-renderer-specific branches: resolvers still emit ordinary timeline primitives.
-"""
+"""Built-in versioned template/component registry definitions."""
 
 from __future__ import annotations
 
@@ -29,6 +25,7 @@ from .hook_overlay import (
     HookOverlayTemplateError,
     resolve_hook_overlay,
 )
+from .initial_pack import MEDIA_OVERLAY_COMPONENT, initial_template_registrations
 from .registry import (
     ComponentRegistry,
     RegistryBundle,
@@ -184,6 +181,7 @@ def create_builtin_registries() -> RegistryBundle:
     components.register(MEDIA_COMPONENT)
     components.register(TEXT_COMPONENT)
     components.register(ORIGINAL_AUDIO_COMPONENT)
+    components.register(MEDIA_OVERLAY_COMPONENT)
 
     skins = SkinRegistry(assets)
     skins.register(NEUTRAL_SKIN)
@@ -195,6 +193,8 @@ def create_builtin_registries() -> RegistryBundle:
             resolver=resolve_hook_overlay,
         )
     )
+    for registration in initial_template_registrations():
+        templates.register(registration)
     return RegistryBundle(
         assets=assets,
         components=components,
