@@ -380,7 +380,15 @@ class TemplateRegistry:
                 "template resolver attempted to set reserved registry evidence"
             )
 
-        properties = dict(resolved.properties)
+        # FrozenModel deliberately stores nested JSON containers as immutable internal
+        # values. Use its JSON serializer to deep-thaw valid resolver metadata before
+        # adding registry evidence and revalidating the complete ResolvedTemplate.
+        serialized = resolved.model_dump(mode="json")
+        properties = serialized.get("properties")
+        if not isinstance(properties, dict):
+            raise TemplateResolutionRegistryError(
+                "template resolver returned invalid JSON properties"
+            )
         properties[REGISTRY_EVIDENCE_PROPERTY] = self._registry_evidence(definition)
         return resolved.validated_copy(update={"properties": properties})
 
