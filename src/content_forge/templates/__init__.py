@@ -52,14 +52,16 @@ from .initial_pack import (
     SYNC_STACK_TEMPLATE_ID,
     InitialTemplateError,
     initial_template_definitions,
-    initial_template_registrations,
     resolve_art_story,
     resolve_content_frame,
     resolve_hook_topbar,
     resolve_meme_white_header,
     resolve_panel_sequence,
-    resolve_reaction_bottom,
     resolve_social_post,
+)
+from .initial_pack_runtime import (
+    initial_template_registrations,
+    resolve_reaction_bottom,
     resolve_sync_stack,
 )
 from .plugins import (
