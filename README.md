@@ -126,9 +126,17 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/safety-and-provenance.md`](docs/safety-and-provenance.md) — source tracking, credits, permissions, platform risk
 - [`docs/v0.1-spec.md`](docs/v0.1-spec.md) — first implementation contract
 - [`docs/pr8-local-api.md`](docs/pr8-local-api.md) — authenticated local API and Inbox contract
+- [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
+- [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
 ## Repository hygiene
 
 The public repository contains code, schemas, documentation, tests, synthetic fixtures, and redistributable example assets only. Production libraries, downloaded media, artist works, game/anime footage, cookies, credentials, generated voice data, databases, previews, and exports are local runtime data and must not be committed.
 
-No software license has been selected yet.
+## License
+
+Content Forge source code and repository-owned documentation/assets are licensed under the [Apache License 2.0](LICENSE) unless a file states otherwise.
+
+Third-party dependencies, external runtime tools such as FFmpeg, and user/production media retain their own licenses and rights. See [`THIRD_PARTY.md`](THIRD_PARTY.md) for the current boundary.
+
+For security vulnerabilities, follow [`SECURITY.md`](SECURITY.md) rather than opening a public issue.
