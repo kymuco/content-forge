@@ -3,16 +3,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 from content_forge.api import create_app
 from content_forge.application import ReviewService as PackageReviewService
-from content_forge.application.review import ReviewService
+from content_forge.application.review import ReviewConflictError, ReviewService
 from content_forge.core import (
     Asset,
     AssetRef,
     MediaType,
     Project,
     ProjectState,
+    ReviewStatus,
 )
 from content_forge.storage import LocalLibrary
 from content_forge.timeline import render_plan_digest
@@ -25,8 +27,10 @@ LOOPBACK_HEADERS = {"Host": "localhost"}
 class FinalArtifactLoader:
     def __init__(self, artifact) -> None:
         self.artifact = artifact
+        self.load_count = 0
 
     def load_artifact(self, job_id, *, ffprobe_path="ffprobe", probe_timeout=20.0):
+        self.load_count += 1
         if job_id != self.artifact.job_id:
             return None
         return self.artifact
@@ -73,6 +77,13 @@ def _task(project: Project, task_type: str):
     return next(task for task in project.review_tasks if task.task_type == task_type)
 
 
+def _replace_task(project: Project, replacement) -> tuple:
+    return tuple(
+        replacement if task.review_task_id == replacement.review_task_id else task
+        for task in project.review_tasks
+    )
+
+
 def _resolve_final_inputs(service: ReviewService, project: Project) -> Project:
     hook = _task(project, "hook")
     project = service.resolve_task(
@@ -95,6 +106,71 @@ def _manual_reentry_count(library: LocalLibrary) -> int:
         ).fetchone()
     assert row is not None
     return int(row["count"])
+
+
+def _stale_final_project(
+    project: Project,
+    *,
+    state: ProjectState,
+    old_digest: str,
+    job_id: str,
+    output_sha: str,
+) -> Project:
+    preview = _task(project, "preview_approval")
+    resolved_preview = preview.validated_copy(
+        update={
+            "status": ReviewStatus.RESOLVED,
+            "accepted_value": "job_old_preview_receipt",
+            "resolved_at": preview.created_at,
+            "payload": {
+                "status": "ready",
+                "job_id": "job_old_preview_receipt",
+                "render_plan_digest": "a" * 64,
+                "project_revision_digest": "b" * 64,
+            },
+        }
+    )
+    variant = project.variants[0].validated_copy(
+        update={"hook": "canonical hook changed after old final"}
+    )
+    metadata = dict(project.metadata)
+    metadata.update(
+        {
+            "approved_preview_job_id": "job_old_preview_receipt",
+            "approved_preview_plan_digest": "a" * 64,
+            "approved_preview_revision_digest": "b" * 64,
+            "final_render_job_id": job_id,
+            "final_render_plan_digest": old_digest,
+            "final_output_sha256": output_sha,
+        }
+    )
+    return project.validated_copy(
+        update={
+            "state": state,
+            "variants": (variant, *project.variants[1:]),
+            "review_tasks": _replace_task(project, resolved_preview),
+            "metadata": metadata,
+        }
+    )
+
+
+def _assert_stale_final_reopened(project: Project) -> None:
+    assert project.state is ProjectState.NEEDS_REVIEW
+    for key in (
+        "final_render_job_id",
+        "final_render_plan_digest",
+        "final_output_sha256",
+        "active_final_plan_digest",
+        "approved_preview_job_id",
+        "approved_preview_plan_digest",
+        "approved_preview_revision_digest",
+    ):
+        assert key not in project.metadata
+    preview = _task(project, "preview_approval")
+    assert preview.status is ReviewStatus.OPEN
+    assert preview.payload == {"status": "not_rendered"}
+    assert _task(project, "hook").status is ReviewStatus.OPEN
+    assert _task(project, "crop_confirmation").status is ReviewStatus.OPEN
 
 
 def test_public_review_imports_share_seventh_pass_hardened_class() -> None:
@@ -138,7 +214,7 @@ def test_qc_recovery_rejects_incomplete_final_identity(tmp_path) -> None:
     )
 
 
-def test_qc_recovery_rejects_complete_receipt_for_stale_final_plan(tmp_path) -> None:
+def test_qc_recovery_reopens_complete_receipt_for_stale_final_plan(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     bootstrap = ReviewService(library)
     project = bootstrap.bootstrap_project(_visual_project(library).project_id)
@@ -155,35 +231,107 @@ def test_qc_recovery_rejects_complete_receipt_for_stale_final_plan(tmp_path) -> 
         render_plan_digest=old_digest,
         output_sha256=output_sha,
     )
+    library.save_project(
+        _stale_final_project(
+            project,
+            state=ProjectState.QC,
+            old_digest=old_digest,
+            job_id=job_id,
+            output_sha=output_sha,
+        )
+    )
 
-    variant = project.variants[0].validated_copy(
-        update={"hook": "canonical hook changed after old final"}
-    )
-    metadata = dict(project.metadata)
-    metadata.update(
-        {
-            "final_render_job_id": job_id,
-            "final_render_plan_digest": old_digest,
-            "final_output_sha256": output_sha,
-        }
-    )
-    stale = project.validated_copy(
-        update={
-            "state": ProjectState.QC,
-            "variants": (variant, *project.variants[1:]),
-            "metadata": metadata,
-        }
-    )
-    library.save_project(stale)
-
-    service = ReviewService(library, orchestrator=FinalArtifactLoader(artifact))
+    loader = FinalArtifactLoader(artifact)
+    service = ReviewService(library, orchestrator=loader)
     service.reconcile_persisted_state()
 
     recovered = service.get_project(project.project_id)
-    assert recovered.state is ProjectState.READY
+    _assert_stale_final_reopened(recovered)
     assert recovered.metadata["last_final_render_error"] == (
-        "final QC recovery found no valid artifact"
+        "stale final QC receipt returned project to review"
     )
+    # Semantic staleness is proven from the current plan before old artifact adoption.
+    assert loader.load_count == 0
+
+
+def test_done_stale_final_retry_reopens_phone_review_lifecycle(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    bootstrap = ReviewService(library)
+    project = bootstrap.bootstrap_project(_visual_project(library).project_id)
+    project = _resolve_final_inputs(bootstrap, project)
+    old_digest = render_plan_digest(bootstrap._compile_plan(project, "shorts_final"))
+    job_id = "job_01ninthpassstaledone000000000000000"
+    output_sha = "c" * 64
+    artifact = SimpleNamespace(
+        job_id=job_id,
+        project_id=project.project_id,
+        purpose="final",
+        render_plan_digest=old_digest,
+        output_sha256=output_sha,
+    )
+    library.save_project(
+        _stale_final_project(
+            project,
+            state=ProjectState.DONE,
+            old_digest=old_digest,
+            job_id=job_id,
+            output_sha=output_sha,
+        )
+    )
+
+    loader = FinalArtifactLoader(artifact)
+    service = ReviewService(library, orchestrator=loader)
+    with pytest.raises(ReviewConflictError, match="returned to review"):
+        service.render_final(project.project_id)
+
+    recovered = service.get_project(project.project_id)
+    _assert_stale_final_reopened(recovered)
+    assert recovered.metadata["last_final_render_error"] == (
+        "stale final receipt returned project to review"
+    )
+    assert loader.load_count == 0
+
+
+def test_restart_rejects_stale_rendering_claim_before_artifact_adoption(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    bootstrap = ReviewService(library)
+    project = bootstrap.bootstrap_project(_visual_project(library).project_id)
+    project = _resolve_final_inputs(bootstrap, project)
+    old_digest = render_plan_digest(bootstrap._compile_plan(project, "shorts_final"))
+    job_id = "job_01ninthpassstalerendering00000000000"
+    artifact = SimpleNamespace(
+        job_id=job_id,
+        project_id=project.project_id,
+        purpose="final",
+        render_plan_digest=old_digest,
+        output_sha256="9" * 64,
+    )
+
+    variant = project.variants[0].validated_copy(
+        update={"hook": "canonical hook changed during crashed final"}
+    )
+    metadata = dict(project.metadata)
+    metadata["active_final_plan_digest"] = old_digest
+    library.save_project(
+        project.validated_copy(
+            update={
+                "state": ProjectState.RENDERING,
+                "variants": (variant, *project.variants[1:]),
+                "metadata": metadata,
+            }
+        )
+    )
+
+    loader = FinalArtifactLoader(artifact)
+    service = ReviewService(library, orchestrator=loader)
+    service.reconcile_persisted_state()
+
+    recovered = service.get_project(project.project_id)
+    _assert_stale_final_reopened(recovered)
+    assert recovered.metadata["last_final_render_error"] == (
+        "stale active final claim returned project to review"
+    )
+    assert loader.load_count == 0
 
 
 def test_bulk_prepare_is_authenticated_and_not_limited_by_intake_page(tmp_path) -> None:
@@ -280,6 +428,64 @@ def test_bulk_prepare_rechecks_once_after_setup_inputs_change(tmp_path) -> None:
         assert stable.status_code == 200
         assert stable.json()["eligible"] == 0
         assert _manual_reentry_count(app.state.library) == 1
+    finally:
+        app.state.runtime_lease.close()
+
+
+def test_bulk_prepare_quarantines_one_asset_read_failure(monkeypatch, tmp_path) -> None:
+    app = create_app(root=tmp_path)
+    client = TestClient(app)
+    try:
+        broken = app.state.library.save_project(
+            Project(content_kind="note", state=ProjectState.INBOX)
+        )
+        headers = _paired_headers(client)
+        initialized = client.post("/api/v1/review-prepare", headers=headers)
+        assert initialized.status_code == 200
+        assert initialized.json()["failed"] == 0
+
+        asset = app.state.library.database.put_asset(
+            Asset(
+                sha256="6" * 64,
+                media_type=MediaType.IMAGE,
+                mime_type="image/png",
+                size_bytes=303,
+                width=1080,
+                height=1920,
+            )
+        )
+        broken_current = app.state.review.get_project(broken.project_id)
+        app.state.library.save_project(
+            broken_current.validated_copy(
+                update={"source_refs": (AssetRef(asset_id=asset.asset_id),)}
+            )
+        )
+        healthy = app.state.library.save_project(
+            Project(content_kind="note", state=ProjectState.INBOX)
+        )
+
+        database_type = type(app.state.library.database)
+        original_get_asset = database_type.get_asset
+
+        def flaky_get_asset(database, asset_id):
+            if asset_id == asset.asset_id:
+                raise ValueError("synthetic malformed asset manifest")
+            return original_get_asset(database, asset_id)
+
+        monkeypatch.setattr(database_type, "get_asset", flaky_get_asset)
+
+        prepared = client.post("/api/v1/review-prepare", headers=headers)
+        assert prepared.status_code == 200
+        payload = prepared.json()
+        assert payload["eligible"] == 2
+        assert payload["processed"] == 1
+        assert payload["changed"] == 1
+        assert payload["failed"] == 1
+        assert payload["failures"][0]["project_id"] == broken.project_id
+        assert "synthetic malformed asset manifest" in payload["failures"][0]["detail"]
+        assert app.state.review.get_project(healthy.project_id).metadata[
+            "pr10_review_initialized"
+        ] is True
     finally:
         app.state.runtime_lease.close()
 
