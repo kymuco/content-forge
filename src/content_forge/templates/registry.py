@@ -390,7 +390,7 @@ class TemplateRegistry:
                 "template resolver returned invalid JSON properties"
             )
         properties[REGISTRY_EVIDENCE_PROPERTY] = self._registry_evidence(definition)
-        return resolved.validated_copy(update={"properties": properties})
+        return ResolvedTemplate.model_validate(serialized)
 
     def resolve(
         self,
