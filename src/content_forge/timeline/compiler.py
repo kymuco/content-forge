@@ -603,7 +603,9 @@ def compile_timeline(
         ),
         assets=planned_assets,
         template_properties=(
-            {} if resolved_template is None else resolved_template.properties
+            {}
+            if resolved_template is None
+            else resolved_template.model_dump(mode="json")["properties"]
         ),
     )
 
