@@ -114,6 +114,29 @@ def test_registry_evidence_records_component_skin_and_packaged_asset_identity() 
     ]
 
 
+def test_registry_preserves_nested_json_properties_while_injecting_evidence() -> None:
+    nested = {
+        "rect": {"x": 0.1, "y": 0.2, "width": 0.7, "height": 0.5},
+        "items": [{"order": 0}, {"order": 1}],
+    }
+
+    def resolver(project, assets, *, profile_id=None, variant_id=None):
+        return ResolvedTemplate(
+            template_id="skin_template",
+            version="1.0",
+            properties={
+                "resolved_profile_id": profile_id,
+                "resolved_variant_id": variant_id,
+                "layout": nested,
+            },
+        )
+
+    resolved = _registry(resolver).resolve(_project(), {})
+
+    assert resolved.model_dump(mode="json")["properties"]["layout"] == nested
+    assert isinstance(resolved.properties[REGISTRY_EVIDENCE_PROPERTY], str)
+
+
 def test_resolver_cannot_spoof_reserved_registry_evidence() -> None:
     def resolver(project, assets, *, profile_id=None, variant_id=None):
         return ResolvedTemplate(
