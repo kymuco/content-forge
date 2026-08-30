@@ -167,7 +167,7 @@ def test_hook_topbar_moves_media_below_dedicated_header() -> None:
 
     assert plan.scenes[0].placement.y == pytest.approx(0.22)
     assert plan.scenes[0].placement.height == pytest.approx(0.78)
-    assert plan.overlays[0].text == "A compact headline stays readable"
+    assert plan.overlays[0].text == "A compact\nheadline stays\nreadable"
     assert plan.overlays[0].placement.y == pytest.approx(0.06)
 
 
