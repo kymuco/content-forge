@@ -19,6 +19,7 @@ def music_track(
     duck_db: float | None = None,
 ) -> AudioTrack:
     properties: dict[str, object] = {
+        "base_gain_db": gain_db,
         "fade_in_seconds": fade_in_seconds,
         "fade_out_seconds": fade_out_seconds,
     }
@@ -51,14 +52,27 @@ def original_audio_track(
         duration_seconds=duration_seconds,
         gain_db=gain_db,
         properties={
+            "base_gain_db": gain_db,
             "fade_in_seconds": fade_in_seconds,
             "fade_out_seconds": fade_out_seconds,
         },
     )
 
 
+def _base_gain_db(track: AudioTrack, properties: dict[str, object]) -> float:
+    raw = properties.get("base_gain_db", track.gain_db)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError("audio base_gain_db must be numeric")
+    value = float(raw)
+    if not -120.0 <= value <= 24.0:
+        raise ValueError("audio base_gain_db is outside canonical gain bounds")
+    properties["base_gain_db"] = value
+    return value
+
+
 def _policy_track(track: AudioTrack, policy: AudioMixPolicy) -> AudioTrack:
     properties = dict(track.properties)
+    base_gain = _base_gain_db(track, properties)
     properties.setdefault("fade_in_seconds", policy.fade_in_seconds)
     properties.setdefault("fade_out_seconds", policy.fade_out_seconds)
     gain_delta = 0.0
@@ -70,7 +84,7 @@ def _policy_track(track: AudioTrack, policy: AudioMixPolicy) -> AudioTrack:
     properties["audio_policy_id"] = policy.policy_id
     properties["audio_policy_version"] = policy.version
     return track.validated_copy(
-        update={"gain_db": track.gain_db + gain_delta, "properties": properties}
+        update={"gain_db": base_gain + gain_delta, "properties": properties}
     )
 
 
@@ -117,7 +131,8 @@ def apply_audio_policy(
 
     Templates may call this helper, but the core timeline/renderers remain unaware of
     content kind. Loudness normalization fails closed later if requested without frozen
-    first-pass evidence for the selected output profile.
+    first-pass evidence for the selected output profile. `base_gain_db` makes repeated
+    or replacement policy application stable instead of accumulating gain deltas.
     """
 
     by_profile = measurements or {}
