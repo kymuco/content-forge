@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR15: **complete** in the intended post-merge repository state.
-- Next step: **PR16 — Language variants and localized render metadata**.
+- PR1–PR16: **complete** in the intended post-merge repository state.
+- Next step: **PR17 — Batch preparation, render queue, QC, and reproducibility**.
 - Current milestone: **Milestone 4 — Optional intelligence and variants**.
 
 ## Milestone 0 — Foundation
@@ -274,7 +274,7 @@ Exit condition: language/semantic assistance is useful but never a hard dependen
 
 ### PR16 — Language variants and localized render metadata
 
-Status: **next**
+Status: **complete**
 
 Deliverables:
 
@@ -287,6 +287,8 @@ Deliverables:
 Exit condition: one source project can produce multiple language variants without duplication of media or timelines.
 
 ### PR17 — Batch preparation, render queue, QC, and reproducibility
+
+Status: **next**
 
 Deliverables:
 

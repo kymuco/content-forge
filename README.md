@@ -55,9 +55,9 @@ Inbox                Review Queue
 
 ## Development status
 
-PR1–PR15 are complete in the intended post-merge repository state. The repository includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, the review/proxy-preview/final-production lifecycle, the exact-version template/component/skin registry boundary, the first registered non-voiced template pack, reusable semantic overlay/motion components, deterministic music/audio composition with lossless premaster caching, two-pass loudness mastering and audio QC, plus the optional LLM provider boundary backed by `chatgpt-web-adapter` with proposal-only review authority.
+PR1–PR16 are complete in the intended post-merge repository state. The repository includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, the review/proxy-preview/final-production lifecycle, the exact-version template/component/skin registry boundary, the first registered non-voiced template pack, reusable semantic overlay/motion components, deterministic music/audio composition with lossless premaster caching, two-pass loudness mastering and audio QC, the optional LLM provider boundary backed by `chatgpt-web-adapter` with proposal-only review authority, and language variants with localized metadata/font intent plus deterministic variant-specific preview/final cache identity.
 
-The next implementation step is **PR16 — Language variants and localized render metadata**, continuing **Milestone 4 — Optional intelligence and variants**.
+The next implementation step is **PR17 — Batch preparation, render queue, QC, and reproducibility**, continuing **Milestone 4 — Optional intelligence and variants** and closing the intended v0.1 batch-production boundary.
 
 The intended v0.1 vertical slice remains:
 
@@ -97,7 +97,7 @@ PR8 enforces one live API owner per runtime root with an OS advisory lock acquir
 
 Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance operational filesystem or SQLite storage failures preserve resumable state instead of discarding the only verified copy. New canonical blobs and thumbnails also make their POSIX directory entries durable before the corresponding SQLite metadata receipt is committed.
 
-See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the review/preview production contract, [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) for the versioned template/component extension boundary, [`docs/pr12-initial-template-pack.md`](docs/pr12-initial-template-pack.md) for the initial registered format pack, [`docs/pr13-reusable-components.md`](docs/pr13-reusable-components.md) for reusable overlays/motion, [`docs/pr14-music-audio.md`](docs/pr14-music-audio.md) for deterministic audio composition/mastering, and [`docs/pr15-llm-provider.md`](docs/pr15-llm-provider.md) for the optional LLM/provider proposal boundary.
+See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the review/preview production contract, [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) for the versioned template/component extension boundary, [`docs/pr12-initial-template-pack.md`](docs/pr12-initial-template-pack.md) for the initial registered format pack, [`docs/pr13-reusable-components.md`](docs/pr13-reusable-components.md) for reusable overlays/motion, [`docs/pr14-music-audio.md`](docs/pr14-music-audio.md) for deterministic audio composition/mastering, [`docs/pr15-llm-provider.md`](docs/pr15-llm-provider.md) for the optional LLM/provider proposal boundary, and [`docs/pr16-language-variants.md`](docs/pr16-language-variants.md) for language variants, localized metadata, font intent, atomic localized compilation, and variant cache identity.
 
 ## Initial content families
 
@@ -113,7 +113,7 @@ The current non-voiced pack covers:
 - reusable artist credits, comments, reactions, avatars, watermarks, pan/zoom/reveal motion, and simple transitions;
 - deterministic original/music mixing with fades, timeline ducking, two-pass loudness mastering, peak protection, QC, and lossless premaster caching.
 
-Optional language/semantic assistance is now available through the PR15 provider boundary. Later milestones add language variants, voiced panel stories, and long-form output without introducing a second timeline runtime.
+Optional language/semantic assistance is available through the PR15 provider boundary, and PR16 can compile multiple localized variants from one shared source/timeline graph. Later milestones add voiced panel stories and long-form output without introducing a second timeline runtime.
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
@@ -137,6 +137,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr13-reusable-components.md`](docs/pr13-reusable-components.md) — reusable semantic overlay, motion, transition, and text-overflow contracts
 - [`docs/pr14-music-audio.md`](docs/pr14-music-audio.md) — music/original mixing, lossless premaster, two-pass loudness, QC, and cache contracts
 - [`docs/pr15-llm-provider.md`](docs/pr15-llm-provider.md) — optional task-oriented LLM provider, strict output validation, proposal authority, and `chatgpt-web-adapter` integration
+- [`docs/pr16-language-variants.md`](docs/pr16-language-variants.md) — localized variant snapshots, shared timeline compilation, portable font intent, and variant-specific cache identities
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
