@@ -211,3 +211,35 @@ def test_recovery_terminalizes_old_running_attempt_and_retries_frozen_plan_after
         == parent.job_id
     ]
     assert len(attempts) == 2
+
+
+def test_recovery_replaces_stale_queued_claim_before_render_started(tmp_path: Path) -> None:
+    library, _, plan, coordinator, parent = _prepared(tmp_path)
+    item = coordinator.load_manifest(parent.job_id).items[0]
+    child = library.database.get_job(item.initial_job_id)
+    assert child is not None
+
+    transition_job_state(
+        library.database,
+        child.job_id,
+        expected_state="queued",
+        state="queued",
+        payload_additions={"batch_run_instance_id": "old-process-run"},
+    )
+
+    retry, attempt_index = coordinator._current_attempt(  # noqa: SLF001 - contract regression
+        parent.job_id,
+        item,
+        "new-process-run",
+    )
+
+    assert attempt_index == 1
+    assert retry.state == "queued"
+    assert retry.job_id != child.job_id
+    assert retry.payload["recovered_from_frozen_batch_plan"] is True
+    stale = library.database.get_job(child.job_id)
+    assert stale is not None and stale.state == "failed"
+    failure = coordinator.render.load_failure(stale.job_id)
+    assert failure is not None
+    assert failure.code == "batch_claim_interrupted"
+    assert render_plan_digest(coordinator.render.load_plan(retry.job_id)) == render_plan_digest(plan)
