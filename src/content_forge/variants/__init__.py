@@ -5,12 +5,14 @@ from .localization import (
     LOCALIZED_VARIANT_CONTRACT_VERSION,
     SUBTITLE_TEXT_OVERRIDE_KEY,
     VARIANT_RENDER_CACHE_KEY_VERSION,
+    CompiledLanguageVariant,
     LocalizedVariantSnapshot,
     VariantCacheIdentityError,
     VariantLocalizationError,
     VariantRenderCacheIdentity,
     apply_localized_text_style,
     build_language_variant,
+    compile_language_variant,
     localized_font,
     localized_variant_digest,
     localized_variant_snapshot,
@@ -19,6 +21,7 @@ from .localization import (
 )
 
 __all__ = [
+    "CompiledLanguageVariant",
     "FONT_STYLE_OVERRIDE_KEY",
     "LOCALIZED_VARIANT_CONTRACT_VERSION",
     "LocalizedVariantSnapshot",
@@ -29,6 +32,7 @@ __all__ = [
     "VariantRenderCacheIdentity",
     "apply_localized_text_style",
     "build_language_variant",
+    "compile_language_variant",
     "localized_font",
     "localized_variant_digest",
     "localized_variant_snapshot",
