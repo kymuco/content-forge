@@ -81,19 +81,17 @@ def _validate_motion_rect(
     rect: NormalizedRect,
     *,
     asset: PlannedAsset,
-    target_width: int,
-    target_height: int,
+    target_aspect: float,
 ) -> None:
     if asset.width is None or asset.height is None:
         raise UnsupportedRenderFeatureError(
             "crop-window motion requires source width/height metadata"
         )
     source_crop_aspect = (asset.width * rect.width) / (asset.height * rect.height)
-    target_aspect = target_width / target_height
-    tolerance = max(1e-6, target_aspect * 1e-5)
+    tolerance = max(1e-9, target_aspect * 1e-8)
     if abs(source_crop_aspect - target_aspect) > tolerance:
         raise UnsupportedRenderFeatureError(
-            "motion crop rectangle aspect does not match the resolved scene placement"
+            "motion crop rectangle aspect does not match the canonical scene placement"
         )
 
 
@@ -140,18 +138,14 @@ def _dynamic_crop_part(
         )
 
     placement = resolve_pixel_rect(scene.placement, plan.output_profile)
-    _validate_motion_rect(
-        start,
-        asset=asset,
-        target_width=placement.width,
-        target_height=placement.height,
-    )
-    _validate_motion_rect(
-        end,
-        asset=asset,
-        target_width=placement.width,
-        target_height=placement.height,
-    )
+    # Motion helpers resolve source windows from canonical normalized placement geometry.
+    # Validate against that pre-raster aspect, not independently rounded pixel edges;
+    # rasterization may legitimately move each placement edge by half a pixel.
+    target_aspect = (
+        scene.placement.width * plan.output_profile.width
+    ) / (scene.placement.height * plan.output_profile.height)
+    _validate_motion_rect(start, asset=asset, target_aspect=target_aspect)
+    _validate_motion_rect(end, asset=asset, target_aspect=target_aspect)
 
     total_frames = max(2, int(round(scene.duration_seconds * plan.output_profile.fps)))
     denominator = total_frames - 1
@@ -181,6 +175,7 @@ def _dynamic_crop_part(
 
 
 def _blur_reveal_parts(
+    plan: RenderPlan,
     scene: PlannedScene,
     original_fit_part: str,
     *,
@@ -200,6 +195,19 @@ def _blur_reveal_parts(
     target = f"[scene_fit_{scene_index}]"
     if not original_fit_part.endswith(target):
         raise FFmpegCompileError("unexpected fitted-stream fragment for blur_reveal")
+    placement = resolve_pixel_rect(scene.placement, plan.output_profile)
+    if min(placement.width, placement.height) < 2:
+        raise UnsupportedRenderFeatureError(
+            "blur_reveal placement is too small for a valid blur radius"
+        )
+    # Bound each boxblur plane from the fitted stream itself. Chroma planes can be
+    # subsampled, so reusing one fixed luma radius is unsafe for small placements.
+    blur_filter = (
+        "boxblur="
+        "luma_radius='min(20,min(w,h)/4)':luma_power=2:"
+        "chroma_radius='min(20,min(cw,ch)/4)':chroma_power=2:"
+        "alpha_radius='min(20,min(w,h)/4)':alpha_power=2"
+    )
     base = f"scene_motion_base_{scene_index}"
     blur_source = f"scene_blur_source_{scene_index}"
     sharp_source = f"scene_sharp_source_{scene_index}"
@@ -210,7 +218,7 @@ def _blur_reveal_parts(
     return (
         rewritten,
         f"[{base}]split=2[{blur_source}][{sharp_source}]",
-        f"[{blur_source}]boxblur=20:2[{blurred}]",
+        f"[{blur_source}]{blur_filter}[{blurred}]",
         f"[{blurred}][{sharp_source}]blend=all_expr='{expression}'{target}",
     )
 
@@ -244,7 +252,7 @@ def _rewrite_filtergraph(
             )
         elif motion_type == "blur_reveal":
             parts[fit_index : fit_index + 1] = _blur_reveal_parts(
-                scene, parts[fit_index], scene_index=scene_index
+                plan, scene, parts[fit_index], scene_index=scene_index
             )
             extra_filters.update({"blend", "boxblur", "split"})
 
