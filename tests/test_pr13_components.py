@@ -107,7 +107,7 @@ def test_bounded_credit_and_comment_preflight_all_project_profiles() -> None:
         project,
         preview,
         credit_text="Artist: Synthetic Fixture",
-        placement=NormalizedRect(x=0.05, y=0.82, width=0.80, height=0.06),
+        placement=NormalizedRect(x=0.05, y=0.72, width=0.80, height=0.06),
     )
     assert credit.component_type == ARTIST_CREDIT_COMPONENT_ID
     assert credit.properties["layout_required_width_pixels"] <= credit.properties[
@@ -141,8 +141,8 @@ def test_text_overflow_fails_closed() -> None:
         artist_credit_overlay(
             _project(),
             shorts_preview_profile(),
-            credit_text=" ".join(["extremelylongcredit"] * 40),
-            placement=NormalizedRect(x=0.05, y=0.82, width=0.12, height=0.02),
+            credit_text=" ".join(["widecredit"] * 25),
+            placement=NormalizedRect(x=0.05, y=0.50, width=0.12, height=0.02),
         )
 
 
@@ -174,7 +174,7 @@ def test_avatar_reaction_and_watermark_preserve_roles() -> None:
     watermark = watermark_overlay(
         project,
         preview,
-        placement=NormalizedRect(x=0.68, y=0.04, width=0.20, height=0.05),
+        placement=NormalizedRect(x=0.68, y=0.20, width=0.20, height=0.05),
         text="@contentforge",
     )
     assert watermark.component_type == WATERMARK_COMPONENT_ID
@@ -182,7 +182,7 @@ def test_avatar_reaction_and_watermark_preserve_roles() -> None:
         watermark_overlay(
             project,
             preview,
-            placement=NormalizedRect(x=0.68, y=0.04, width=0.20, height=0.05),
+            placement=NormalizedRect(x=0.68, y=0.20, width=0.20, height=0.05),
             text="bad",
             asset=image,
             asset_ref=ref,
