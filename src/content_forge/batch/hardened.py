@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from content_forge.orchestration import RenderFailureManifest
 from content_forge.storage import StoredJob, transition_job_state
 from content_forge.timeline import RenderPlan, render_plan_digest
 
@@ -12,10 +13,15 @@ from .coordinator import (
     BatchIntegrityError,
     BatchPreparationError,
     BatchRenderInput,
+    BatchRunError,
     _BATCH_CONTRACT_VERSION,
     _BatchPaths,
     _accepted_state,
     _atomic_write_model,
+    _failure_code,
+    _interrupt_running_attempt,
+    _linked_attempts,
+    _payload_string,
     _source_fingerprints,
     _validate_localized_snapshot,
 )
@@ -220,6 +226,53 @@ def _create_batch_render_attempt(
     return job
 
 
+def _interrupt_stale_queued_claim(
+    coordinator: _BaseBatchCoordinator,
+    job: StoredJob,
+    *,
+    current_run_instance_id: str,
+) -> StoredJob:
+    """Terminalize a claim written by a previous process before PR7 could start it."""
+
+    old_run_instance = job.payload.get("batch_run_instance_id")
+    if not isinstance(old_run_instance, str) or not old_run_instance:
+        return job
+    if old_run_instance == current_run_instance_id:
+        raise BatchRunError("queued batch render attempt is already claimed by this run")
+
+    failure = RenderFailureManifest(
+        job_id=job.job_id,
+        project_id=job.project_id or "",
+        purpose=_payload_string(job.payload, "purpose"),
+        profile_id=_payload_string(job.payload, "profile_id"),
+        render_plan_digest=_payload_string(job.payload, "render_plan_digest"),
+        failure_storage_key=_payload_string(job.payload, "failure_storage_key"),
+        state="failed",
+        code="batch_claim_interrupted",
+        stage="batch_recovery",
+        message="batch process stopped after claiming the queued attempt but before render start",
+        exception_type="content_forge.batch.BatchInterruptedClaim",
+        details={"previous_run_instance_id": old_run_instance},
+    )
+    _atomic_write_model(
+        coordinator.library.paths.root / failure.failure_storage_key,
+        failure,
+    )
+    try:
+        return transition_job_state(
+            coordinator.library.database,
+            job.job_id,
+            expected_state="queued",
+            state="failed",
+            payload_additions={
+                "failure_manifest_digest": canonical_digest(failure),
+                "batch_claim_interrupted": True,
+            },
+        )
+    except Exception as exc:
+        raise BatchRunError("stale queued batch claim changed during recovery") from exc
+
+
 class BatchCoordinator(_BaseBatchCoordinator):
     """Coordinator with atomic child linkage and frozen-plan-only interrupted retries."""
 
@@ -347,6 +400,52 @@ class BatchCoordinator(_BaseBatchCoordinator):
             validate_current_project=False,
             recovered=True,
         )
+
+    def _current_attempt(
+        self,
+        batch_job_id: str,
+        item: BatchItemSnapshot,
+        run_instance_id: str,
+    ) -> tuple[StoredJob, int]:
+        attempts = list(
+            _linked_attempts(
+                self.library,
+                batch_job_id=batch_job_id,
+                item_key=item.item_key,
+            )
+        )
+        if not attempts or attempts[0].job_id != item.initial_job_id:
+            raise BatchIntegrityError(
+                f"batch item {item.item_key} initial render attempt is missing"
+            )
+        latest = attempts[-1]
+        latest_index = len(attempts) - 1
+
+        if latest.state == "queued" and "batch_run_instance_id" in latest.payload:
+            latest = _interrupt_stale_queued_claim(
+                self,
+                latest,
+                current_run_instance_id=run_instance_id,
+            )
+        elif latest.state == "running":
+            latest = _interrupt_running_attempt(
+                self.library,
+                self.render,
+                latest,
+                current_run_instance_id=run_instance_id,
+            )
+
+        if latest.state == "failed":
+            code, _ = _failure_code(self.render, latest)
+            if code in {"render_interrupted", "batch_claim_interrupted"}:
+                latest = self._new_retry(
+                    batch_job_id,
+                    item,
+                    latest,
+                    latest_index + 1,
+                )
+                latest_index += 1
+        return latest, latest_index
 
 
 __all__ = ["BatchCoordinator"]
