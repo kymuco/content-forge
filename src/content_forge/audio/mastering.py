@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -18,6 +19,11 @@ _PREMASTER_CACHE_VERSION = "pr14_premaster_pcm_s24le_48000_stereo_v1"
 def _number(value: float) -> str:
     text = f"{float(value):.9f}".rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _finite_measurement_value(value: object) -> float | None:
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def loudness_analysis_filter(policy: AudioMixPolicy) -> str:
@@ -36,6 +42,14 @@ def loudness_apply_filter(
 ) -> str:
     """Build the second loudnorm pass from frozen first-pass evidence."""
 
+    if not measurement.normalizable:
+        raise ValueError(
+            "non-finite/silent loudness measurement cannot be used for normalization"
+        )
+    assert measurement.input_i is not None
+    assert measurement.input_tp is not None
+    assert measurement.input_thresh is not None
+    assert measurement.target_offset is not None
     return (
         "loudnorm="
         f"I={_number(policy.target_integrated_lufs)}:"
@@ -79,11 +93,11 @@ def parse_loudnorm_measurement(stderr: str) -> LoudnessMeasurement:
     payload = json.loads(matches[-1].group(0))
     try:
         return LoudnessMeasurement(
-            input_i=float(payload["input_i"]),
-            input_tp=float(payload["input_tp"]),
+            input_i=_finite_measurement_value(payload["input_i"]),
+            input_tp=_finite_measurement_value(payload["input_tp"]),
             input_lra=float(payload["input_lra"]),
-            input_thresh=float(payload["input_thresh"]),
-            target_offset=float(payload["target_offset"]),
+            input_thresh=_finite_measurement_value(payload["input_thresh"]),
+            target_offset=_finite_measurement_value(payload["target_offset"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("invalid FFmpeg loudnorm measurement payload") from exc
@@ -97,6 +111,18 @@ def evaluate_audio_qc(
     peak_tolerance_db: float = 0.1,
     silence_floor_lufs: float = -70.0,
 ) -> AudioQCResult:
+    if measurement.silent_sentinel:
+        return AudioQCResult(
+            integrated_lufs=None,
+            true_peak_dbfs=None,
+            loudness_range_lu=measurement.input_lra,
+            silent=True,
+            loudness_ok=False,
+            true_peak_ok=False,
+        )
+
+    assert measurement.input_i is not None
+    assert measurement.input_tp is not None
     silent = measurement.input_i <= silence_floor_lufs
     return AudioQCResult(
         integrated_lufs=measurement.input_i,
