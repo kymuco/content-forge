@@ -13,7 +13,7 @@ from content_forge.timeline import RenderPlan
 from .models import AudioMixPolicy, AudioQCResult, LoudnessMeasurement
 
 _LOUDNORM_JSON = re.compile(r"\{[^{}]*\"input_i\"[^{}]*\}", re.DOTALL)
-_PREMASTER_CACHE_VERSION = "pr14_premaster_pcm_s24le_48000_stereo_v1"
+_PREMASTER_CACHE_VERSION = "pr14_premaster_pcm_f32le_48000_stereo_v1"
 
 
 def _number(value: float) -> str:
@@ -187,7 +187,7 @@ def audio_intermediate_cache_key(plan: RenderPlan) -> str:
         # Track-level materialization carries the actual gain/fade/duck semantics. Keep
         # policy identity/version as evidence, but deliberately exclude loudness target,
         # measurement, final AAC codec/bitrate, and every visual field: the cached object
-        # is the fixed 48 kHz stereo PCM premaster that exists before mastering/encoding.
+        # is the fixed 48 kHz stereo float PCM premaster that exists before mastering/encoding.
         "policy": profile_properties.get("audio_policy"),
     }
     encoded = json.dumps(
