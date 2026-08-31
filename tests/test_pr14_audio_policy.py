@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from content_forge.audio import (
     AudioIntermediateCache,
@@ -8,6 +11,7 @@ from content_forge.audio import (
     LoudnessMeasurement,
     apply_audio_policy,
     evaluate_audio_qc,
+    loudness_apply_filter,
     music_track,
     original_audio_track,
     parse_loudnorm_measurement,
@@ -143,17 +147,45 @@ def test_loudnorm_parser_and_qc_baseline() -> None:
     measurement = parse_loudnorm_measurement(stderr)
     qc = evaluate_audio_qc(measurement, AudioMixPolicy())
     assert measurement.input_i == -14.2
+    assert measurement.normalizable is True
     assert qc.passed is True
 
-    silent = evaluate_audio_qc(
+    quiet = evaluate_audio_qc(
         measurement.validated_copy(update={"input_i": -80.0}),
         AudioMixPolicy(),
     )
-    assert silent.silent is True
-    assert silent.passed is False
+    assert quiet.silent is True
+    assert quiet.passed is False
 
 
-def test_audio_intermediate_cache_publishes_content_addressed_file(tmp_path: Path) -> None:
+def test_silent_loudnorm_measurement_reaches_qc_but_cannot_normalize() -> None:
+    stderr = """
+    [Parsed_loudnorm_0 @ x] {
+        "input_i" : "-inf",
+        "input_tp" : "-inf",
+        "input_lra" : "0.00",
+        "input_thresh" : "-70.00",
+        "target_offset" : "inf"
+    }
+    """
+    measurement = parse_loudnorm_measurement(stderr)
+    qc = evaluate_audio_qc(measurement, AudioMixPolicy())
+
+    assert measurement.silent_sentinel is True
+    assert measurement.normalizable is False
+    assert measurement.input_i is None
+    assert measurement.input_tp is None
+    assert measurement.target_offset is None
+    assert qc.integrated_lufs is None
+    assert qc.true_peak_dbfs is None
+    assert qc.silent is True
+    assert qc.passed is False
+
+    with pytest.raises(ValueError, match="cannot be used for normalization"):
+        loudness_apply_filter(AudioMixPolicy(normalize=True), measurement)
+
+
+def test_audio_intermediate_cache_publishes_derivation_keyed_file(tmp_path: Path) -> None:
     source = tmp_path / "master.wav"
     source.write_bytes(b"mastered-audio")
     key = "a" * 64
@@ -165,3 +197,17 @@ def test_audio_intermediate_cache_publishes_content_addressed_file(tmp_path: Pat
     assert first == second
     assert first.read_bytes() == b"mastered-audio"
     assert cache.has(key) is True
+
+
+def test_audio_intermediate_cache_supports_concurrent_same_key_publish(tmp_path: Path) -> None:
+    source = tmp_path / "premaster.wav"
+    source.write_bytes(b"deterministic-premaster" * 4096)
+    key = "b" * 64
+    cache = AudioIntermediateCache(tmp_path / "cache")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        published = tuple(pool.map(lambda _: cache.publish(source, key), range(16)))
+
+    assert len(set(published)) == 1
+    assert published[0].read_bytes() == source.read_bytes()
+    assert not tuple(published[0].parent.glob(published[0].name + ".tmp-*"))
