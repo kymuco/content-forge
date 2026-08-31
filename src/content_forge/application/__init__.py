@@ -19,7 +19,7 @@ from .review import (
     ReviewRenderError,
     ReviewValidationError,
 )
-from .review_seventh_hardening import ReviewService
+from .review_pr17_hardening import ReviewService
 
 __all__ = [
     "ApplicationRepository",
