@@ -107,7 +107,19 @@ def _prepared(tmp_path: Path):
     return library, project, plan, coordinator, parent
 
 
-def test_prepare_freezes_accepted_provider_state_and_links_render_attempt(tmp_path: Path) -> None:
+def _release_child(library: LocalLibrary, job_id: str):
+    return transition_job_state(
+        library.database,
+        job_id,
+        expected_state="batch_held",
+        state="queued",
+        payload_additions={"batch_released": True},
+    )
+
+
+def test_prepare_freezes_accepted_provider_state_and_holds_linked_render_attempt(
+    tmp_path: Path,
+) -> None:
     library, project, plan, coordinator, parent = _prepared(tmp_path)
 
     assert parent.state == "queued"
@@ -128,12 +140,13 @@ def test_prepare_freezes_accepted_provider_state_and_links_render_attempt(tmp_pa
 
     child = library.database.get_job(item.initial_job_id)
     assert child is not None
-    assert child.state == "queued"
+    assert child.state == "batch_held"
     assert child.payload["batch_context"] == {
         "batch_job_id": parent.job_id,
         "item_key": "item_0000",
         "attempt_index": 0,
     }
+    assert "batch_run_instance_id" not in child.payload
     assert [job.job_id for job in list_jobs(library.database, job_type="batch")] == [
         parent.job_id
     ]
@@ -156,14 +169,29 @@ def test_prepare_rejects_localized_snapshot_after_project_metadata_changes(tmp_p
     assert batches[-1].state == "failed"
 
 
+def test_current_attempt_releases_held_child_only_when_batch_runs(tmp_path: Path) -> None:
+    library, _, _, coordinator, parent = _prepared(tmp_path)
+    item = coordinator.load_manifest(parent.job_id).items[0]
+
+    current, attempt_index = coordinator._current_attempt(  # noqa: SLF001
+        parent.job_id,
+        item,
+        "current-process-run",
+    )
+
+    assert attempt_index == 0
+    assert current.job_id == item.initial_job_id
+    assert current.state == "queued"
+    assert current.payload["batch_released"] is True
+
+
 def test_recovery_terminalizes_old_running_attempt_and_retries_frozen_plan_after_project_edit(
     tmp_path: Path,
 ) -> None:
     library, project, plan, coordinator, parent = _prepared(tmp_path)
     manifest = coordinator.load_manifest(parent.job_id)
     item = manifest.items[0]
-    child = library.database.get_job(item.initial_job_id)
-    assert child is not None
+    child = _release_child(library, item.initial_job_id)
 
     child = transition_job_state(
         library.database,
@@ -216,8 +244,7 @@ def test_recovery_terminalizes_old_running_attempt_and_retries_frozen_plan_after
 def test_recovery_replaces_stale_queued_claim_before_render_started(tmp_path: Path) -> None:
     library, _, plan, coordinator, parent = _prepared(tmp_path)
     item = coordinator.load_manifest(parent.job_id).items[0]
-    child = library.database.get_job(item.initial_job_id)
-    assert child is not None
+    child = _release_child(library, item.initial_job_id)
 
     transition_job_state(
         library.database,
