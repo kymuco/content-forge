@@ -14,8 +14,11 @@ from content_forge.core import RegistryKey, ReviewStatus, ReviewSuggestion, Revi
 from content_forge.core.models import FrozenModel
 
 _LLM_CONTRACT_VERSION = "pr15_llm_contract_v1"
+_MAX_RESPONSE_CHARS = 256_000
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL | re.IGNORECASE)
-SuggestedText = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+SuggestedText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)
+]
 GeneratedTag = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
@@ -146,6 +149,21 @@ class MetadataSuggestions(FrozenModel):
     candidates: tuple[MetadataCandidate, ...] = Field(min_length=1, max_length=5)
     evidence: LLMInvocationEvidence
 
+    @model_validator(mode="after")
+    def unique_candidates(self):
+        identities = tuple(
+            json.dumps(
+                candidate.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for candidate in self.candidates
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("metadata suggestions must be unique")
+        return self
+
 
 class TextCleanupResult(FrozenModel):
     cleaned_text: str = Field(min_length=1, max_length=30000)
@@ -254,16 +272,35 @@ def build_task_prompt(task: str, request: FrozenModel) -> str:
     )
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def strict_json_object(text: str) -> dict[str, JsonValue]:
-    """Parse one JSON object, tolerating only a single whole-response JSON code fence."""
+    """Parse one bounded strict JSON object, optionally inside one whole-response fence."""
 
     candidate = text.strip()
+    if len(candidate) > _MAX_RESPONSE_CHARS:
+        raise LLMResponseError("LLM response exceeds the supported structured-output size")
     fenced = _CODE_FENCE.fullmatch(candidate)
     if fenced is not None:
         candidate = fenced.group(1).strip()
     try:
-        value = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError) as exc:
+        value = json.loads(
+            candidate,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise LLMResponseError("LLM response is not a valid standalone JSON object") from exc
     if not isinstance(value, dict):
         raise LLMResponseError("LLM response must be a JSON object")
@@ -315,7 +352,7 @@ def to_review_suggestions(
     if isinstance(result, TextCleanupResult):
         return (
             ReviewSuggestion(
-                label=result.cleaned_text,
+                label="Cleaned text proposal",
                 value={"cleaned_text": result.cleaned_text, "notes": result.notes},
                 provider=provider,
                 metadata=_suggestion_metadata(result.evidence, "text_cleanup"),
@@ -324,7 +361,7 @@ def to_review_suggestions(
     if isinstance(result, TranslationResult):
         return (
             ReviewSuggestion(
-                label=result.translated_text,
+                label="Translation proposal",
                 value={"translated_text": result.translated_text, "notes": result.notes},
                 provider=provider,
                 metadata=_suggestion_metadata(result.evidence, "translation"),
