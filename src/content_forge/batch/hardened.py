@@ -164,8 +164,9 @@ def _create_batch_render_attempt(
     attempt_index: int,
     validate_current_project: bool,
     recovered: bool,
+    held: bool,
 ) -> StoredJob:
-    """Create plan file + queued job with batch identity present in the first DB row."""
+    """Create plan + child job with batch identity present in its first SQLite row."""
 
     if validate_current_project:
         _validate_initial_plan(coordinator, plan, purpose=purpose)
@@ -177,7 +178,7 @@ def _create_batch_render_attempt(
     job = StoredJob(
         project_id=plan.project_id,
         job_type="render",
-        state="queued",
+        state="batch_held" if held else "queued",
         payload={},
     )
     directory_key = f"renders/{plan.project_id}/{job.job_id}"
@@ -274,7 +275,7 @@ def _interrupt_stale_queued_claim(
 
 
 class BatchCoordinator(_BaseBatchCoordinator):
-    """Coordinator with atomic child linkage and frozen-plan-only interrupted retries."""
+    """Coordinator with held preparation children and frozen-plan-only retries."""
 
     def prepare(self, inputs: Sequence[BatchRenderInput]) -> StoredJob:
         if not inputs:
@@ -317,6 +318,7 @@ class BatchCoordinator(_BaseBatchCoordinator):
                     attempt_index=0,
                     validate_current_project=True,
                     recovered=False,
+                    held=True,
                 )
                 created_children.append(child.job_id)
                 items.append(
@@ -352,13 +354,13 @@ class BatchCoordinator(_BaseBatchCoordinator):
         except BaseException as exc:
             for child_id in created_children:
                 child = self.library.database.get_job(child_id)
-                if child is None or child.state != "queued":
+                if child is None or child.state not in {"batch_held", "queued"}:
                     continue
                 try:
                     transition_job_state(
                         self.library.database,
                         child.job_id,
-                        expected_state="queued",
+                        expected_state=child.state,
                         state="cancelled",
                         payload_additions={"batch_preparation_aborted": True},
                     )
@@ -399,6 +401,7 @@ class BatchCoordinator(_BaseBatchCoordinator):
             attempt_index=attempt_index,
             validate_current_project=False,
             recovered=True,
+            held=False,
         )
 
     def _current_attempt(
@@ -420,6 +423,18 @@ class BatchCoordinator(_BaseBatchCoordinator):
             )
         latest = attempts[-1]
         latest_index = len(attempts) - 1
+
+        if latest.state == "batch_held":
+            try:
+                latest = transition_job_state(
+                    self.library.database,
+                    latest.job_id,
+                    expected_state="batch_held",
+                    state="queued",
+                    payload_additions={"batch_released": True},
+                )
+            except Exception as exc:
+                raise BatchRunError("held batch render attempt changed before release") from exc
 
         if latest.state == "queued" and "batch_run_instance_id" in latest.payload:
             latest = _interrupt_stale_queued_claim(
