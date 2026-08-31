@@ -130,6 +130,25 @@ def test_adapter_fails_closed_on_unknown_fields_trailing_prose_and_allowlist_esc
         )
 
 
+def test_adapter_rejects_classification_duplicates_after_field_normalization() -> None:
+    runtime = _FakeRuntime(
+        [
+            '{"content_kinds":["moment"],"template_ids":["hook_topbar"],'
+            '"tags":["game"," game "]}'
+        ]
+    )
+    provider = _provider(runtime)
+
+    with pytest.raises(LLMResponseError, match="invalid classification result"):
+        provider.classify(
+            ClassificationRequest(
+                source_summary="fixture",
+                allowed_content_kinds=("moment",),
+                allowed_template_ids=("hook_topbar",),
+            )
+        )
+
+
 def test_adapter_unavailable_health_degrades_feature_without_project_or_renderer_dependency() -> None:
     runtime = _FakeRuntime([], ready=False)
     provider = _provider(runtime)
