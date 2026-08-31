@@ -8,6 +8,7 @@ import content_forge.batch.final as batch_final
 from content_forge.batch import (
     AcceptedStateSnapshot,
     BatchCoordinator,
+    BatchIntegrityError,
     BatchItemSnapshot,
     BatchRunError,
 )
@@ -17,6 +18,20 @@ from content_forge.storage import LocalLibrary, StoredJob
 
 def _batch_id(ch: str) -> str:
     return "cf_job_" + ch * 32
+
+
+def test_invalid_batch_id_is_rejected_before_lease_filesystem_access(
+    tmp_path: Path,
+) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    coordinator = BatchCoordinator(library)
+    outside = library.paths.root / "escape" / ".run.lock"
+
+    with pytest.raises(BatchIntegrityError, match="batch job ID is invalid"):
+        coordinator.run_batch("../../escape", object())  # type: ignore[arg-type]
+
+    assert not outside.exists()
+    assert not (library.paths.root.parent / "escape" / ".run.lock").exists()
 
 
 def test_live_batch_lease_rejects_concurrent_runner_before_durable_state_changes(
