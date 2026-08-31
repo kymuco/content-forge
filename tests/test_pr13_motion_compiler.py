@@ -148,6 +148,37 @@ def test_crop_window_motion_rejects_rectangles_with_wrong_output_aspect(
         )
 
 
+def test_crop_window_motion_accepts_six_decimal_serialized_rect(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"synthetic-placeholder")
+    asset = _asset()
+    plan = _plan(asset, motion_type="slow_zoom")
+    scene = plan.scenes[0].validated_copy(
+        update={
+            "motion_end_rect": NormalizedRect(
+                x=0.109375,
+                y=0.037037,
+                width=0.78125,
+                height=0.925926,
+            )
+        }
+    )
+    serialized_plan = plan.validated_copy(update={"scenes": (scene,)})
+
+    manifest = compile_ffmpeg_command(
+        serialized_plan,
+        {asset.asset_id: source},
+        _capabilities(),
+        tmp_path / "serialized-rect.mp4",
+        prefer_nvenc=False,
+    )
+
+    assert "crop=540:960:" in manifest.filtergraph
+    assert manifest.metadata["motion_geometry"] == "aspect_preserving_source_rect_v1"
+
+
 def test_crop_window_motion_accepts_non_grid_placement_raster_rounding(
     tmp_path: Path,
 ) -> None:
@@ -201,7 +232,7 @@ def test_blur_reveal_caps_radius_to_small_fitted_scene(
     assert "chroma_radius='min(20,min(cw,ch)/4)'" in manifest.filtergraph
 
 
-def test_blur_reveal_fails_closed_when_fitted_scene_is_one_pixel(
+def test_blur_reveal_accepts_four_pixel_minimum(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source.png"
@@ -211,13 +242,40 @@ def test_blur_reveal_fails_closed_when_fitted_scene_is_one_pixel(
     scene = plan.scenes[0].validated_copy(
         update={
             "placement": NormalizedRect(
-                x=0.10, y=0.10, width=1.0 / 540.0, height=1.0 / 960.0
+                x=0.10, y=0.10, width=4.0 / 540.0, height=4.0 / 960.0
+            )
+        }
+    )
+    minimum_plan = plan.validated_copy(update={"scenes": (scene,)})
+
+    manifest = compile_ffmpeg_command(
+        minimum_plan,
+        {asset.asset_id: source},
+        _capabilities(),
+        tmp_path / "minimum-blur.mp4",
+        prefer_nvenc=False,
+    )
+
+    assert "boxblur=luma_radius='min(20,min(w,h)/4)'" in manifest.filtergraph
+
+
+def test_blur_reveal_fails_closed_below_four_pixels(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"synthetic-placeholder")
+    asset = _asset()
+    plan = _plan(asset, motion_type="blur_reveal")
+    scene = plan.scenes[0].validated_copy(
+        update={
+            "placement": NormalizedRect(
+                x=0.10, y=0.10, width=3.0 / 540.0, height=3.0 / 960.0
             )
         }
     )
     tiny_plan = plan.validated_copy(update={"scenes": (scene,)})
 
-    with pytest.raises(UnsupportedRenderFeatureError, match="too small"):
+    with pytest.raises(UnsupportedRenderFeatureError, match="at least four pixels"):
         compile_ffmpeg_command(
             tiny_plan,
             {asset.asset_id: source},
