@@ -213,6 +213,37 @@ def test_normalization_fails_closed_without_frozen_measurement(tmp_path: Path) -
         )
 
 
+def test_normalization_rejects_silent_first_pass_measurement(tmp_path: Path) -> None:
+    plan, paths = _paths(tmp_path)
+    silent = LoudnessMeasurement(
+        input_i=None,
+        input_tp=None,
+        input_lra=0.0,
+        input_thresh=-70.0,
+        target_offset=None,
+    )
+    properties = _profile_properties(plan)
+    mastering = dict(properties["audio_mastering"])
+    mastering.update(
+        {"normalize": True, "measurement": silent.model_dump(mode="json")}
+    )
+    properties["audio_mastering"] = mastering
+    profile = plan.output_profile.validated_copy(update={"properties": properties})
+    silent_plan = plan.validated_copy(update={"output_profile": profile})
+
+    with pytest.raises(
+        UnsupportedRenderFeatureError,
+        match="finite non-silent measurement values",
+    ):
+        compile_ffmpeg_command(
+            silent_plan,
+            paths,
+            _capabilities(),
+            tmp_path / "silent.mp4",
+            prefer_nvenc=False,
+        )
+
+
 def test_normalization_uses_frozen_first_pass_measurement(tmp_path: Path) -> None:
     plan, paths = _paths(tmp_path)
     measurement = LoudnessMeasurement(
@@ -245,7 +276,7 @@ def test_normalization_uses_frozen_first_pass_measurement(tmp_path: Path) -> Non
     assert manifest.metadata["audio_normalized"] is True
 
 
-def test_lossless_intermediate_uses_premaster_and_ignores_mastering_evidence(
+def test_float_lossless_intermediate_is_visual_independent_and_ignores_mastering_evidence(
     tmp_path: Path,
 ) -> None:
     plan, paths = _paths(tmp_path)
@@ -268,10 +299,15 @@ def test_lossless_intermediate_uses_premaster_and_ignores_mastering_evidence(
     }
     profile = plan.output_profile.validated_copy(update={"properties": properties})
     mastered = plan.validated_copy(update={"output_profile": profile})
+    visual_asset_id = mastered.scenes[0].media_asset_id
+    assert visual_asset_id is not None
+    audio_only_paths = {
+        asset_id: path for asset_id, path in paths.items() if asset_id != visual_asset_id
+    }
 
     command = compile_audio_intermediate_command(
         mastered,
-        paths,
+        audio_only_paths,
         _capabilities(),
         tmp_path / "premaster.wav",
         prefer_nvenc=False,
@@ -280,7 +316,8 @@ def test_lossless_intermediate_uses_premaster_and_ignores_mastering_evidence(
     audio_graph = command[filter_index + 1]
 
     assert command[-1] == str((tmp_path / "premaster.wav").resolve())
-    assert "pcm_s24le" in command
+    assert "pcm_f32le" in command
+    assert str(paths[visual_asset_id].resolve()) not in command
     assert "[vout]" not in audio_graph
     assert "afade=t=in:st=0:d=0.2" in audio_graph
     assert "volume=-8dB:enable='between(t,0.5,1.25)'" in audio_graph
