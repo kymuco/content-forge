@@ -118,7 +118,11 @@ def test_prepare_freezes_accepted_provider_state_and_links_render_attempt(tmp_pa
     assert item.render_plan_digest == render_plan_digest(plan)
     assert item.localized_variant is not None
     assert item.localized_variant.hook == "Persistent batch render works"
-    assert list(item.accepted_state.rendered_text.values()) == ["Persistent batch render works"]
+    assert item.accepted_state.rendered_text == {
+        overlay.overlay_id: overlay.text
+        for overlay in plan.overlays
+        if overlay.text is not None
+    }
     assert item.accepted_state.provider_parameters[0].provider == "chatgpt-web-adapter"
     assert item.accepted_state.provider_parameters[0].metadata["request_sha256"] == "1" * 64
 
@@ -152,8 +156,10 @@ def test_prepare_rejects_localized_snapshot_after_project_metadata_changes(tmp_p
     assert batches[-1].state == "failed"
 
 
-def test_recovery_terminalizes_old_running_attempt_and_retries_same_plan(tmp_path: Path) -> None:
-    library, _, plan, coordinator, parent = _prepared(tmp_path)
+def test_recovery_terminalizes_old_running_attempt_and_retries_frozen_plan_after_project_edit(
+    tmp_path: Path,
+) -> None:
+    library, project, plan, coordinator, parent = _prepared(tmp_path)
     manifest = coordinator.load_manifest(parent.job_id)
     item = manifest.items[0]
     child = library.database.get_job(item.initial_job_id)
@@ -173,6 +179,12 @@ def test_recovery_terminalizes_old_running_attempt_and_retries_same_plan(tmp_pat
         state="running",
     )
 
+    # Recovery is tied to the batch's persisted plan, not mutable project metadata.
+    edited_variant = project.variants[0].validated_copy(
+        update={"hook": "Project changed after batch preparation"}
+    )
+    library.save_project(project.validated_copy(update={"variants": (edited_variant,)}))
+
     retry, attempt_index = coordinator._current_attempt(  # noqa: SLF001 - contract regression
         parent.job_id,
         item,
@@ -182,6 +194,7 @@ def test_recovery_terminalizes_old_running_attempt_and_retries_same_plan(tmp_pat
     assert attempt_index == 1
     assert retry.state == "queued"
     assert retry.job_id != child.job_id
+    assert retry.payload["recovered_from_frozen_batch_plan"] is True
     old = library.database.get_job(child.job_id)
     assert old is not None and old.state == "failed"
     failure = coordinator.render.load_failure(old.job_id)
