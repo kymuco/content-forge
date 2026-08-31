@@ -58,9 +58,13 @@ def _exact_object(
     missing = required - keys
     unknown = keys - required - optional
     if missing:
-        raise LLMResponseError("LLM JSON is missing required fields: " + ", ".join(sorted(missing)))
+        raise LLMResponseError(
+            "LLM JSON is missing required fields: " + ", ".join(sorted(missing))
+        )
     if unknown:
-        raise LLMResponseError("LLM JSON contains unknown fields: " + ", ".join(sorted(unknown)))
+        raise LLMResponseError(
+            "LLM JSON contains unknown fields: " + ", ".join(sorted(unknown))
+        )
 
 
 def _string_list(value: object, *, field: str, maximum: int) -> tuple[str, ...]:
@@ -149,7 +153,9 @@ class ChatGPTWebAdapterLLMProvider:
         try:
             return factory(transport=self.transport, auth_file=self.auth_file)
         except Exception as exc:
-            raise LLMUnavailableError("failed to assemble chatgpt-web-adapter runtime") from exc
+            raise LLMUnavailableError(
+                "failed to assemble chatgpt-web-adapter runtime"
+            ) from exc
 
     def _get_runtime(self) -> object:
         if self._runtime is None:
@@ -181,7 +187,11 @@ class ChatGPTWebAdapterLLMProvider:
                 provider_id=self.provider_id,
                 provider_version=self.provider_version,
                 available=False,
-                reason=(str(reason) if reason else "chatgpt-web-adapter runtime is not ready"),
+                reason=(
+                    str(reason)
+                    if reason
+                    else "chatgpt-web-adapter runtime is not ready"
+                ),
             )
         return LLMProviderHealth(
             provider_id=self.provider_id,
@@ -210,20 +220,28 @@ class ChatGPTWebAdapterLLMProvider:
             transport=str(getattr(execution, "transport", self.transport)),
             model_profile=self.model_profile,
             observed_model=(
-                observed_model if isinstance(observed_model, str) and observed_model else None
+                observed_model
+                if isinstance(observed_model, str) and observed_model
+                else None
             ),
             request_sha256=semantic_request_digest(task, request),  # type: ignore[arg-type]
             response_sha256=response_digest(raw_response),
             canonical_completion_proven=(
-                canonical_completion if isinstance(canonical_completion, bool) else None
+                canonical_completion
+                if isinstance(canonical_completion, bool)
+                else None
             ),
             completion_source=completion_source,
         )
 
-    def _invoke(self, task: str, request: object) -> tuple[dict[str, object], LLMInvocationEvidence]:
+    def _invoke(
+        self, task: str, request: object
+    ) -> tuple[dict[str, object], LLMInvocationEvidence]:
         availability = self.health()
         if not availability.available:
-            raise LLMUnavailableError(availability.reason or "LLM provider is unavailable")
+            raise LLMUnavailableError(
+                availability.reason or "LLM provider is unavailable"
+            )
         runtime = self._get_runtime()
         prompt = build_task_prompt(task, request)  # type: ignore[arg-type]
         try:
@@ -237,7 +255,9 @@ class ChatGPTWebAdapterLLMProvider:
         except Exception as exc:
             # No automatic retry: CWA production writes can require reconciliation when
             # dispatch outcome is ambiguous, so PR15 never duplicates a provider turn.
-            raise LLMExecutionError("chatgpt-web-adapter task execution failed") from exc
+            raise LLMExecutionError(
+                "chatgpt-web-adapter task execution failed"
+            ) from exc
 
         response = getattr(execution, "response", None)
         raw_text = getattr(response, "text", None)
@@ -255,21 +275,30 @@ class ChatGPTWebAdapterLLMProvider:
     def suggest_hooks(self, request: HookRequest) -> HookSuggestions:
         payload, evidence = self._invoke("hook_suggestions", request)
         _exact_object(payload, required=frozenset({"hooks"}))
-        hooks = _string_list(payload["hooks"], field="hooks", maximum=request.max_candidates)
-        return HookSuggestions(hooks=hooks, evidence=evidence)
+        hooks = _string_list(
+            payload["hooks"], field="hooks", maximum=request.max_candidates
+        )
+        try:
+            return HookSuggestions(hooks=hooks, evidence=evidence)
+        except Exception as exc:
+            raise LLMResponseError("invalid hook suggestions") from exc
 
     def suggest_metadata(self, request: MetadataRequest) -> MetadataSuggestions:
         payload, evidence = self._invoke("metadata_suggestions", request)
         _exact_object(payload, required=frozenset({"candidates"}))
         raw_candidates = payload["candidates"]
         if not isinstance(raw_candidates, list) or not raw_candidates:
-            raise LLMResponseError("metadata candidates must be a non-empty JSON array")
+            raise LLMResponseError(
+                "metadata candidates must be a non-empty JSON array"
+            )
         if len(raw_candidates) > request.max_candidates:
             raise LLMResponseError("metadata candidates exceed requested maximum")
         candidates: list[MetadataCandidate] = []
         for raw in raw_candidates:
             if not isinstance(raw, dict):
-                raise LLMResponseError("each metadata candidate must be a JSON object")
+                raise LLMResponseError(
+                    "each metadata candidate must be a JSON object"
+                )
             _exact_object(
                 raw,
                 required=frozenset({"title", "description", "hashtags"}),
@@ -280,7 +309,9 @@ class ChatGPTWebAdapterLLMProvider:
             if len(hashtags) > request.max_hashtags:
                 raise LLMResponseError("metadata hashtags exceed requested maximum")
             if any(not isinstance(item, str) or not item for item in hashtags):
-                raise LLMResponseError("metadata hashtags must contain non-empty strings")
+                raise LLMResponseError(
+                    "metadata hashtags must contain non-empty strings"
+                )
             try:
                 candidate = MetadataCandidate(
                     title=raw["title"],
@@ -290,7 +321,10 @@ class ChatGPTWebAdapterLLMProvider:
             except Exception as exc:
                 raise LLMResponseError("invalid metadata candidate") from exc
             candidates.append(candidate)
-        return MetadataSuggestions(candidates=tuple(candidates), evidence=evidence)
+        try:
+            return MetadataSuggestions(candidates=tuple(candidates), evidence=evidence)
+        except Exception as exc:
+            raise LLMResponseError("invalid metadata suggestions") from exc
 
     def clean_text(self, request: TextCleanupRequest) -> TextCleanupResult:
         payload, evidence = self._invoke("text_cleanup", request)
@@ -304,7 +338,9 @@ class ChatGPTWebAdapterLLMProvider:
             raise LLMResponseError("cleaned_text must be a non-empty string")
         notes = _optional_string(payload.get("notes"), field="notes")
         try:
-            return TextCleanupResult(cleaned_text=cleaned, notes=notes, evidence=evidence)
+            return TextCleanupResult(
+                cleaned_text=cleaned, notes=notes, evidence=evidence
+            )
         except Exception as exc:
             raise LLMResponseError("invalid text cleanup result") from exc
 
@@ -335,15 +371,21 @@ class ChatGPTWebAdapterLLMProvider:
             required=frozenset({"content_kinds", "template_ids", "tags"}),
             optional=frozenset({"rationale"}),
         )
-        content_kinds = _string_list(payload["content_kinds"], field="content_kinds", maximum=8)
-        template_ids = _string_list(payload["template_ids"], field="template_ids", maximum=12)
+        content_kinds = _string_list(
+            payload["content_kinds"], field="content_kinds", maximum=8
+        )
+        template_ids = _string_list(
+            payload["template_ids"], field="template_ids", maximum=12
+        )
         tags_value = payload["tags"]
         if not isinstance(tags_value, list):
             raise LLMResponseError("classification tags must be a JSON array")
         if len(tags_value) > request.max_tags:
             raise LLMResponseError("classification tags exceed requested maximum")
         if any(not isinstance(item, str) or not item for item in tags_value):
-            raise LLMResponseError("classification tags must contain non-empty strings")
+            raise LLMResponseError(
+                "classification tags must contain non-empty strings"
+            )
         tags = tuple(tags_value)
         if len(set(tags)) != len(tags):
             raise LLMResponseError("classification tags must not contain duplicates")
