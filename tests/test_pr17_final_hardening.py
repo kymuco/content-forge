@@ -117,8 +117,16 @@ def test_run_batch_indexes_render_attempts_once_for_all_item_lookups(
         scan_count += 1
         return original_list_jobs(*args, **kwargs)
 
-    def fake_hardened_run(self, requested_batch_job_id, capabilities, **kwargs):
-        del capabilities, kwargs
+    def fake_drain(
+        self,
+        requested_batch_job_id,
+        capabilities,
+        *,
+        prefer_nvenc,
+        render_timeout,
+        qc_timeout,
+    ):
+        del capabilities, prefer_nvenc, render_timeout, qc_timeout
         resolved = []
         for item in items:
             attempt, attempt_index = self._current_attempt(  # noqa: SLF001
@@ -132,11 +140,7 @@ def test_run_batch_indexes_render_attempts_once_for_all_item_lookups(
         return tuple(resolved)
 
     monkeypatch.setattr(batch_final, "list_jobs", counted_list_jobs)
-    monkeypatch.setattr(
-        batch_final._HardenedBatchCoordinator,  # noqa: SLF001
-        "run_batch",
-        fake_hardened_run,
-    )
+    monkeypatch.setattr(BatchCoordinator, "_drain_batch", fake_drain)
 
     result = coordinator.run_batch(batch_job_id, object())  # type: ignore[arg-type]
 
