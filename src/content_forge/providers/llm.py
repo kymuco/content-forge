@@ -23,6 +23,10 @@ GeneratedTag = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
 ]
+HashtagText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
+]
 ConstraintText = Annotated[str, StringConstraints(min_length=1, max_length=1000)]
 
 
@@ -136,7 +140,7 @@ class HookSuggestions(FrozenModel):
 class MetadataCandidate(FrozenModel):
     title: str = Field(min_length=1, max_length=4096)
     description: str = Field(default="", max_length=20000)
-    hashtags: tuple[GeneratedTag, ...] = Field(default=(), max_length=32)
+    hashtags: tuple[HashtagText, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def unique_hashtags(self):
@@ -404,10 +408,15 @@ def replace_provider_suggestions(
 
     if task.status is not ReviewStatus.OPEN:
         raise ValueError("provider suggestions can only replace proposals on an open review task")
+    if task.accepted_value is not None:
+        raise ValueError("provider suggestions cannot replace proposals after accepted_value is set")
     if not provider_id.strip():
         raise ValueError("provider_id must be non-empty")
     if any(item.provider != provider_id for item in suggestions):
         raise ValueError("replacement suggestions must all belong to provider_id")
+    for item in suggestions:
+        if item.metadata.get("task") != task.task_type:
+            raise ValueError("replacement suggestion task must match review task_type")
     preserved = tuple(item for item in task.suggestions if item.provider != provider_id)
     return task.validated_copy(update={"suggestions": preserved + suggestions})
 
