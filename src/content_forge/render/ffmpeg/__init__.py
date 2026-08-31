@@ -1,6 +1,6 @@
 """FFmpeg/ffprobe backend."""
 
-from .audio_compiler import compile_ffmpeg_command
+from .audio_compiler import compile_audio_intermediate_command, compile_ffmpeg_command
 from .backend import FFmpegBackend
 from .capabilities import (
     FFmpegCapabilityError,
@@ -52,6 +52,7 @@ __all__ = [
     "UnsupportedRenderFeatureError",
     "apply_probe_to_asset",
     "command_manifest_digest",
+    "compile_audio_intermediate_command",
     "compile_ffmpeg_command",
     "execute_ffmpeg",
     "parse_encoders",
