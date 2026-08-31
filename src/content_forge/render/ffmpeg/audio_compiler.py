@@ -11,7 +11,7 @@ from content_forge.audio.mastering import (
     audio_intermediate_cache_key,
     loudness_apply_filter,
 )
-from content_forge.timeline import RenderPlan
+from content_forge.timeline import PlannedTransition, RenderPlan
 
 from .capabilities import require_filters
 from .compiler import (
@@ -216,6 +216,10 @@ def _mastering_settings(
         raise UnsupportedRenderFeatureError(
             "two-pass loudness normalization requires frozen first-pass measurement"
         )
+    if normalize and measurement is not None and not measurement.normalizable:
+        raise UnsupportedRenderFeatureError(
+            "two-pass loudness normalization requires finite non-silent measurement values"
+        )
     return policy, measurement, policy.limiter_dbfs
 
 
@@ -299,6 +303,53 @@ def _without_mastering(plan: RenderPlan) -> RenderPlan:
     return plan.validated_copy(update={"output_profile": profile})
 
 
+def _audio_carrier_plan(plan: RenderPlan) -> RenderPlan:
+    """Remove visual dependencies while retaining absolute audio timing/semantics."""
+
+    first = plan.scenes[0]
+    carrier_scene = first.validated_copy(
+        update={
+            "order": 0,
+            "start_seconds": 0.0,
+            "duration_seconds": plan.total_duration_seconds,
+            "end_seconds": plan.total_duration_seconds,
+            "media_asset_id": None,
+            "media_source_id": None,
+            "trim_start_seconds": 0.0,
+            "trim_duration_seconds": None,
+            "crop": None,
+            "focus": None,
+            "motion_type": None,
+            "motion_start_rect": None,
+            "motion_end_rect": None,
+            "motion_focus": None,
+            "motion_properties": {},
+            "transition_in": PlannedTransition(),
+            "transition_out": PlannedTransition(),
+            "properties": {},
+        }
+    )
+    tracks = tuple(
+        track.validated_copy(update={"scope_scene_id": None})
+        for track in plan.audio_tracks
+    )
+    audio_asset_ids = {
+        track.asset_id for track in tracks if track.asset_id is not None
+    }
+    assets = tuple(
+        asset for asset in plan.assets if asset.asset_id in audio_asset_ids
+    )
+    return plan.validated_copy(
+        update={
+            "scenes": (carrier_scene,),
+            "overlays": (),
+            "audio_tracks": tracks,
+            "assets": assets,
+            "template_properties": {},
+        }
+    )
+
+
 def _audio_only_filtergraph(manifest: RenderCommandManifest) -> str:
     parts = manifest.filtergraph.split(";")
     starts = [index for index, part in enumerate(parts) if part.startswith("anullsrc=")]
@@ -370,11 +421,13 @@ def compile_audio_intermediate_command(
     *,
     prefer_nvenc: bool = True,
 ) -> tuple[str, ...]:
-    """Compile the exact semantic premaster to lossless 48 kHz stereo PCM WAV.
+    """Compile the exact semantic premaster to lossless 48 kHz stereo PCM F32LE WAV.
 
     Loudness targets and frozen measurements are deliberately removed, while track gain,
-    fades, loop semantics and timeline ducking are retained. First-pass loudness analysis
-    must run against this intermediate rather than a lossy AAC render.
+    fades, source seek/loop semantics and timeline ducking are retained. A synthetic
+    black carrier plan removes visual assets, overlays, transitions and motion from this
+    audio-only operation. First-pass loudness analysis must run against this intermediate
+    rather than a lossy or integer-quantized render.
     """
 
     if plan.output_profile.audio_codec is None:
@@ -387,7 +440,7 @@ def compile_audio_intermediate_command(
         )
 
     destination = canonical_output_path(output_path)
-    premaster_plan = _without_mastering(plan)
+    premaster_plan = _without_mastering(_audio_carrier_plan(plan))
     manifest = compile_ffmpeg_command(
         premaster_plan,
         asset_paths,
@@ -417,7 +470,7 @@ def compile_audio_intermediate_command(
         label,
         "-vn",
         "-c:a",
-        "pcm_s24le",
+        "pcm_f32le",
         "-ar",
         "48000",
         "-ac",
