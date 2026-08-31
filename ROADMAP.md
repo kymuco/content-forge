@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR14: **complete** in the intended post-merge repository state.
-- Next step: **PR15 — LLM provider boundary and `chatgpt-web-adapter`**.
+- PR1–PR15: **complete** in the intended post-merge repository state.
+- Next step: **PR16 — Language variants and localized render metadata**.
 - Current milestone: **Milestone 4 — Optional intelligence and variants**.
 
 ## Milestone 0 — Foundation
@@ -256,7 +256,7 @@ Exit condition: batch outputs have predictable audio without manual FFmpeg work.
 
 ### PR15 — LLM provider boundary and `chatgpt-web-adapter`
 
-Status: **next**
+Status: **complete**
 
 Deliverables:
 
@@ -273,6 +273,8 @@ Deliverables:
 Exit condition: language/semantic assistance is useful but never a hard dependency.
 
 ### PR16 — Language variants and localized render metadata
+
+Status: **next**
 
 Deliverables:
 
