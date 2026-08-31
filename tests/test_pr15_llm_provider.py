@@ -56,13 +56,17 @@ def test_semantic_prompt_and_digest_are_deterministic_and_data_delimited() -> No
     )
 
 
-def test_strict_json_parser_allows_only_object_or_whole_json_fence() -> None:
+def test_strict_json_parser_allows_only_one_finite_unique_key_object() -> None:
     assert strict_json_object('{"hooks":["A"]}') == {"hooks": ["A"]}
     assert strict_json_object('```json\n{"hooks":["A"]}\n```') == {"hooks": ["A"]}
-    with pytest.raises(LLMResponseError):
-        strict_json_object('{"hooks":["A"]}\nlooks good')
-    with pytest.raises(LLMResponseError):
-        strict_json_object('["A"]')
+    for malformed in (
+        '{"hooks":["A"]}\nlooks good',
+        '["A"]',
+        '{"score":NaN}',
+        '{"hooks":["A"],"hooks":["B"]}',
+    ):
+        with pytest.raises(LLMResponseError):
+            strict_json_object(malformed)
 
 
 def test_results_convert_to_existing_review_suggestions_without_accepting_them() -> None:
@@ -88,7 +92,24 @@ def test_results_convert_to_existing_review_suggestions_without_accepting_them()
     assert all(item.provider == "fake" for item in to_review_suggestions(hook))
 
 
-def test_replace_provider_suggestions_preserves_review_authority_and_other_providers() -> None:
+def test_long_cleanup_and_translation_values_keep_bounded_review_labels() -> None:
+    evidence = _evidence()
+    long_text = "x" * 4097
+
+    cleanup = to_review_suggestions(
+        TextCleanupResult(cleaned_text=long_text, evidence=evidence)
+    )[0]
+    translation = to_review_suggestions(
+        TranslationResult(translated_text=long_text, evidence=evidence)
+    )[0]
+
+    assert cleanup.value["cleaned_text"] == long_text
+    assert translation.value["translated_text"] == long_text
+    assert len(cleanup.label) <= 4096
+    assert len(translation.label) <= 4096
+
+
+def test_replace_provider_suggestions_preserves_open_review_authority_and_other_providers() -> None:
     project_id = new_entity_id(EntityKind.PROJECT)
     other = ReviewSuggestion(label="manual", value="manual", provider="other")
     old_fake = ReviewSuggestion(label="old", value="old", provider="fake")
@@ -96,7 +117,6 @@ def test_replace_provider_suggestions_preserves_review_authority_and_other_provi
         project_id=project_id,
         task_type="hook",
         suggestions=(other, old_fake),
-        accepted_value="already-accepted-value",
     )
     replacements = to_review_suggestions(
         HookSuggestions(hooks=("new",), evidence=_evidence())
@@ -109,7 +129,7 @@ def test_replace_provider_suggestions_preserves_review_authority_and_other_provi
     assert updated.attention == task.attention
     assert updated.priority == task.priority
     assert updated.blocking == task.blocking
-    assert updated.accepted_value == "already-accepted-value"
+    assert updated.accepted_value is None
     assert updated.suggestions[0] == other
     assert updated.suggestions[1].value == "new"
 
@@ -132,9 +152,38 @@ def test_provider_cannot_rewrite_suggestions_after_review_resolution() -> None:
         replace_provider_suggestions(task, replacements, provider_id="fake")
 
 
-def test_generated_hook_and_classification_registry_values_are_bounded() -> None:
+def test_provider_cannot_rewrite_anomalous_open_task_with_accepted_value() -> None:
+    task = ReviewTask(
+        project_id=new_entity_id(EntityKind.PROJECT),
+        task_type="hook",
+        accepted_value="accepted",
+    )
+    replacements = to_review_suggestions(
+        HookSuggestions(hooks=("late proposal",), evidence=_evidence())
+    )
+
+    with pytest.raises(ValueError, match="accepted_value"):
+        replace_provider_suggestions(task, replacements, provider_id="fake")
+
+
+def test_provider_proposal_task_must_match_review_task_type() -> None:
+    task = ReviewTask(
+        project_id=new_entity_id(EntityKind.PROJECT),
+        task_type="metadata",
+    )
+    hook_replacements = to_review_suggestions(
+        HookSuggestions(hooks=("wrong task",), evidence=_evidence())
+    )
+
+    with pytest.raises(ValueError, match="task_type"):
+        replace_provider_suggestions(task, hook_replacements, provider_id="fake")
+
+
+def test_generated_hook_metadata_and_classification_values_are_bounded() -> None:
     with pytest.raises(ValueError):
         HookSuggestions(hooks=("x" * 4097,), evidence=_evidence())
+    with pytest.raises(ValueError):
+        MetadataCandidate(title="Title", hashtags=("#" + "x" * 128,))
     with pytest.raises(ValueError):
         ClassificationRequest(
             source_summary="fixture",
