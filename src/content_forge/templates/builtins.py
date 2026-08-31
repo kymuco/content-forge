@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from content_forge.core import Asset, NormalizedPoint, NormalizedRect, Project
 from content_forge.timeline import AssetResolver, RenderPlan, ResolvedTemplate
 
+from .components import PR13_COMPONENTS
 from .contracts import (
     ComponentDefinition,
     ComponentRef,
@@ -51,7 +52,6 @@ MEDIA_COMPONENT = ComponentDefinition(
     accepts_asset=True,
     description="Generic scene media placement resolved into ordinary Scene primitives.",
 )
-
 TEXT_COMPONENT = ComponentDefinition(
     component_id="text",
     version=BUILTIN_COMPONENT_VERSION,
@@ -60,7 +60,6 @@ TEXT_COMPONENT = ComponentDefinition(
     required_properties=("font",),
     description="Generic text overlay contract consumed by renderer-independent timeline plans.",
 )
-
 ORIGINAL_AUDIO_COMPONENT = ComponentDefinition(
     component_id="original_audio",
     version=BUILTIN_COMPONENT_VERSION,
@@ -77,15 +76,10 @@ NEUTRAL_FRAME_ASSET = TemplateAssetDefinition(
     redistributable=True,
     media_type="image_svg",
 )
-
 NEUTRAL_SKIN = SkinDefinition(
     skin_id=NEUTRAL_SKIN_ID,
     version=NEUTRAL_SKIN_VERSION,
-    properties={
-        "background": "transparent",
-        "foreground": "white",
-        "accent": "white",
-    },
+    properties={"background": "transparent", "foreground": "white", "accent": "white"},
     asset_ids=(NEUTRAL_FRAME_ASSET_ID,),
     description="Redistribution-safe neutral skin fixture for registry and packaging tests.",
 )
@@ -107,10 +101,7 @@ def hook_overlay_definition() -> TemplateDefinition:
             ComponentRef(component_id="original_audio", version=BUILTIN_COMPONENT_VERSION),
         ),
         anchors=(
-            TemplateAnchor(
-                anchor_id="canvas_center",
-                point=NormalizedPoint(x=0.5, y=0.5),
-            ),
+            TemplateAnchor(anchor_id="canvas_center", point=NormalizedPoint(x=0.5, y=0.5)),
             TemplateAnchor(
                 anchor_id="hook_origin",
                 point=NormalizedPoint(x=hook_rect.x, y=hook_rect.y),
@@ -128,10 +119,7 @@ def hook_overlay_definition() -> TemplateDefinition:
             TemplateSlot(
                 slot_id="main_media",
                 slot_kind="media",
-                component=ComponentRef(
-                    component_id="media",
-                    version=BUILTIN_COMPONENT_VERSION,
-                ),
+                component=ComponentRef(component_id="media", version=BUILTIN_COMPONENT_VERSION),
                 rect=NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0),
                 anchor_id="canvas_center",
                 description="Primary source media; one or more project scenes may fill this role.",
@@ -139,10 +127,7 @@ def hook_overlay_definition() -> TemplateDefinition:
             TemplateSlot(
                 slot_id="hook",
                 slot_kind="text",
-                component=ComponentRef(
-                    component_id="text",
-                    version=BUILTIN_COMPONENT_VERSION,
-                ),
+                component=ComponentRef(component_id="text", version=BUILTIN_COMPONENT_VERSION),
                 rect=hook_rect,
                 anchor_id="hook_origin",
                 description="Human-accepted hook text from the selected Variant.",
@@ -161,8 +146,7 @@ def hook_overlay_definition() -> TemplateDefinition:
             TemplateDefault(key="box_color", value=config.box_color),
             TemplateDefault(key="original_audio", value=config.original_audio),
             TemplateDefault(
-                key="original_audio_gain_db",
-                value=config.original_audio_gain_db,
+                key="original_audio_gain_db", value=config.original_audio_gain_db
             ),
         ),
         metadata={
@@ -183,6 +167,8 @@ def create_builtin_registries() -> RegistryBundle:
     components.register(TEXT_COMPONENT)
     components.register(ORIGINAL_AUDIO_COMPONENT)
     components.register(MEDIA_OVERLAY_COMPONENT)
+    for definition in PR13_COMPONENTS:
+        components.register(definition)
 
     skins = SkinRegistry(assets)
     skins.register(NEUTRAL_SKIN)
@@ -214,10 +200,7 @@ def resolve_registered_template(
     """Resolve the project's exact built-in registered template without compiling it."""
 
     return create_builtin_registries().templates.resolve(
-        project,
-        assets,
-        profile_id=profile_id,
-        variant_id=variant_id,
+        project, assets, profile_id=profile_id, variant_id=variant_id
     )
 
 
@@ -231,10 +214,7 @@ def compile_registered_template(
     """Compile the project's exact registered template through the generic timeline path."""
 
     return create_builtin_registries().templates.compile(
-        project,
-        assets,
-        profile_id=profile_id,
-        variant_id=variant_id,
+        project, assets, profile_id=profile_id, variant_id=variant_id
     )
 
 
@@ -257,8 +237,5 @@ def compile_registered_hook_overlay(
             f"{HOOK_OVERLAY_TEMPLATE_ID}@{HOOK_OVERLAY_TEMPLATE_VERSION}"
         )
     return compile_registered_template(
-        project,
-        assets,
-        profile_id=profile_id,
-        variant_id=variant_id,
+        project, assets, profile_id=profile_id, variant_id=variant_id
     )
