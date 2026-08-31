@@ -130,6 +130,14 @@ def test_adapter_fails_closed_on_unknown_fields_trailing_prose_and_allowlist_esc
         )
 
 
+def test_adapter_wraps_oversized_hook_as_provider_response_error() -> None:
+    raw = '{"hooks":["' + ("x" * 4097) + '"]}'
+    provider = _provider(_FakeRuntime([raw]))
+
+    with pytest.raises(LLMResponseError, match="invalid hook suggestions"):
+        provider.suggest_hooks(HookRequest(source_summary="fixture"))
+
+
 def test_adapter_rejects_classification_duplicates_after_field_normalization() -> None:
     runtime = _FakeRuntime(
         [
