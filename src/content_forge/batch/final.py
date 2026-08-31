@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from content_forge.core import EntityKind, require_entity_id
 from content_forge.storage import StoredJob, list_jobs
 
 from .coordinator import (
@@ -134,6 +135,11 @@ class BatchCoordinator(_HardenedBatchCoordinator):
 
     def run_batch(self, batch_job_id, capabilities, **kwargs):
         """Drain one batch under an OS lease; a live runner can never look stale."""
+
+        try:
+            batch_job_id = require_entity_id(batch_job_id, EntityKind.JOB)
+        except (TypeError, ValueError) as exc:
+            raise BatchIntegrityError("batch job ID is invalid") from exc
 
         lock_path = (
             self.library.paths.root
