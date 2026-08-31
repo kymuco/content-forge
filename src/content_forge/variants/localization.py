@@ -5,13 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from pydantic import Field, JsonValue, StringConstraints, field_validator, model_validator
+from pydantic import (
+    Field,
+    JsonValue,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from content_forge.core import EntityKind, RegistryKey, Variant, require_entity_id
 from content_forge.core.models import FrozenModel, LanguageTag
-from content_forge.timeline import RenderPlan, render_plan_digest
+
+if TYPE_CHECKING:
+    from content_forge.timeline import RenderPlan
 
 LOCALIZED_VARIANT_CONTRACT_VERSION = "1"
 VARIANT_RENDER_CACHE_KEY_VERSION = "1"
@@ -41,6 +50,7 @@ FontFamilyToken = Annotated[
 _MAX_TEXT_OVERRIDES = 128
 _MAX_STYLE_OVERRIDES = 64
 _MAX_HASHTAGS = 32
+_FONT_ADAPTER = TypeAdapter(FontFamilyToken)
 
 
 class VariantLocalizationError(ValueError):
@@ -49,6 +59,17 @@ class VariantLocalizationError(ValueError):
 
 class VariantCacheIdentityError(VariantLocalizationError):
     """A render plan and localized variant cannot form one cache identity."""
+
+
+def _font_token(value: object) -> str:
+    if not isinstance(value, str):
+        raise VariantLocalizationError("variant font style override must be a string")
+    try:
+        return _FONT_ADAPTER.validate_python(value, strict=True)
+    except ValueError as exc:
+        raise VariantLocalizationError(
+            "variant font must be a portable family token, not a filesystem path"
+        ) from exc
 
 
 class LocalizedVariantSnapshot(FrozenModel):
@@ -74,6 +95,20 @@ class LocalizedVariantSnapshot(FrozenModel):
     def validate_variant_id(cls, value: str) -> str:
         return require_entity_id(value, EntityKind.VARIANT)
 
+    @field_validator("style_overrides")
+    @classmethod
+    def normalize_reserved_style_overrides(
+        cls,
+        value: Mapping[str, JsonValue],
+    ) -> Mapping[str, JsonValue]:
+        if FONT_STYLE_OVERRIDE_KEY not in value:
+            return value
+        normalized = dict(value)
+        normalized[FONT_STYLE_OVERRIDE_KEY] = _font_token(
+            normalized[FONT_STYLE_OVERRIDE_KEY]
+        )
+        return normalized
+
     @model_validator(mode="after")
     def validate_localized_contract(self) -> Self:
         if len(self.hashtags) != len(set(self.hashtags)):
@@ -82,11 +117,6 @@ class LocalizedVariantSnapshot(FrozenModel):
             raise ValueError("localized text overrides exceed supported maximum")
         if len(self.style_overrides) > _MAX_STYLE_OVERRIDES:
             raise ValueError("localized style overrides exceed supported maximum")
-
-        font = self.style_overrides.get(FONT_STYLE_OVERRIDE_KEY)
-        if font is not None:
-            # Reuse the public font-token validation contract for the reserved style key.
-            _font_token(font)
         return self
 
     @property
@@ -157,28 +187,15 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _font_token(value: object) -> str:
-    if not isinstance(value, str):
-        raise VariantLocalizationError("variant font style override must be a string")
-    try:
-        # Pydantic validates the exact same public token contract used by snapshots.
-        class _FontValue(FrozenModel):
-            font: FontFamilyToken
-
-        return _FontValue(font=value).font
-    except ValueError as exc:
-        raise VariantLocalizationError(
-            "variant font must be a portable family token, not a filesystem path"
-        ) from exc
-
-
 def localized_variant_snapshot(variant: Variant) -> LocalizedVariantSnapshot:
     """Materialize the bounded PR16 metadata contract from one canonical Variant."""
 
     try:
         return LocalizedVariantSnapshot.from_variant(variant)
     except ValueError as exc:
-        raise VariantLocalizationError("variant does not satisfy PR16 localization bounds") from exc
+        raise VariantLocalizationError(
+            "variant does not satisfy PR16 localization bounds"
+        ) from exc
 
 
 def localized_variant_digest(
@@ -209,11 +226,12 @@ def apply_localized_text_style(
     variant: Variant | None,
     variant_field: str | None,
 ) -> Mapping[str, JsonValue]:
-    """Apply PR16 variant style intent only to text bound to a variant field.
+    """Apply PR16 variant font intent to one explicitly variant-bound text component.
 
-    Explicit localized font selection intentionally overrides the template's generic
-    text font for that localized field. Other style overrides remain metadata until a
-    future version gives them renderer-independent semantics.
+    This helper is intentionally renderer-independent. Template/component resolvers may
+    apply it before timeline compilation; unbound credits or other nonlocalized text are
+    left untouched. Other style overrides remain metadata until a future version gives
+    them renderer-independent semantics.
     """
 
     if variant is None or variant_field is None:
@@ -239,7 +257,7 @@ def build_language_variant(
     text_overrides: Mapping[str, str] | None = None,
     style_overrides: Mapping[str, JsonValue] | None = None,
 ) -> Variant:
-    """Build one canonical Variant while keeping localized text/style above the timeline.
+    """Build one canonical Variant while keeping localized data above the timeline.
 
     `subtitle` maps to the reserved `text_overrides["subtitle"]` key. `font` maps to the
     reserved `style_overrides["font"]` key. Conflicting explicit and mapping values fail
@@ -252,14 +270,21 @@ def build_language_variant(
     if subtitle is not None:
         existing = texts.get(SUBTITLE_TEXT_OVERRIDE_KEY)
         if existing is not None and existing != subtitle:
-            raise VariantLocalizationError("subtitle conflicts with text_overrides['subtitle']")
+            raise VariantLocalizationError(
+                "subtitle conflicts with text_overrides['subtitle']"
+            )
         texts[SUBTITLE_TEXT_OVERRIDE_KEY] = subtitle
 
+    existing_font = styles.get(FONT_STYLE_OVERRIDE_KEY)
+    if existing_font is not None:
+        styles[FONT_STYLE_OVERRIDE_KEY] = _font_token(existing_font)
     if font is not None:
         normalized_font = _font_token(font)
-        existing = styles.get(FONT_STYLE_OVERRIDE_KEY)
-        if existing is not None and existing != normalized_font:
-            raise VariantLocalizationError("font conflicts with style_overrides['font']")
+        existing_font = styles.get(FONT_STYLE_OVERRIDE_KEY)
+        if existing_font is not None and existing_font != normalized_font:
+            raise VariantLocalizationError(
+                "font conflicts with style_overrides['font']"
+            )
         styles[FONT_STYLE_OVERRIDE_KEY] = normalized_font
 
     payload: dict[str, object] = {
@@ -289,19 +314,26 @@ def build_language_variant(
 
 
 def variant_render_cache_identity(
-    plan: RenderPlan,
+    plan: "RenderPlan",
     variant: Variant,
     *,
     purpose: Literal["preview", "final"],
 ) -> VariantRenderCacheIdentity:
     """Build a cache identity from a frozen plan plus the accepted localized snapshot."""
 
-    if plan.project_id is None:
-        raise VariantCacheIdentityError("render plan has no project identity")
+    from content_forge.timeline import render_plan_digest
+
     if plan.variant_id != variant.variant_id:
         raise VariantCacheIdentityError("render plan variant_id does not match variant")
     if plan.variant_language != variant.language:
-        raise VariantCacheIdentityError("render plan variant language does not match variant")
+        raise VariantCacheIdentityError(
+            "render plan variant language does not match variant"
+        )
+    profile_purpose = plan.output_profile.properties.get("purpose")
+    if profile_purpose is not None and profile_purpose != purpose:
+        raise VariantCacheIdentityError(
+            "cache purpose does not match output profile purpose"
+        )
 
     snapshot = localized_variant_snapshot(variant)
     return VariantRenderCacheIdentity(
@@ -318,7 +350,7 @@ def variant_render_cache_identity(
 
 
 def variant_render_cache_key(
-    plan: RenderPlan,
+    plan: "RenderPlan",
     variant: Variant,
     *,
     purpose: Literal["preview", "final"],
