@@ -19,7 +19,10 @@ from .review import (
     ReviewRenderError,
     ReviewValidationError,
 )
-from .review_pr17_hardening import ReviewService
+# Install the PR17 startup ownership boundary in place before exposing the existing
+# seventh-pass ReviewService class. This preserves all public class identities.
+from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
+from .review_seventh_hardening import ReviewService
 
 __all__ = [
     "ApplicationRepository",
