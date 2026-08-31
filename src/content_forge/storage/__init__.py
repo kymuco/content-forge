@@ -10,6 +10,7 @@ from .database import (
     StorageError,
     StorageSchemaError,
 )
+from .job_query import list_jobs
 from .job_state import transition_job_state
 from .library import LocalLibrary
 from .paths import RuntimePaths, default_runtime_root
@@ -32,6 +33,7 @@ __all__ = [
     "StorageSchemaError",
     "StoredJob",
     "default_runtime_root",
+    "list_jobs",
     "sha256_file",
     "transition_job_state",
 ]
