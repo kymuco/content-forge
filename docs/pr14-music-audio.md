@@ -49,7 +49,7 @@ Two-pass workflow:
 ```text
 canonical semantic mix
   -> gain / fade / timeline ducking
-  -> lossless 48 kHz stereo PCM S24LE premaster WAV
+  -> lossless 48 kHz stereo PCM F32LE premaster WAV
   -> derivation-keyed cache
   -> loudnorm analysis pass
   -> frozen LoudnessMeasurement
@@ -59,7 +59,11 @@ canonical semantic mix
   -> final AAC render
 ```
 
-`compile_audio_intermediate_command(...)` builds the lossless premaster from the same planned tracks and source seek/loop/timing semantics as the final renderer. Loudness targets and frozen measurements are deliberately excluded from this intermediate.
+The base mix is already normalized to FFmpeg planar float audio. `compile_audio_intermediate_command(...)` therefore writes `pcm_f32le`, preserving those float32 samples rather than introducing an integer quantization step before first-pass measurement.
+
+The intermediate compiler builds an internal black-carrier render plan with the same absolute audio tracks but no visual assets, overlays, motion, or visual source references. Audio premaster generation therefore does not require the original image/video files even though the final renderer still uses them.
+
+Loudness targets and frozen measurements are deliberately excluded from the premaster.
 
 When `audio_mastering.normalize=true`, the public FFmpeg compiler fails closed unless a frozen first-pass measurement is present.
 
@@ -98,7 +102,7 @@ The key hashes premaster-affecting evidence:
 - referenced audio asset SHA-256 values;
 - explicit audio policy identity/version;
 - total duration;
-- the fixed premaster format/version (`PCM S24LE`, 48 kHz, stereo).
+- the fixed premaster format/version (`PCM F32LE`, 48 kHz, stereo).
 
 It deliberately excludes:
 
@@ -145,9 +149,10 @@ PR14 adds coverage for:
 - fade/duck/limiter filtergraph compilation;
 - fail-closed normalization without measurement;
 - frozen-measurement second-pass compilation;
+- float-lossless premaster generation without visual asset paths;
 - audio premaster cache identity surviving visual/mastering-only edits;
 - byte-for-byte delegation when PR14 features are absent;
-- real FFmpeg lossless premaster rendering, loudness analysis, second-pass mastering, AAC output, and audio/video probing.
+- real FFmpeg float-premaster rendering, loudness analysis, real silence classification, second-pass mastering, AAC output, and audio/video probing.
 
 ## Explicit exclusions
 
