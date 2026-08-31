@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import (
@@ -16,11 +17,19 @@ from pydantic import (
     model_validator,
 )
 
-from content_forge.core import EntityKind, RegistryKey, Variant, require_entity_id
+from content_forge.core import (
+    EntityKind,
+    Overlay,
+    Project,
+    RegistryKey,
+    Scene,
+    Variant,
+    require_entity_id,
+)
 from content_forge.core.models import FrozenModel, LanguageTag
 
 if TYPE_CHECKING:
-    from content_forge.timeline import RenderPlan
+    from content_forge.timeline import AssetSource, RenderPlan, ResolvedTemplate
 
 LOCALIZED_VARIANT_CONTRACT_VERSION = "1"
 VARIANT_RENDER_CACHE_KEY_VERSION = "1"
@@ -58,7 +67,7 @@ class VariantLocalizationError(ValueError):
 
 
 class VariantCacheIdentityError(VariantLocalizationError):
-    """A render plan and localized variant cannot form one cache identity."""
+    """A compiled language variant cannot form the requested cache identity."""
 
 
 def _font_token(value: object) -> str:
@@ -141,6 +150,24 @@ class LocalizedVariantSnapshot(FrozenModel):
             text_overrides=variant.text_overrides,
             style_overrides=variant.style_overrides,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledLanguageVariant:
+    """One atomic PR16 pair: resolved render plan plus its exact metadata snapshot."""
+
+    plan: "RenderPlan"
+    localized_variant: LocalizedVariantSnapshot
+
+    def __post_init__(self) -> None:
+        if self.plan.variant_id != self.localized_variant.variant_id:
+            raise VariantLocalizationError(
+                "compiled render plan variant_id does not match localized snapshot"
+            )
+        if self.plan.variant_language != self.localized_variant.language:
+            raise VariantLocalizationError(
+                "compiled render plan language does not match localized snapshot"
+            )
 
 
 class VariantRenderCacheIdentity(FrozenModel):
@@ -226,13 +253,7 @@ def apply_localized_text_style(
     variant: Variant | None,
     variant_field: str | None,
 ) -> Mapping[str, JsonValue]:
-    """Apply PR16 variant font intent to one explicitly variant-bound text component.
-
-    This helper is intentionally renderer-independent. Template/component resolvers may
-    apply it before timeline compilation; unbound credits or other nonlocalized text are
-    left untouched. Other style overrides remain metadata until a future version gives
-    them renderer-independent semantics.
-    """
+    """Apply PR16 font intent only to one explicitly variant-bound text component."""
 
     if variant is None or variant_field is None:
         return properties
@@ -242,6 +263,87 @@ def apply_localized_text_style(
     updated = dict(properties)
     updated[FONT_STYLE_OVERRIDE_KEY] = font
     return updated
+
+
+def _localized_overlay(overlay: Overlay, variant: Variant) -> Overlay:
+    properties = apply_localized_text_style(
+        overlay.properties,
+        variant=variant,
+        variant_field=overlay.variant_field,
+    )
+    if properties == overlay.properties:
+        return overlay
+    return overlay.validated_copy(update={"properties": dict(properties)})
+
+
+def _localized_scene(scene: Scene, variant: Variant) -> Scene:
+    overlays = tuple(_localized_overlay(overlay, variant) for overlay in scene.overlays)
+    if overlays == scene.overlays:
+        return scene
+    return scene.validated_copy(update={"overlays": overlays})
+
+
+def _localized_project(project: Project, variant: Variant) -> Project:
+    overlays = tuple(_localized_overlay(overlay, variant) for overlay in project.overlays)
+    scenes = tuple(_localized_scene(scene, variant) for scene in project.scenes)
+    if overlays == project.overlays and scenes == project.scenes:
+        return project
+    return project.validated_copy(update={"overlays": overlays, "scenes": scenes})
+
+
+def _localized_template(
+    template: "ResolvedTemplate | None",
+    variant: Variant,
+) -> "ResolvedTemplate | None":
+    if template is None:
+        return None
+    overlays = tuple(_localized_overlay(overlay, variant) for overlay in template.overlays)
+    scenes = (
+        None
+        if template.scenes is None
+        else tuple(_localized_scene(scene, variant) for scene in template.scenes)
+    )
+    if overlays == template.overlays and scenes == template.scenes:
+        return template
+    return template.validated_copy(update={"overlays": overlays, "scenes": scenes})
+
+
+def _project_variant(project: Project, variant_id: str) -> Variant:
+    for variant in project.variants:
+        if variant.variant_id == variant_id:
+            return variant
+    raise VariantLocalizationError(f"unknown language variant: {variant_id}")
+
+
+def compile_language_variant(
+    project: Project,
+    assets: "AssetSource",
+    *,
+    variant_id: str,
+    profile_id: str | None = None,
+    template: "ResolvedTemplate | None" = None,
+) -> CompiledLanguageVariant:
+    """Compile one language variant and freeze the exact metadata used for that plan.
+
+    The project/template copies are ephemeral: only variant-bound overlay properties are
+    decorated with the selected portable font token. Scene IDs, media references,
+    timing, provenance, profiles, and canonical project storage remain shared.
+    """
+
+    from content_forge.timeline import compile_timeline
+
+    variant = _project_variant(project, variant_id)
+    snapshot = localized_variant_snapshot(variant)
+    localized_project = _localized_project(project, variant)
+    localized_template = _localized_template(template, variant)
+    plan = compile_timeline(
+        localized_project,
+        assets,
+        profile_id=profile_id,
+        variant_id=variant.variant_id,
+        template=localized_template,
+    )
+    return CompiledLanguageVariant(plan=plan, localized_variant=snapshot)
 
 
 def build_language_variant(
@@ -301,8 +403,6 @@ def build_language_variant(
     variant = Variant.model_validate(payload)
     snapshot = localized_variant_snapshot(variant)
 
-    # Write normalized bounded strings back into the canonical Variant so snapshot and
-    # stored project metadata share one exact representation.
     return variant.validated_copy(
         update={
             "language": snapshot.language,
@@ -314,33 +414,27 @@ def build_language_variant(
 
 
 def variant_render_cache_identity(
-    plan: "RenderPlan",
-    variant: Variant,
+    compiled: CompiledLanguageVariant,
     *,
     purpose: Literal["preview", "final"],
 ) -> VariantRenderCacheIdentity:
-    """Build a cache identity from a frozen plan plus the accepted localized snapshot."""
+    """Build cache identity from one atomically compiled plan/metadata pair."""
 
     from content_forge.timeline import render_plan_digest
 
-    if plan.variant_id != variant.variant_id:
-        raise VariantCacheIdentityError("render plan variant_id does not match variant")
-    if plan.variant_language != variant.language:
-        raise VariantCacheIdentityError(
-            "render plan variant language does not match variant"
-        )
+    plan = compiled.plan
+    snapshot = compiled.localized_variant
     profile_purpose = plan.output_profile.properties.get("purpose")
     if profile_purpose is not None and profile_purpose != purpose:
         raise VariantCacheIdentityError(
             "cache purpose does not match output profile purpose"
         )
 
-    snapshot = localized_variant_snapshot(variant)
     return VariantRenderCacheIdentity(
         purpose=purpose,
         project_id=plan.project_id,
-        variant_id=variant.variant_id,
-        variant_language=variant.language,
+        variant_id=snapshot.variant_id,
+        variant_language=snapshot.language,
         profile_id=plan.output_profile.profile_id,
         template_id=plan.template_id,
         template_version=plan.template_version,
@@ -350,19 +444,19 @@ def variant_render_cache_identity(
 
 
 def variant_render_cache_key(
-    plan: "RenderPlan",
-    variant: Variant,
+    compiled: CompiledLanguageVariant,
     *,
     purpose: Literal["preview", "final"],
 ) -> str:
     """Return the stable PR16 variant-specific preview/final semantic cache key."""
 
     return _canonical_digest(
-        variant_render_cache_identity(plan, variant, purpose=purpose)
+        variant_render_cache_identity(compiled, purpose=purpose)
     )
 
 
 __all__ = [
+    "CompiledLanguageVariant",
     "FONT_STYLE_OVERRIDE_KEY",
     "LOCALIZED_VARIANT_CONTRACT_VERSION",
     "LocalizedVariantSnapshot",
@@ -373,6 +467,7 @@ __all__ = [
     "VariantRenderCacheIdentity",
     "apply_localized_text_style",
     "build_language_variant",
+    "compile_language_variant",
     "localized_font",
     "localized_variant_digest",
     "localized_variant_snapshot",
