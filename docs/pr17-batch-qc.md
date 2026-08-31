@@ -78,6 +78,18 @@ This makes recovery mean â€œanother attempt at the same accepted render intent,â
 
 A process interruption during the uncommitted `preparing` phase is different: the batch has not yet established an authenticated complete manifest and therefore must fail closed rather than reconstruct accepted metadata from mutable project state. Held children are non-runnable until a committed batch run releases them.
 
+## Live ownership and attempt lookup
+
+Restart recovery is allowed only when no other live process owns the same batch drain. The public `BatchCoordinator.run_batch(...)` acquires a non-blocking OS advisory lock at:
+
+```text
+batches/<batch_job_id>/.run.lock
+```
+
+The lock is held across the entire drain. A concurrent live runner therefore fails before it can reinterpret the first runner's child state as stale recovery evidence. The lock file may survive a crash, but OS lock ownership does not: when the owning process/file descriptor disappears, a new process can acquire the lock immediately without a TTL or wall-clock staleness guess.
+
+The public drain also builds render-attempt history once per batch. One deterministic scan of persistent render jobs is grouped by batch ID, item key, and attempt index, after which per-item recovery uses that in-memory index. This keeps normal drain lookup `O(all render jobs + batch items)` rather than rescanning all historical render jobs once per item. Newly created interruption-recovery attempts are appended to the active index as they are created.
+
 ## QC contract
 
 `run_render_qc(...)` combines hard structural evidence with analyses that are only authoritative when the required evidence/runtime exists.
@@ -138,7 +150,17 @@ A successful or QC-evaluated item writes a portable `ExportSidecar` containing:
 - artifact-manifest storage key;
 - complete QC report.
 
-The parent `BatchResultManifest` is itself SHA-256 authenticated by append-only fields in the parent SQLite job payload.
+Each `BatchItemResult` records the exact SHA-256 digest of its export sidecar. The complete `BatchResultManifest` contains those item digests and is itself SHA-256 authenticated by append-only fields in the parent SQLite job payload. Because the QC report is embedded in the export sidecar, the terminal chain is:
+
+```text
+parent SQLite receipt
+  -> batch-result digest
+    -> item export-sidecar digest
+      -> export sidecar
+        -> QC report + render/output/source evidence
+```
+
+Changing terminal export/QC metadata therefore changes evidence already committed by the parent batch receipt.
 
 ## Runtime layout
 
@@ -148,6 +170,7 @@ PR17 uses runtime-relative paths only:
 batches/<batch_job_id>/
   batch-manifest.json
   batch-result.json
+  .run.lock
   items/<item_key>/
     qc-report.json
     export-sidecar.json
@@ -178,4 +201,4 @@ Only interruption recovery automatically creates a new render attempt, and that 
 
 ## Exit condition
 
-PR17 is complete when a committed batch can render preview/final items, survive process interruption without changing accepted intent, evaluate explicit QC, and publish authenticated reproducibility/export evidence using the existing PR7 job/runtime contracts.
+PR17 is complete when a committed batch can render preview/final items, survive process interruption without changing accepted intent, reject concurrent live ownership, evaluate explicit QC, and publish authenticated reproducibility/export evidence using the existing PR7 job/runtime contracts.
