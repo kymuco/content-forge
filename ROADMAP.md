@@ -4,9 +4,9 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR11: **complete** in the intended post-merge repository state.
-- Next step: **PR12 — Initial template pack**.
-- Current milestone: **Milestone 3 — Template/component system and initial format coverage**.
+- PR1–PR14: **complete** in the intended post-merge repository state.
+- Next step: **PR15 — LLM provider boundary and `chatgpt-web-adapter`**.
+- Current milestone: **Milestone 4 — Optional intelligence and variants**.
 
 ## Milestone 0 — Foundation
 
@@ -201,7 +201,7 @@ Exit condition: adding a simple visual format no longer requires changes to core
 
 ### PR12 — Initial template pack
 
-Status: **next**
+Status: **complete**
 
 Add the formats already identified during research:
 
@@ -217,6 +217,8 @@ Add the formats already identified during research:
 Exit condition: all initial non-voiced content families can be represented using the same runtime.
 
 ### PR13 — Reusable overlay and motion components
+
+Status: **complete**
 
 Deliverables:
 
@@ -235,6 +237,8 @@ Exit condition: art/manga/meme formats can be composed from reusable components 
 
 ### PR14 — Music and audio composition
 
+Status: **complete**
+
 Deliverables:
 
 - music library references;
@@ -251,6 +255,8 @@ Exit condition: batch outputs have predictable audio without manual FFmpeg work.
 ## Milestone 4 — Optional intelligence and variants
 
 ### PR15 — LLM provider boundary and `chatgpt-web-adapter`
+
+Status: **next**
 
 Deliverables:
 

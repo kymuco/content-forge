@@ -6,9 +6,9 @@ from pathlib import Path
 
 from content_forge.timeline import RenderPlan
 
+from .audio_compiler import compile_ffmpeg_command
 from .compiler import AssetPathSource
 from .models import FFmpegCapabilities, RenderCommandManifest, RenderResult
-from .motion_compiler import compile_ffmpeg_command
 from .runner import CancellationToken, execute_ffmpeg
 
 

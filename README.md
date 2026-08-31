@@ -55,9 +55,9 @@ Inbox                Review Queue
 
 ## Development status
 
-PR1–PR12 are complete in the intended post-merge repository state. The repository includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, the review/proxy-preview/final-production lifecycle, the exact-version template/component/skin registry boundary, and the first registered non-voiced template pack.
+PR1–PR14 are complete in the intended post-merge repository state. The repository includes canonical domain contracts, content-addressed local storage and provenance, deterministic timeline compilation, the generic FFmpeg backend, durable preview/final render orchestration, authenticated local FastAPI and Inbox ingest, the installable phone-first PWA/share flow, the review/proxy-preview/final-production lifecycle, the exact-version template/component/skin registry boundary, the first registered non-voiced template pack, reusable semantic overlay/motion components, and deterministic music/audio composition with lossless premaster caching, two-pass loudness mastering, and audio QC.
 
-The next implementation step is **PR13 — Reusable overlay and motion components**, continuing **Milestone 3 — Template/component system and initial format coverage**.
+The next implementation step is **PR15 — LLM provider boundary and `chatgpt-web-adapter`**, beginning **Milestone 4 — Optional intelligence and variants**.
 
 The intended v0.1 vertical slice remains:
 
@@ -97,7 +97,7 @@ PR8 enforces one live API owner per runtime root with an OS advisory lock acquir
 
 Accepted file bytes are identified by a durable exact size + SHA-256 receipt only after staging has been flushed/fsynced and its directory entry has been persisted where the platform supports that primitive. Post-acceptance operational filesystem or SQLite storage failures preserve resumable state instead of discarding the only verified copy. New canonical blobs and thumbnails also make their POSIX directory entries durable before the corresponding SQLite metadata receipt is committed.
 
-See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the review/preview production contract, [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) for the versioned template/component extension boundary, and [`docs/pr12-initial-template-pack.md`](docs/pr12-initial-template-pack.md) for the initial registered format pack.
+See [`docs/pr8-local-api.md`](docs/pr8-local-api.md) for the PR8 API/Inbox contract, [`docs/pr9-pwa.md`](docs/pr9-pwa.md) for the PWA/share flow, [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) for the review/preview production contract, [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) for the versioned template/component extension boundary, [`docs/pr12-initial-template-pack.md`](docs/pr12-initial-template-pack.md) for the initial registered format pack, [`docs/pr13-reusable-components.md`](docs/pr13-reusable-components.md) for reusable overlays/motion, and [`docs/pr14-music-audio.md`](docs/pr14-music-audio.md) for deterministic audio composition/mastering.
 
 ## Initial content families
 
@@ -109,9 +109,11 @@ The current non-voiced pack covers:
 - single-art and multi-art stories with bounded source-credit handling;
 - comic, manga, and manhwa panel sequences;
 - synchronized two/three-copy layouts;
-- bottom reaction compositions with explicit reaction-asset provenance.
+- bottom reaction compositions with explicit reaction-asset provenance;
+- reusable artist credits, comments, reactions, avatars, watermarks, pan/zoom/reveal motion, and simple transitions;
+- deterministic original/music mixing with fades, timeline ducking, two-pass loudness mastering, peak protection, QC, and lossless premaster caching.
 
-Later milestones add reusable semantic overlays/motion, audio composition, language variants, voiced panel stories, and long-form output without introducing a second timeline runtime.
+Later milestones add optional language/semantic assistance, language variants, voiced panel stories, and long-form output without introducing a second timeline runtime.
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
@@ -132,6 +134,8 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr10-review-preview.md`](docs/pr10-review-preview.md) — review queue, proxy preview, approval, and production-decision contract
 - [`docs/pr11-template-registry.md`](docs/pr11-template-registry.md) — exact-version template/component/skin registry and provenance contract
 - [`docs/pr12-initial-template-pack.md`](docs/pr12-initial-template-pack.md) — registered initial non-voiced template pack and resolver boundaries
+- [`docs/pr13-reusable-components.md`](docs/pr13-reusable-components.md) — reusable semantic overlay, motion, transition, and text-overflow contracts
+- [`docs/pr14-music-audio.md`](docs/pr14-music-audio.md) — music/original mixing, lossless premaster, two-pass loudness, QC, and cache contracts
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
