@@ -114,23 +114,26 @@ def evaluate_audio_qc(
 
 
 def _audio_track_payload(plan: RenderPlan) -> list[dict[str, object]]:
-    return [
-        {
-            "audio_track_id": track.audio_track_id,
-            "track_type": track.track_type,
-            "scope_scene_id": track.scope_scene_id,
-            "start_seconds": track.start_seconds,
-            "duration_seconds": track.duration_seconds,
-            "end_seconds": track.end_seconds,
-            "asset_id": track.asset_id,
-            "source_id": track.source_id,
-            "source_start_seconds": track.source_start_seconds,
-            "gain_db": track.gain_db,
-            "loop": track.loop,
-            "properties": dict(track.properties),
-        }
-        for track in sorted(plan.audio_tracks, key=lambda item: item.audio_track_id)
-    ]
+    payloads: list[dict[str, object]] = []
+    for track in sorted(plan.audio_tracks, key=lambda item: item.audio_track_id):
+        data = track.model_dump(mode="json")
+        payloads.append(
+            {
+                "audio_track_id": data["audio_track_id"],
+                "track_type": data["track_type"],
+                "scope_scene_id": data["scope_scene_id"],
+                "start_seconds": data["start_seconds"],
+                "duration_seconds": data["duration_seconds"],
+                "end_seconds": data["end_seconds"],
+                "asset_id": data["asset_id"],
+                "source_id": data["source_id"],
+                "source_start_seconds": data["source_start_seconds"],
+                "gain_db": data["gain_db"],
+                "loop": data["loop"],
+                "properties": data["properties"],
+            }
+        )
+    return payloads
 
 
 def audio_intermediate_cache_key(plan: RenderPlan) -> str:
@@ -140,6 +143,8 @@ def audio_intermediate_cache_key(plan: RenderPlan) -> str:
     audio_asset_ids = {
         track.asset_id for track in plan.audio_tracks if track.asset_id is not None
     }
+    profile = plan.output_profile.model_dump(mode="json")
+    profile_properties = profile["properties"]
     payload = {
         "version": "pr14_audio_cache_v1",
         "duration_seconds": plan.total_duration_seconds,
@@ -152,12 +157,18 @@ def audio_intermediate_cache_key(plan: RenderPlan) -> str:
             }
             for asset_id in sorted(audio_asset_ids)
         ],
-        "audio_codec": plan.output_profile.audio_codec,
-        "audio_bitrate_kbps": plan.output_profile.audio_bitrate_kbps,
-        "mastering": plan.output_profile.properties.get("audio_mastering"),
-        "policy": plan.output_profile.properties.get("audio_policy"),
+        "audio_codec": profile["audio_codec"],
+        "audio_bitrate_kbps": profile["audio_bitrate_kbps"],
+        "mastering": profile_properties.get("audio_mastering"),
+        "policy": profile_properties.get("audio_policy"),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
