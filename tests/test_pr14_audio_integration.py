@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from content_forge.audio import (
+    AudioIntermediateCache,
     AudioMixPolicy,
+    audio_intermediate_cache_key,
     compile_loudness_analysis_command,
     parse_loudnorm_measurement,
 )
@@ -22,7 +24,12 @@ from content_forge.core import (
     OutputProfile,
     new_entity_id,
 )
-from content_forge.render.ffmpeg import FFmpegBackend, probe_ffmpeg_runtime, probe_media
+from content_forge.render.ffmpeg import (
+    FFmpegBackend,
+    compile_audio_intermediate_command,
+    probe_ffmpeg_runtime,
+    probe_media,
+)
 from content_forge.timeline import PlannedAsset, PlannedAudioTrack, PlannedScene, RenderPlan
 
 
@@ -76,10 +83,11 @@ def _plan(
     *,
     mastering: dict[str, object] | None = None,
 ) -> RenderPlan:
-    properties: dict[str, object] = {}
+    properties: dict[str, object] = {
+        "audio_policy": {"policy_id": "integration", "version": "1.0"}
+    }
     if mastering is not None:
         properties["audio_mastering"] = mastering
-        properties["audio_policy"] = {"policy_id": "integration", "version": "1.0"}
     return RenderPlan(
         project_id=new_entity_id(EntityKind.PROJECT),
         output_profile=OutputProfile(
@@ -174,16 +182,41 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
     paths = {image_id: image, music_id: music, original_id: original}
 
     premaster_plan = _plan(image_id, music_id, original_id)
-    backend = FFmpegBackend(capabilities, paths, prefer_nvenc=False)
-    premaster_output = tmp_path / "premaster.mp4"
-    premaster_manifest = backend.compile(premaster_plan, premaster_output)
-    assert "afade=t=in:" in premaster_manifest.filtergraph
-    assert "volume=-7dB:enable='between(t,0.5,1.3)'" in premaster_manifest.filtergraph
-    backend.render(premaster_plan, premaster_output, timeout=30)
+    premaster_output = tmp_path / "premaster.wav"
+    premaster_command = compile_audio_intermediate_command(
+        premaster_plan,
+        paths,
+        capabilities,
+        premaster_output,
+        prefer_nvenc=False,
+    )
+    filter_index = premaster_command.index("-filter_complex")
+    premaster_filtergraph = premaster_command[filter_index + 1]
+    assert "afade=t=in:" in premaster_filtergraph
+    assert "volume=-7dB:enable='between(t,0.5,1.3)'" in premaster_filtergraph
+    assert "[vout]" not in premaster_filtergraph
+    assert "pcm_s24le" in premaster_command
+    subprocess.run(
+        premaster_command,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    premaster_probe = probe_media(
+        premaster_output, ffprobe_path=capabilities.ffprobe_path
+    )
+    assert premaster_probe.has_audio is True
+    assert premaster_probe.has_video is False
+
+    cache_key = audio_intermediate_cache_key(premaster_plan)
+    cache = AudioIntermediateCache(tmp_path / "audio-cache")
+    cached_premaster = cache.publish(premaster_output, cache_key)
+    assert cached_premaster.read_bytes() == premaster_output.read_bytes()
 
     analysis = subprocess.run(
         compile_loudness_analysis_command(
-            premaster_output,
+            cached_premaster,
             ffmpeg_path=capabilities.ffmpeg_path,
             policy=AudioMixPolicy(normalize=True),
         ),
@@ -202,12 +235,23 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
         "limiter_dbfs": -1.0,
         "measurement": measurement.model_dump(mode="json"),
     }
-    final_plan = _plan(image_id, music_id, original_id, mastering=master)
+    profile_properties = premaster_plan.output_profile.model_dump(mode="json")["properties"]
+    profile_properties["audio_mastering"] = master
+    mastered_profile = premaster_plan.output_profile.validated_copy(
+        update={"properties": profile_properties}
+    )
+    final_plan = premaster_plan.validated_copy(
+        update={"output_profile": mastered_profile}
+    )
+    assert audio_intermediate_cache_key(final_plan) == cache_key
+
+    backend = FFmpegBackend(capabilities, paths, prefer_nvenc=False)
     final_output = tmp_path / "mastered.mp4"
     final_manifest = backend.compile(final_plan, final_output)
     assert "loudnorm=I=-14:TP=-1:LRA=11:" in final_manifest.filtergraph
     assert "alimiter=limit=" in final_manifest.filtergraph
     assert final_manifest.metadata["audio_normalized"] is True
+    assert final_manifest.metadata["audio_cache_key"] == cache_key
 
     result = backend.render(final_plan, final_output, timeout=30)
     assert result.bytes_written > 0
