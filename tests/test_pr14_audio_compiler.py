@@ -16,6 +16,7 @@ from content_forge.core import (
 from content_forge.render.ffmpeg import (
     FFmpegCapabilities,
     UnsupportedRenderFeatureError,
+    compile_audio_intermediate_command,
     compile_ffmpeg_command,
 )
 from content_forge.render.ffmpeg.motion_compiler import (
@@ -242,6 +243,50 @@ def test_normalization_uses_frozen_first_pass_measurement(tmp_path: Path) -> Non
     assert "measured_I=-20" in manifest.filtergraph
     assert "linear=true" in manifest.filtergraph
     assert manifest.metadata["audio_normalized"] is True
+
+
+def test_lossless_intermediate_uses_premaster_and_ignores_mastering_evidence(
+    tmp_path: Path,
+) -> None:
+    plan, paths = _paths(tmp_path)
+    original_key = audio_intermediate_cache_key(plan)
+    measurement = LoudnessMeasurement(
+        input_i=-20.0,
+        input_tp=-4.0,
+        input_lra=2.5,
+        input_thresh=-30.0,
+        target_offset=0.1,
+    )
+    properties = _profile_properties(plan)
+    properties["audio_mastering"] = {
+        "normalize": True,
+        "target_integrated_lufs": -14.0,
+        "target_true_peak_dbfs": -1.0,
+        "target_lra": 11.0,
+        "limiter_dbfs": -1.0,
+        "measurement": measurement.model_dump(mode="json"),
+    }
+    profile = plan.output_profile.validated_copy(update={"properties": properties})
+    mastered = plan.validated_copy(update={"output_profile": profile})
+
+    command = compile_audio_intermediate_command(
+        mastered,
+        paths,
+        _capabilities(),
+        tmp_path / "premaster.wav",
+        prefer_nvenc=False,
+    )
+    filter_index = command.index("-filter_complex")
+    audio_graph = command[filter_index + 1]
+
+    assert command[-1] == str((tmp_path / "premaster.wav").resolve())
+    assert "pcm_s24le" in command
+    assert "[vout]" not in audio_graph
+    assert "afade=t=in:st=0:d=0.2" in audio_graph
+    assert "volume=-8dB:enable='between(t,0.5,1.25)'" in audio_graph
+    assert "loudnorm=" not in audio_graph
+    assert "alimiter=" not in audio_graph
+    assert audio_intermediate_cache_key(mastered) == original_key
 
 
 def test_fades_cannot_exceed_track_duration(tmp_path: Path) -> None:
