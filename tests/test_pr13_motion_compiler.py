@@ -19,9 +19,11 @@ from content_forge.render.ffmpeg import (
 )
 from content_forge.timeline import PlannedAsset, PlannedScene, RenderPlan, render_plan_digest
 
+# Deliberately excludes zoompan. PR13 crop-window motion must not depend on a filter that
+# crops with the source frame aspect and then stretches that crop to the output aspect.
 FILTERS = (
     "blend", "boxblur", "color", "crop", "format", "fps", "overlay",
-    "scale", "setpts", "split", "trim", "zoompan",
+    "scale", "setpts", "split", "trim",
 )
 
 
@@ -57,6 +59,9 @@ def _profile() -> OutputProfile:
 
 
 def _plan(asset: PlannedAsset, *, motion_type: str) -> RenderPlan:
+    # 1000x1500 source -> 540x960 target. The source and output aspect ratios differ.
+    # These canonical source windows are both exactly 9:16 after source dimensions are
+    # applied, so the backend must preserve them instead of reusing the 2:3 source aspect.
     start = NormalizedRect(x=0.078125, y=0.0, width=0.84375, height=1.0)
     end = NormalizedRect(
         x=0.109375, y=0.037037037, width=0.78125, height=0.925925926
@@ -88,7 +93,7 @@ def _plan(asset: PlannedAsset, *, motion_type: str) -> RenderPlan:
 
 
 @pytest.mark.parametrize("motion_type", ["slow_zoom", "pan", "crop_reveal"])
-def test_crop_window_motion_rewrites_scene_fit_fragment(
+def test_crop_window_motion_uses_aspect_preserving_scale_then_fixed_crop(
     tmp_path: Path, motion_type: str
 ) -> None:
     source = tmp_path / "source.png"
@@ -102,12 +107,45 @@ def test_crop_window_motion_rewrites_scene_fit_fragment(
         tmp_path / f"{motion_type}.mp4",
         prefer_nvenc=False,
     )
-    assert "zoompan=" in manifest.filtergraph
+
+    assert "zoompan=" not in manifest.filtergraph
+    assert "force_original_aspect_ratio=increase:eval=frame" in manifest.filtergraph
+    assert "crop=540:960:" in manifest.filtergraph
+    assert "min(n/29,1)" in manifest.filtergraph
+    assert "ceil(540/(0.84375+(-0.0625)*min(n/29,1)))" in manifest.filtergraph
+    assert "in_w*(0.078125+(0.03125)*min(n/29,1))" in manifest.filtergraph
     assert manifest.metadata["motion_backend"] == "pr13_v1"
+    assert manifest.metadata["motion_geometry"] == "aspect_preserving_source_rect_v1"
     assert manifest.metadata["motion_scene_count"] == 1
     assert manifest.render_plan_digest == render_plan_digest(plan)
     index = manifest.arguments.index("-filter_complex")
     assert manifest.arguments[index + 1] == manifest.filtergraph
+
+
+def test_crop_window_motion_rejects_rectangles_with_wrong_output_aspect(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"synthetic-placeholder")
+    asset = _asset()
+    plan = _plan(asset, motion_type="slow_zoom")
+    bad_scene = plan.scenes[0].validated_copy(
+        update={
+            "motion_end_rect": NormalizedRect(
+                x=0.1, y=0.1, width=0.7, height=0.7
+            )
+        }
+    )
+    bad_plan = plan.validated_copy(update={"scenes": (bad_scene,)})
+
+    with pytest.raises(UnsupportedRenderFeatureError, match="aspect"):
+        compile_ffmpeg_command(
+            bad_plan,
+            {asset.asset_id: source},
+            _capabilities(),
+            tmp_path / "bad-aspect.mp4",
+            prefer_nvenc=False,
+        )
 
 
 def test_blur_reveal_reuses_base_fit_then_blends_streams(tmp_path: Path) -> None:

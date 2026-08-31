@@ -24,7 +24,12 @@ from content_forge.render.ffmpeg import (
     probe_ffmpeg_runtime,
     probe_media,
 )
-from content_forge.templates import blur_reveal_motion, ken_burns_motion
+from content_forge.templates import (
+    blur_reveal_motion,
+    crop_reveal_motion,
+    ken_burns_motion,
+    pan_motion,
+)
 from content_forge.timeline import compile_timeline
 
 
@@ -76,6 +81,11 @@ def _render(project: Project, asset: Asset, source: Path, output: Path) -> None:
     backend = FFmpegBackend(
         _capabilities(), {asset.asset_id: source}, prefer_nvenc=False
     )
+    manifest = backend.compile(plan, output)
+    if plan.scenes[0].motion_type in {"slow_zoom", "pan", "crop_reveal"}:
+        assert "zoompan=" not in manifest.filtergraph
+        assert "force_original_aspect_ratio=increase:eval=frame" in manifest.filtergraph
+        assert "crop=540:960:" in manifest.filtergraph
     try:
         result = backend.render(plan, output, timeout=20)
     except FFmpegCapabilityError as exc:
@@ -87,6 +97,24 @@ def _render(project: Project, asset: Asset, source: Path, output: Path) -> None:
     assert probe.height == 960
     assert probe.duration_seconds is not None
     assert 0.35 <= probe.duration_seconds <= 0.8
+
+
+def _motion_project(asset: Asset, motion) -> Project:
+    profile = shorts_preview_profile()
+    return Project(
+        content_kind="motion_fixture",
+        scenes=(
+            Scene(
+                order=0,
+                duration_seconds=0.45,
+                media=AssetRef(asset_id=asset.asset_id),
+                placement=NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0),
+                fit_mode=FitMode.COVER,
+                motion=motion,
+            ),
+        ),
+        output_profiles=(profile,),
+    )
 
 
 def test_slow_zoom_component_renders_through_public_ffmpeg_backend(tmp_path: Path) -> None:
@@ -102,21 +130,58 @@ def test_slow_zoom_component_renders_through_public_ffmpeg_backend(tmp_path: Pat
         focus=NormalizedPoint(x=0.58, y=0.45),
         end_zoom=1.12,
     )
-    project = Project(
-        content_kind="motion_fixture",
-        scenes=(
-            Scene(
-                order=0,
-                duration_seconds=0.45,
-                media=AssetRef(asset_id=asset.asset_id),
-                placement=placement,
-                fit_mode=FitMode.COVER,
-                motion=motion,
-            ),
-        ),
-        output_profiles=(profile,),
+    _render(
+        _motion_project(asset, motion),
+        asset,
+        source,
+        tmp_path / "slow-zoom.mp4",
     )
-    _render(project, asset, source, tmp_path / "slow-zoom.mp4")
+
+
+def test_pan_component_renders_through_public_ffmpeg_backend(tmp_path: Path) -> None:
+    source = tmp_path / "source.ppm"
+    _ppm(source)
+    asset = _asset(source)
+    profile = shorts_preview_profile()
+    placement = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
+    motion = pan_motion(
+        asset,
+        profile,
+        placement,
+        start_focus=NormalizedPoint(x=0.30, y=0.50),
+        end_focus=NormalizedPoint(x=0.70, y=0.50),
+        zoom=1.12,
+    )
+    _render(
+        _motion_project(asset, motion),
+        asset,
+        source,
+        tmp_path / "pan.mp4",
+    )
+
+
+def test_crop_reveal_component_renders_through_public_ffmpeg_backend(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.ppm"
+    _ppm(source)
+    asset = _asset(source)
+    profile = shorts_preview_profile()
+    placement = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
+    motion = crop_reveal_motion(
+        asset,
+        profile,
+        placement,
+        focus=NormalizedPoint(x=0.55, y=0.50),
+        start_zoom=1.3,
+        end_zoom=1.0,
+    )
+    _render(
+        _motion_project(asset, motion),
+        asset,
+        source,
+        tmp_path / "crop-reveal.mp4",
+    )
 
 
 def test_blur_reveal_component_renders_through_public_ffmpeg_backend(tmp_path: Path) -> None:
