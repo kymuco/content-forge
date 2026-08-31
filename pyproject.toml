@@ -24,6 +24,9 @@ dev = [
   "httpx>=0.28,<1",
   "pytest>=8,<10",
 ]
+llm = [
+  "chatgpt-web-adapter>=0.2,<0.3",
+]
 
 [project.scripts]
 content-forge-api = "content_forge.api.__main__:main"
