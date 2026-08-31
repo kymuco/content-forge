@@ -204,3 +204,41 @@ def test_blur_reveal_component_renders_through_public_ffmpeg_backend(tmp_path: P
         output_profiles=(profile,),
     )
     _render(project, asset, source, tmp_path / "blur-reveal.mp4")
+
+
+def test_blur_reveal_minimum_four_pixel_placement_renders(tmp_path: Path) -> None:
+    source = tmp_path / "source.ppm"
+    _ppm(source)
+    asset = _asset(source)
+    profile = shorts_preview_profile()
+    project = Project(
+        content_kind="minimum_blur_fixture",
+        scenes=(
+            Scene(
+                order=0,
+                duration_seconds=0.45,
+                media=AssetRef(asset_id=asset.asset_id),
+                placement=NormalizedRect(
+                    x=0.10,
+                    y=0.10,
+                    width=4.0 / profile.width,
+                    height=4.0 / profile.height,
+                ),
+                fit_mode=FitMode.COVER,
+                motion=blur_reveal_motion(reveal_duration_seconds=0.45),
+            ),
+        ),
+        output_profiles=(profile,),
+    )
+    plan = compile_timeline(
+        project,
+        {asset.asset_id: asset},
+        profile_id=profile.profile_id,
+    )
+    backend = FFmpegBackend(
+        _capabilities(), {asset.asset_id: source}, prefer_nvenc=False
+    )
+    manifest = backend.compile(plan, tmp_path / "minimum-blur-reveal.mp4")
+    assert "luma_radius='min(20,min(w,h)/4)'" in manifest.filtergraph
+    assert "chroma_radius='min(20,min(cw,ch)/4)'" in manifest.filtergraph
+    _render(project, asset, source, tmp_path / "minimum-blur-reveal.mp4")

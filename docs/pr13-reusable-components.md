@@ -83,7 +83,9 @@ Current PR13 boundary:
 - image scenes only;
 - `cover` fit semantics only;
 - source width/height metadata required;
-- start/end motion rectangles must match the resolved placement aspect;
+- start/end motion rectangles must match the canonical pre-raster placement aspect;
+- semantic aspect comparison allows ordinary normalized-coordinate serialization precision (including six-decimal JSON/API round trips), while materially wrong crop aspects still fail closed;
+- independent normalized-edge pixel rounding is accepted as ordinary rasterization;
 - no additional canonical `Scene.crop` on the same moving scene;
 - unknown motion types remain fail-closed.
 
@@ -91,7 +93,7 @@ Video crop-window motion is intentionally deferred until source-time/trim behavi
 
 ### Blur reveal
 
-`blur_reveal` reuses the ordinary fitted scene stream, splits it into blurred and sharp copies, and performs a deterministic timed blend. It does not introduce content-specific renderer logic.
+`blur_reveal` reuses the ordinary fitted scene stream, splits it into blurred and sharp copies, and performs a deterministic timed blend. Its box-blur radii are dimension-bounded independently for luma/chroma/alpha planes (`min(20, min(plane_width, plane_height) / 4)`). A fitted placement must be at least 4 pixels in each dimension so the luma branch has a nonzero blur radius and the reveal cannot silently degenerate into sharp-vs-sharp blending. Subsampled chroma planes remain independently bounded and may legally quantize to radius zero at the minimum size when FFmpeg does not permit a nonzero chroma radius. It does not introduce content-specific renderer logic.
 
 ## FFmpeg architecture
 
@@ -137,6 +139,10 @@ PR13 adds:
 - canonical motion geometry tests;
 - deterministic motion-aware FFmpeg command tests that run without `zoompan` capability;
 - an explicit wrong-aspect motion-rectangle fail-closed regression;
+- a six-decimal serialized motion-rectangle regression;
+- a non-grid placement regression proving pixel-edge rounding does not invalidate canonical motion;
+- bounded blur-radius tests with fail-closed coverage below 4 pixels;
+- a real FFmpeg render at the minimum 4×4 blur placement boundary;
 - fail-closed tests for unknown motion and video crop-window motion;
 - real FFmpeg integration renders for slow zoom, pan, crop reveal, and blur reveal.
 
