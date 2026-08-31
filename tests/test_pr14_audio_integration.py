@@ -14,6 +14,7 @@ from content_forge.audio import (
     AudioMixPolicy,
     audio_intermediate_cache_key,
     compile_loudness_analysis_command,
+    evaluate_audio_qc,
     parse_loudnorm_measurement,
 )
 from content_forge.core import (
@@ -183,9 +184,10 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
 
     premaster_plan = _plan(image_id, music_id, original_id)
     premaster_output = tmp_path / "premaster.wav"
+    audio_only_paths = {music_id: music, original_id: original}
     premaster_command = compile_audio_intermediate_command(
         premaster_plan,
-        paths,
+        audio_only_paths,
         capabilities,
         premaster_output,
         prefer_nvenc=False,
@@ -195,7 +197,8 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
     assert "afade=t=in:" in premaster_filtergraph
     assert "volume=-7dB:enable='between(t,0.5,1.3)'" in premaster_filtergraph
     assert "[vout]" not in premaster_filtergraph
-    assert "pcm_s24le" in premaster_command
+    assert "pcm_f32le" in premaster_command
+    assert str(image.resolve()) not in premaster_command
     subprocess.run(
         premaster_command,
         capture_output=True,
@@ -226,6 +229,7 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
         check=True,
     )
     measurement = parse_loudnorm_measurement(analysis.stderr)
+    assert measurement.normalizable is True
 
     master = {
         "normalize": True,
@@ -260,3 +264,28 @@ def test_pr14_mix_and_two_pass_mastering_render_through_real_ffmpeg(tmp_path: Pa
     assert probe.has_audio is True
     assert probe.width == 320
     assert probe.height == 568
+
+
+def test_real_loudnorm_silence_is_qc_evidence_not_normalization_input(tmp_path: Path) -> None:
+    capabilities = _capabilities()
+    silence = tmp_path / "silence.wav"
+    _tone(silence, frequency=440.0, seconds=1.0, amplitude=0.0)
+
+    analysis = subprocess.run(
+        compile_loudness_analysis_command(
+            silence,
+            ffmpeg_path=capabilities.ffmpeg_path,
+            policy=AudioMixPolicy(normalize=True),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    measurement = parse_loudnorm_measurement(analysis.stderr)
+    qc = evaluate_audio_qc(measurement, AudioMixPolicy())
+
+    assert measurement.silent_sentinel is True
+    assert measurement.normalizable is False
+    assert qc.silent is True
+    assert qc.passed is False
