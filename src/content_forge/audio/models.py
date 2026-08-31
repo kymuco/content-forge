@@ -31,31 +31,48 @@ class AudioMixPolicy(FrozenModel):
 
 
 class LoudnessMeasurement(FrozenModel):
-    """Values emitted by FFmpeg loudnorm's measurement pass."""
+    """Values emitted by FFmpeg loudnorm's measurement pass.
 
-    input_i: float
-    input_tp: float
+    FFmpeg reports silence with non-finite sentinels (`-inf` for input loudness/peak and
+    `inf` for target offset). Canonical Content Forge models disallow NaN/Inf globally,
+    so PR14 represents those explicit loudnorm sentinels as `None`. Such measurements
+    remain valid QC evidence but are deliberately not usable for the normalization pass.
+    """
+
+    input_i: float | None
+    input_tp: float | None
     input_lra: float = Field(ge=0.0)
-    input_thresh: float
-    target_offset: float
+    input_thresh: float | None
+    target_offset: float | None
 
     @model_validator(mode="after")
-    def finite_values(self) -> Self:
-        values = (
-            self.input_i,
-            self.input_tp,
-            self.input_lra,
-            self.input_thresh,
-            self.target_offset,
-        )
-        if any(value != value or value in {float("inf"), float("-inf")} for value in values):
-            raise ValueError("loudness measurement values must be finite")
+    def validate_silence_shape(self) -> Self:
+        if (self.input_i is None) != (self.input_tp is None):
+            raise ValueError(
+                "loudness measurement input_i/input_tp must both be finite or both be silence sentinels"
+            )
         return self
+
+    @property
+    def silent_sentinel(self) -> bool:
+        return self.input_i is None and self.input_tp is None
+
+    @property
+    def normalizable(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.input_i,
+                self.input_tp,
+                self.input_thresh,
+                self.target_offset,
+            )
+        )
 
 
 class AudioQCResult(FrozenModel):
-    integrated_lufs: float
-    true_peak_dbfs: float
+    integrated_lufs: float | None
+    true_peak_dbfs: float | None
     loudness_range_lu: float = Field(ge=0.0)
     silent: bool
     loudness_ok: bool
