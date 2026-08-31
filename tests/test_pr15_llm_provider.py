@@ -115,12 +115,14 @@ def test_replace_provider_suggestions_preserves_review_authority_and_other_provi
 
 
 def test_provider_cannot_rewrite_suggestions_after_review_resolution() -> None:
+    resolved_at = datetime.now(timezone.utc)
     task = ReviewTask(
         project_id=new_entity_id(EntityKind.PROJECT),
         task_type="hook",
         status=ReviewStatus.RESOLVED,
         accepted_value="accepted",
-        resolved_at=datetime.now(timezone.utc),
+        created_at=resolved_at,
+        resolved_at=resolved_at,
     )
     replacements = to_review_suggestions(
         HookSuggestions(hooks=("late proposal",), evidence=_evidence())
