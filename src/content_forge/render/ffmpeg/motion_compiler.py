@@ -88,7 +88,10 @@ def _validate_motion_rect(
             "crop-window motion requires source width/height metadata"
         )
     source_crop_aspect = (asset.width * rect.width) / (asset.height * rect.height)
-    tolerance = max(1e-9, target_aspect * 1e-8)
+    # Normalized rectangles commonly cross JSON/API boundaries with decimal rounding.
+    # Keep this tolerance at semantic-coordinate scale: large enough for ordinary
+    # six-decimal serialization, still far below a materially wrong crop aspect.
+    tolerance = max(1e-8, target_aspect * 1e-5)
     if abs(source_crop_aspect - target_aspect) > tolerance:
         raise UnsupportedRenderFeatureError(
             "motion crop rectangle aspect does not match the canonical scene placement"
@@ -196,9 +199,14 @@ def _blur_reveal_parts(
     if not original_fit_part.endswith(target):
         raise FFmpegCompileError("unexpected fitted-stream fragment for blur_reveal")
     placement = resolve_pixel_rect(scene.placement, plan.output_profile)
-    if min(placement.width, placement.height) < 2:
+    # With a smallest fitted dimension below four pixels, min_dimension/4 quantizes to
+    # a zero-sample luma radius and the blurred branch can become visually identical to
+    # the sharp branch. Four pixels is the smallest useful boundary: luma radius is then
+    # one sample, while subsampled chroma remains independently legal even when its
+    # maximum nonzero radius is unavailable.
+    if min(placement.width, placement.height) < 4:
         raise UnsupportedRenderFeatureError(
-            "blur_reveal placement is too small for a valid blur radius"
+            "blur_reveal placement must be at least four pixels in each dimension"
         )
     # Bound each boxblur plane from the fitted stream itself. Chroma planes can be
     # subsampled, so reusing one fixed luma radius is unsafe for small placements.
