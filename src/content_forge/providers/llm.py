@@ -184,6 +184,16 @@ class ClassificationResult(FrozenModel):
     rationale: str | None = Field(default=None, max_length=4000)
     evidence: LLMInvocationEvidence
 
+    @model_validator(mode="after")
+    def unique_normalized_values(self):
+        if len(set(self.content_kinds)) != len(self.content_kinds):
+            raise ValueError("classification content_kinds must be unique")
+        if len(set(self.template_ids)) != len(self.template_ids):
+            raise ValueError("classification template_ids must be unique")
+        if len(set(self.tags)) != len(self.tags):
+            raise ValueError("classification tags must be unique")
+        return self
+
 
 @runtime_checkable
 class LLMProvider(Protocol):
