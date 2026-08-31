@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
-from content_forge.core import ReviewSuggestion, ReviewTask, new_entity_id
+from content_forge.core import ReviewStatus, ReviewSuggestion, ReviewTask, new_entity_id
 from content_forge.core.ids import EntityKind
 from content_forge.providers import (
     ClassificationRequest,
@@ -110,6 +112,33 @@ def test_replace_provider_suggestions_preserves_review_authority_and_other_provi
     assert updated.accepted_value == "already-accepted-value"
     assert updated.suggestions[0] == other
     assert updated.suggestions[1].value == "new"
+
+
+def test_provider_cannot_rewrite_suggestions_after_review_resolution() -> None:
+    task = ReviewTask(
+        project_id=new_entity_id(EntityKind.PROJECT),
+        task_type="hook",
+        status=ReviewStatus.RESOLVED,
+        accepted_value="accepted",
+        resolved_at=datetime.now(timezone.utc),
+    )
+    replacements = to_review_suggestions(
+        HookSuggestions(hooks=("late proposal",), evidence=_evidence())
+    )
+
+    with pytest.raises(ValueError, match="open review task"):
+        replace_provider_suggestions(task, replacements, provider_id="fake")
+
+
+def test_generated_hook_and_classification_registry_values_are_bounded() -> None:
+    with pytest.raises(ValueError):
+        HookSuggestions(hooks=("x" * 4097,), evidence=_evidence())
+    with pytest.raises(ValueError):
+        ClassificationRequest(
+            source_summary="fixture",
+            allowed_content_kinds=("Not A Registry Key",),
+            allowed_template_ids=("hook_topbar",),
+        )
 
 
 def test_classification_request_requires_closed_unique_allowlists() -> None:
