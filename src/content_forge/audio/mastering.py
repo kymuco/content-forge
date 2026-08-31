@@ -12,6 +12,7 @@ from content_forge.timeline import RenderPlan
 from .models import AudioMixPolicy, AudioQCResult, LoudnessMeasurement
 
 _LOUDNORM_JSON = re.compile(r"\{[^{}]*\"input_i\"[^{}]*\}", re.DOTALL)
+_PREMASTER_CACHE_VERSION = "pr14_premaster_pcm_s24le_48000_stereo_v1"
 
 
 def _number(value: float) -> str:
@@ -137,7 +138,7 @@ def _audio_track_payload(plan: RenderPlan) -> list[dict[str, object]]:
 
 
 def audio_intermediate_cache_key(plan: RenderPlan) -> str:
-    """Hash only audio-affecting evidence so visual edits do not invalidate audio."""
+    """Hash the lossless semantic premaster, excluding visual/mastering-only changes."""
 
     asset_by_id = {asset.asset_id: asset for asset in plan.assets}
     audio_asset_ids = {
@@ -146,7 +147,7 @@ def audio_intermediate_cache_key(plan: RenderPlan) -> str:
     profile = plan.output_profile.model_dump(mode="json")
     profile_properties = profile["properties"]
     payload = {
-        "version": "pr14_audio_cache_v1",
+        "version": _PREMASTER_CACHE_VERSION,
         "duration_seconds": plan.total_duration_seconds,
         "tracks": _audio_track_payload(plan),
         "assets": [
@@ -157,9 +158,10 @@ def audio_intermediate_cache_key(plan: RenderPlan) -> str:
             }
             for asset_id in sorted(audio_asset_ids)
         ],
-        "audio_codec": profile["audio_codec"],
-        "audio_bitrate_kbps": profile["audio_bitrate_kbps"],
-        "mastering": profile_properties.get("audio_mastering"),
+        # Track-level materialization carries the actual gain/fade/duck semantics. Keep
+        # policy identity/version as evidence, but deliberately exclude loudness target,
+        # measurement, final AAC codec/bitrate, and every visual field: the cached object
+        # is the fixed 48 kHz stereo PCM premaster that exists before mastering/encoding.
         "policy": profile_properties.get("audio_policy"),
     }
     encoded = json.dumps(
