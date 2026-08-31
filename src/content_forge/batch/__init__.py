@@ -1,13 +1,13 @@
 """Batch preparation, recovery, QC, and reproducibility."""
 
 from .coordinator import (
-    BatchCoordinator,
     BatchError,
     BatchIntegrityError,
     BatchPreparationError,
     BatchRenderInput,
     BatchRunError,
 )
+from .hardened import BatchCoordinator
 from .models import (
     AcceptedStateSnapshot,
     BATCH_MANIFEST_VERSION,
