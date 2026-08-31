@@ -1,5 +1,6 @@
 """FFmpeg/ffprobe backend."""
 
+from .audio_compiler import compile_ffmpeg_command
 from .backend import FFmpegBackend
 from .capabilities import (
     FFmpegCapabilityError,
@@ -27,7 +28,6 @@ from .models import (
     RenderResult,
     command_manifest_digest,
 )
-from .motion_compiler import compile_ffmpeg_command
 from .probe import MediaProbeError, apply_probe_to_asset, probe_media
 from .runner import CancellationToken, FFmpegBackendError, execute_ffmpeg
 
