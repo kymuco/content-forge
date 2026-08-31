@@ -6,15 +6,21 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Annotated, Protocol, runtime_checkable
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, StringConstraints, model_validator
 
-from content_forge.core import ReviewSuggestion, ReviewTask
+from content_forge.core import RegistryKey, ReviewStatus, ReviewSuggestion, ReviewTask
 from content_forge.core.models import FrozenModel
 
 _LLM_CONTRACT_VERSION = "pr15_llm_contract_v1"
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL | re.IGNORECASE)
+SuggestedText = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+GeneratedTag = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
+]
+ConstraintText = Annotated[str, StringConstraints(min_length=1, max_length=1000)]
 
 
 class LLMProviderError(RuntimeError):
@@ -60,8 +66,8 @@ class HookRequest(FrozenModel):
     content_kind: str | None = Field(default=None, max_length=128)
     current_hook: str | None = Field(default=None, max_length=4096)
     language: str = Field(default="und", min_length=2, max_length=35)
-    tags: tuple[str, ...] = Field(default=(), max_length=64)
-    tone_constraints: tuple[str, ...] = Field(default=(), max_length=32)
+    tags: tuple[GeneratedTag, ...] = Field(default=(), max_length=64)
+    tone_constraints: tuple[ConstraintText, ...] = Field(default=(), max_length=32)
     max_candidates: int = Field(default=4, ge=1, le=8)
 
 
@@ -70,8 +76,8 @@ class MetadataRequest(FrozenModel):
     content_kind: str | None = Field(default=None, max_length=128)
     hook: str | None = Field(default=None, max_length=4096)
     language: str = Field(default="und", min_length=2, max_length=35)
-    tags: tuple[str, ...] = Field(default=(), max_length=64)
-    constraints: tuple[str, ...] = Field(default=(), max_length=32)
+    tags: tuple[GeneratedTag, ...] = Field(default=(), max_length=64)
+    constraints: tuple[ConstraintText, ...] = Field(default=(), max_length=32)
     max_candidates: int = Field(default=3, ge=1, le=5)
     max_hashtags: int = Field(default=8, ge=0, le=32)
 
@@ -100,8 +106,8 @@ class TranslationRequest(FrozenModel):
 class ClassificationRequest(FrozenModel):
     source_summary: str = Field(min_length=1, max_length=12000)
     note: str | None = Field(default=None, max_length=8192)
-    allowed_content_kinds: tuple[str, ...] = Field(min_length=1, max_length=64)
-    allowed_template_ids: tuple[str, ...] = Field(min_length=1, max_length=128)
+    allowed_content_kinds: tuple[RegistryKey, ...] = Field(min_length=1, max_length=64)
+    allowed_template_ids: tuple[RegistryKey, ...] = Field(min_length=1, max_length=128)
     max_tags: int = Field(default=12, ge=0, le=64)
 
     @model_validator(mode="after")
@@ -114,7 +120,7 @@ class ClassificationRequest(FrozenModel):
 
 
 class HookSuggestions(FrozenModel):
-    hooks: tuple[str, ...] = Field(min_length=1, max_length=8)
+    hooks: tuple[SuggestedText, ...] = Field(min_length=1, max_length=8)
     evidence: LLMInvocationEvidence
 
     @model_validator(mode="after")
@@ -127,7 +133,7 @@ class HookSuggestions(FrozenModel):
 class MetadataCandidate(FrozenModel):
     title: str = Field(min_length=1, max_length=4096)
     description: str = Field(default="", max_length=20000)
-    hashtags: tuple[str, ...] = Field(default=(), max_length=32)
+    hashtags: tuple[GeneratedTag, ...] = Field(default=(), max_length=32)
 
     @model_validator(mode="after")
     def unique_hashtags(self):
@@ -154,9 +160,9 @@ class TranslationResult(FrozenModel):
 
 
 class ClassificationResult(FrozenModel):
-    content_kinds: tuple[str, ...] = Field(min_length=1, max_length=8)
-    template_ids: tuple[str, ...] = Field(min_length=1, max_length=12)
-    tags: tuple[str, ...] = Field(default=(), max_length=64)
+    content_kinds: tuple[RegistryKey, ...] = Field(min_length=1, max_length=8)
+    template_ids: tuple[RegistryKey, ...] = Field(min_length=1, max_length=12)
+    tags: tuple[GeneratedTag, ...] = Field(default=(), max_length=64)
     rationale: str | None = Field(default=None, max_length=4000)
     evidence: LLMInvocationEvidence
 
@@ -176,16 +182,6 @@ class LLMProvider(Protocol):
     def translate(self, request: TranslationRequest) -> TranslationResult: ...
 
     def classify(self, request: ClassificationRequest) -> ClassificationResult: ...
-
-
-_REQUEST = TypeVar(
-    "_REQUEST",
-    HookRequest,
-    MetadataRequest,
-    TextCleanupRequest,
-    TranslationRequest,
-    ClassificationRequest,
-)
 
 
 def semantic_request_digest(task: str, request: FrozenModel) -> str:
@@ -359,6 +355,10 @@ def replace_provider_suggestions(
 ) -> ReviewTask:
     """Replace only one provider's proposals without changing review resolution authority."""
 
+    if task.status is not ReviewStatus.OPEN:
+        raise ValueError("provider suggestions can only replace proposals on an open review task")
+    if not provider_id.strip():
+        raise ValueError("provider_id must be non-empty")
     if any(item.provider != provider_id for item in suggestions):
         raise ValueError("replacement suggestions must all belong to provider_id")
     preserved = tuple(item for item in task.suggestions if item.provider != provider_id)
