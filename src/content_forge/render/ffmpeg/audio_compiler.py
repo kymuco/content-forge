@@ -21,7 +21,12 @@ from .compiler import (
     RuntimeStorageResolver,
     UnsupportedRenderFeatureError,
 )
-from .models import FFmpegCapabilities, RenderCommandManifest
+from .models import (
+    FFmpegCapabilities,
+    RenderCommandManifest,
+    canonical_output_path,
+    paths_alias,
+)
 from .motion_compiler import compile_ffmpeg_command as _compile_motion_ffmpeg_command
 
 _AUDIO_POLICY_VERSION = "pr14_audio_policy_v1"
@@ -287,6 +292,21 @@ def _replace_filter_complex(
     return tuple(values)
 
 
+def _without_mastering(plan: RenderPlan) -> RenderPlan:
+    properties = plan.output_profile.model_dump(mode="json")["properties"]
+    properties.pop("audio_mastering", None)
+    profile = plan.output_profile.validated_copy(update={"properties": properties})
+    return plan.validated_copy(update={"output_profile": profile})
+
+
+def _audio_only_filtergraph(manifest: RenderCommandManifest) -> str:
+    parts = manifest.filtergraph.split(";")
+    starts = [index for index, part in enumerate(parts) if part.startswith("anullsrc=")]
+    if len(starts) != 1:
+        raise FFmpegCompileError("cannot identify unique PR5 audio mix graph")
+    return ";".join(parts[starts[0] :])
+
+
 def compile_ffmpeg_command(
     plan: RenderPlan,
     asset_paths: AssetPathSource,
@@ -342,11 +362,80 @@ def compile_ffmpeg_command(
     )
 
 
+def compile_audio_intermediate_command(
+    plan: RenderPlan,
+    asset_paths: AssetPathSource,
+    capabilities: FFmpegCapabilities,
+    output_path: str | Path,
+    *,
+    prefer_nvenc: bool = True,
+) -> tuple[str, ...]:
+    """Compile the exact semantic premaster to lossless 48 kHz stereo PCM WAV.
+
+    Loudness targets and frozen measurements are deliberately removed, while track gain,
+    fades, loop semantics and timeline ducking are retained. First-pass loudness analysis
+    must run against this intermediate rather than a lossy AAC render.
+    """
+
+    if plan.output_profile.audio_codec is None:
+        raise UnsupportedRenderFeatureError(
+            "audio intermediate requires an audio-enabled output profile"
+        )
+    if not plan.audio_tracks:
+        raise UnsupportedRenderFeatureError(
+            "audio intermediate requires at least one planned audio track"
+        )
+
+    destination = canonical_output_path(output_path)
+    premaster_plan = _without_mastering(plan)
+    manifest = compile_ffmpeg_command(
+        premaster_plan,
+        asset_paths,
+        capabilities,
+        destination,
+        prefer_nvenc=prefer_nvenc,
+    )
+    label = _audio_output_label(manifest.arguments)
+    if label is None:
+        raise FFmpegCompileError("premaster manifest has no audio output")
+    for item in manifest.inputs:
+        if paths_alias(destination, item.path):
+            raise ValueError("audio intermediate path must not alias any render input")
+
+    try:
+        filter_index = manifest.arguments.index("-filter_complex")
+    except ValueError as exc:
+        raise FFmpegCompileError("premaster manifest has no filter_complex argument") from exc
+    prefix = manifest.arguments[:filter_index]
+    audio_filtergraph = _audio_only_filtergraph(manifest)
+    return (
+        manifest.ffmpeg_path,
+        *prefix,
+        "-filter_complex",
+        audio_filtergraph,
+        "-map",
+        label,
+        "-vn",
+        "-c:a",
+        "pcm_s24le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-t",
+        _number(plan.total_duration_seconds),
+        "-f",
+        "wav",
+        destination,
+    )
+
+
 __all__ = [
     "AssetPathSource",
     "FFmpegCompileError",
     "MissingRenderAssetError",
     "RuntimeStorageResolver",
     "UnsupportedRenderFeatureError",
+    "compile_audio_intermediate_command",
     "compile_ffmpeg_command",
 ]
