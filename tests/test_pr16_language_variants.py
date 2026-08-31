@@ -13,12 +13,14 @@ from content_forge.core import (
     Project,
     Scene,
 )
-from content_forge.timeline import compile_timeline, render_plan_digest
+from content_forge.timeline import render_plan_digest
 from content_forge.variants import (
+    CompiledLanguageVariant,
     VariantCacheIdentityError,
     VariantLocalizationError,
     apply_localized_text_style,
     build_language_variant,
+    compile_language_variant,
     localized_variant_digest,
     localized_variant_snapshot,
     variant_render_cache_key,
@@ -122,11 +124,11 @@ def build_multilingual_case() -> tuple[Project, dict[str, Asset]]:
     return project, {image.asset_id: image}
 
 
-def test_en_ja_ko_variants_share_media_and_timeline_but_resolve_text() -> None:
+def test_en_ja_ko_variants_share_media_and_timeline_but_resolve_text_and_font() -> None:
     project, assets = build_multilingual_case()
 
-    plans = [
-        compile_timeline(
+    compiled = [
+        compile_language_variant(
             project,
             assets,
             profile_id="preview_vertical",
@@ -134,6 +136,7 @@ def test_en_ja_ko_variants_share_media_and_timeline_but_resolve_text() -> None:
         )
         for variant in project.variants
     ]
+    plans = [item.plan for item in compiled]
 
     assert [plan.variant_language for plan in plans] == ["en", "ja", "ko"]
     assert [plan.scenes[0].scene_id for plan in plans] == [project.scenes[0].scene_id] * 3
@@ -151,6 +154,14 @@ def test_en_ja_ko_variants_share_media_and_timeline_but_resolve_text() -> None:
         ["一つの素材、三つの言語", "素材とタイミングは共有されます。"],
         ["하나의 소스, 세 가지 언어", "미디어와 타이밍은 공유됩니다."],
     ]
+    assert [[overlay.properties["font"] for overlay in plan.overlays] for plan in plans] == [
+        ["NotoSans", "NotoSans"],
+        ["NotoSansJP", "NotoSansJP"],
+        ["NotoSansKR", "NotoSansKR"],
+    ]
+
+    # Localization decorates ephemeral copies only; canonical shared timeline stays clean.
+    assert all("font" not in overlay.properties for overlay in project.scenes[0].overlays)
 
 
 def test_localized_snapshot_carries_metadata_but_no_media_or_timeline() -> None:
@@ -217,73 +228,90 @@ def test_localization_fails_closed_on_normalized_duplicates_and_conflicts() -> N
 
 def test_variant_cache_keys_are_stable_variant_specific_and_purpose_specific() -> None:
     project, assets = build_multilingual_case()
-    en = project.variants[0]
-    ja = project.variants[1]
+    en, ja, _ = project.variants
 
-    en_preview = compile_timeline(
+    en_preview = compile_language_variant(
         project,
         assets,
         profile_id="preview_vertical",
         variant_id=en.variant_id,
     )
-    ja_preview = compile_timeline(
+    ja_preview = compile_language_variant(
         project,
         assets,
         profile_id="preview_vertical",
         variant_id=ja.variant_id,
     )
-    en_final = compile_timeline(
+    en_final = compile_language_variant(
         project,
         assets,
         profile_id="final_vertical",
         variant_id=en.variant_id,
     )
 
-    first = variant_render_cache_key(en_preview, en, purpose="preview")
-    assert variant_render_cache_key(en_preview, en, purpose="preview") == first
-    assert variant_render_cache_key(ja_preview, ja, purpose="preview") != first
-    assert variant_render_cache_key(en_final, en, purpose="final") != first
+    first = variant_render_cache_key(en_preview, purpose="preview")
+    assert variant_render_cache_key(en_preview, purpose="preview") == first
+    assert variant_render_cache_key(ja_preview, purpose="preview") != first
+    assert variant_render_cache_key(en_final, purpose="final") != first
     assert len(first) == 64
 
 
-def test_nonrendered_metadata_change_invalidates_variant_cache_identity() -> None:
+def test_metadata_change_requires_recompile_and_invalidates_variant_cache_identity() -> None:
     project, assets = build_multilingual_case()
     en = project.variants[0]
-    plan = compile_timeline(
+    compiled = compile_language_variant(
         project,
         assets,
         profile_id="preview_vertical",
         variant_id=en.variant_id,
     )
     edited = en.validated_copy(update={"title": "Edited export title"})
-    edited_plan = compile_timeline(
-        project.validated_copy(
-            update={"variants": (edited, *project.variants[1:])}
-        ),
+    edited_project = project.validated_copy(
+        update={"variants": (edited, *project.variants[1:])}
+    )
+    edited_compiled = compile_language_variant(
+        edited_project,
         assets,
         profile_id="preview_vertical",
         variant_id=edited.variant_id,
     )
 
     # Title is localized render/export metadata, not timeline text in this fixture.
-    assert render_plan_digest(edited_plan) == render_plan_digest(plan)
-    assert localized_variant_digest(edited) != localized_variant_digest(en)
-    assert variant_render_cache_key(edited_plan, edited, purpose="preview") != (
-        variant_render_cache_key(plan, en, purpose="preview")
+    assert render_plan_digest(edited_compiled.plan) == render_plan_digest(compiled.plan)
+    assert localized_variant_digest(edited_compiled.localized_variant) != (
+        localized_variant_digest(compiled.localized_variant)
+    )
+    assert variant_render_cache_key(edited_compiled, purpose="preview") != (
+        variant_render_cache_key(compiled, purpose="preview")
     )
 
 
-def test_cache_identity_rejects_variant_or_purpose_mismatch() -> None:
+def test_compiled_pair_and_cache_purpose_fail_closed_on_mismatch() -> None:
     project, assets = build_multilingual_case()
     en, ja, _ = project.variants
-    plan = compile_timeline(
+    compiled = compile_language_variant(
         project,
         assets,
         profile_id="preview_vertical",
         variant_id=en.variant_id,
     )
 
-    with pytest.raises(VariantCacheIdentityError, match="variant_id"):
-        variant_render_cache_key(plan, ja, purpose="preview")
+    with pytest.raises(VariantLocalizationError, match="variant_id"):
+        CompiledLanguageVariant(
+            plan=compiled.plan,
+            localized_variant=localized_variant_snapshot(ja),
+        )
     with pytest.raises(VariantCacheIdentityError, match="purpose"):
-        variant_render_cache_key(plan, en, purpose="final")
+        variant_render_cache_key(compiled, purpose="final")
+
+
+def test_compile_language_variant_rejects_unknown_variant() -> None:
+    project, assets = build_multilingual_case()
+
+    with pytest.raises(VariantLocalizationError, match="unknown language variant"):
+        compile_language_variant(
+            project,
+            assets,
+            profile_id="preview_vertical",
+            variant_id=fixed_id(EntityKind.VARIANT, "9"),
+        )
