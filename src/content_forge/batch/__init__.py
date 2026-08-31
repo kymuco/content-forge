@@ -7,7 +7,7 @@ from .coordinator import (
     BatchRenderInput,
     BatchRunError,
 )
-from .hardened import BatchCoordinator
+from .final import BatchCoordinator
 from .models import (
     AcceptedStateSnapshot,
     BATCH_MANIFEST_VERSION,
