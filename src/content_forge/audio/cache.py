@@ -1,9 +1,10 @@
-"""Small content-addressed cache boundary for PR14 mastered audio intermediates."""
+"""Small derivation-keyed cache boundary for PR14 mastered audio intermediates."""
 
 from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,8 @@ class AudioIntermediateCache:
         *,
         suffix: str = ".wav",
     ) -> Path:
+        """Atomically publish an intermediate under its deterministic derivation key."""
+
         source_path = Path(source)
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
@@ -44,9 +47,14 @@ class AudioIntermediateCache:
         if destination.is_file():
             return destination
 
-        temporary = destination.with_name(destination.name + f".tmp-{os.getpid()}")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=destination.name + ".tmp-",
+            dir=destination.parent,
+        )
+        temporary = Path(temporary_name)
         try:
-            with source_path.open("rb") as incoming, temporary.open("xb") as outgoing:
+            with source_path.open("rb") as incoming, os.fdopen(descriptor, "wb") as outgoing:
+                descriptor = -1
                 shutil.copyfileobj(incoming, outgoing)
                 outgoing.flush()
                 os.fsync(outgoing.fileno())
@@ -58,6 +66,8 @@ class AudioIntermediateCache:
                 finally:
                     os.close(directory_fd)
         finally:
+            if descriptor >= 0:
+                os.close(descriptor)
             if temporary.exists():
                 temporary.unlink()
         return destination
