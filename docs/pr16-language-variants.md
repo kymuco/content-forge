@@ -21,6 +21,11 @@ provenance, timing, transitions, and output profiles remain on the containing `P
 The existing timeline compiler selects one `variant_id` and resolves `variant_field`
 text against that variant while compiling the same shared scene graph.
 
+PR16 adds `compile_language_variant(...)` as the language-aware entrypoint. It freezes
+the exact localized metadata snapshot and compiles the matching render plan in one
+operation, returning `CompiledLanguageVariant`. This avoids pairing a stale render plan
+with newer accepted localized text when constructing cache identities.
+
 ## Localized metadata snapshot
 
 `content_forge.variants.LocalizedVariantSnapshot` is the bounded PR16 metadata view of
@@ -73,17 +78,35 @@ Paths such as `C:/Fonts/...` or `/usr/share/fonts/...` are machine/runtime detai
 would make accepted metadata non-portable.
 
 The PR16 font token is an ASCII family/alias token compatible with the existing FFmpeg
-`drawtext` font option contract. `apply_localized_text_style(...)` lets a template or
-component resolver apply that variant font only to explicitly variant-bound text before
-timeline compilation. Nonlocalized credits and other unbound text remain unchanged.
+`drawtext` font option contract. `compile_language_variant(...)` decorates ephemeral
+project/template copies so that the selected font is applied only to overlays with an
+explicit `variant_field`. Nonlocalized credits and other unbound text remain unchanged,
+and the stored canonical project is not mutated.
 
-Other arbitrary `style_overrides` remain metadata until a future version gives them
-renderer-independent semantics.
+`apply_localized_text_style(...)` exposes the same small resolver rule for reusable
+component/template code. Other arbitrary `style_overrides` remain metadata until a
+future version gives them renderer-independent semantics.
+
+## Atomic plan + metadata pair
+
+`CompiledLanguageVariant` contains:
+
+- the resolved `RenderPlan`;
+- the exact `LocalizedVariantSnapshot` used to compile it.
+
+Its constructor rejects variant-ID or language disagreement. The public cache helpers
+consume this pair rather than accepting an unrelated current `Variant`, so a caller
+cannot accidentally compute a fresh cache key for an old plan after accepted rendered
+text changes. Metadata edits therefore require a fresh language compile before a new
+cache identity is produced.
+
+The compilation copies are ephemeral. Scene IDs, media/source references, duration,
+transitions, and output profile identity remain shared with the master project.
 
 ## Variant-specific render cache identity
 
 `variant_render_cache_identity(...)` and `variant_render_cache_key(...)` create stable
-preview/final cache identities from:
+preview/final cache identities from one `CompiledLanguageVariant`:
 
 - cache-key contract version;
 - preview/final purpose;
@@ -98,8 +121,9 @@ This means:
 
 1. EN, JA, and KO cannot collide even when they share every source asset and scene;
 2. preview and final cache entries cannot collide;
-3. changing accepted localized metadata invalidates the variant cache identity;
-4. the cache helper rejects a `Variant` that does not match the frozen `RenderPlan`;
+3. changing accepted localized metadata invalidates the variant cache identity after a
+   fresh language compile;
+4. stale plan/current-metadata pairing is not part of the cache API;
 5. when an output profile declares `properties["purpose"]`, the requested cache purpose
    must match it.
 
@@ -127,10 +151,11 @@ timeline is snapshotted and hashed separately by PR16.
 - EN, JA, and KO language variants.
 
 The tests verify that all three compiled plans preserve the same scene ID, media asset
-ID, asset table, and duration while resolving different language text. They also verify
-localized metadata bounds, portable font intent, deterministic cache keys, preview/final
-separation, variant mismatch rejection, and cache invalidation after a metadata-only
-edit.
+ID, asset table, and duration while resolving different language text and variant font
+intent. They also verify that canonical project overlays remain unchanged, localized
+metadata is bounded/normalized, cache keys are deterministic and purpose-specific, an
+invalid compiled plan/snapshot pair fails closed, and a metadata-only edit changes the
+localized cache identity after recompilation.
 
 ## Boundaries left for PR17 and later
 
