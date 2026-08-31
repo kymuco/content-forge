@@ -38,22 +38,28 @@ PR14 supports deterministic track-level:
 
 Ducking in v1 is timeline-driven rather than signal-reactive. This is intentional: identical canonical timing produces identical gain automation without a compressor threshold becoming hidden content-dependent policy.
 
-`apply_audio_policy(...)` records `base_gain_db` so replacing or reapplying policy does not accumulate gain deltas.
+`apply_audio_policy(...)` records base gain/fade/duck evidence so replacing or reapplying policy does not accumulate gain deltas or turn an earlier policy default into a false explicit track override.
 
-## Loudness mastering
+## Lossless premaster and loudness mastering
 
 PR14 deliberately rejects one-pass hidden normalization.
 
 Two-pass workflow:
 
 ```text
-semantic premaster mix
+canonical semantic mix
+  -> gain / fade / timeline ducking
+  -> lossless 48 kHz stereo PCM S24LE premaster WAV
+  -> derivation-keyed cache
   -> loudnorm analysis pass
   -> frozen LoudnessMeasurement
   -> canonical output-profile mastering evidence
   -> loudnorm linear apply pass
   -> peak limiter
+  -> final AAC render
 ```
+
+`compile_audio_intermediate_command(...)` builds the lossless premaster from the same planned tracks and source seek/loop/timing semantics as the final renderer. Loudness targets and frozen measurements are deliberately excluded from this intermediate.
 
 When `audio_mastering.normalize=true`, the public FFmpeg compiler fails closed unless a frozen first-pass measurement is present.
 
@@ -65,7 +71,9 @@ The measurement contract retains:
 - threshold (`input_thresh`);
 - target offset.
 
-The second pass uses those exact values with `linear=true`.
+FFmpeg reports genuinely silent input with non-finite sentinels (`-inf`/`inf`). Canonical models globally reject NaN/Inf, so PR14 maps those explicit loudnorm sentinels to `None`. That measurement remains valid QC evidence and is classified as silence, but `normalizable=false` and it cannot enter the second loudnorm pass.
+
+For a normal finite measurement, the second pass uses the exact frozen values with `linear=true`.
 
 ## Peak protection and QC
 
@@ -75,28 +83,36 @@ Mastering can add an `alimiter` ceiling. PR14 disables alimiter auto-level so th
 
 - integrated loudness tolerance;
 - true-peak ceiling;
-- silence detection.
+- silence detection, including real loudnorm silence sentinels.
 
 QC consumes a loudness measurement and an explicit `AudioMixPolicy`; it does not reinterpret project content.
 
 ## Cached audio intermediates
 
-`audio_intermediate_cache_key(plan)` hashes only audio-affecting evidence:
+`audio_intermediate_cache_key(plan)` is a deterministic **derivation key**, not a claim that the resulting WAV bytes themselves have that SHA-256.
+
+The key hashes premaster-affecting evidence:
 
 - audio track IDs/roles/timing/source offsets;
 - gains, loop state and audio properties;
 - referenced audio asset SHA-256 values;
-- output audio codec/bitrate;
-- audio policy/mastering evidence;
-- total duration.
+- explicit audio policy identity/version;
+- total duration;
+- the fixed premaster format/version (`PCM S24LE`, 48 kHz, stereo).
 
-Visual scene placement/overlay changes therefore do not invalidate a mastered-audio cache identity.
+It deliberately excludes:
 
-`AudioIntermediateCache` publishes content-addressed intermediates atomically and fsyncs file data before publication; POSIX directory metadata is also fsynced after replacement.
+- visual scene placement and overlays;
+- loudness targets and first-pass measurement;
+- final AAC codec/bitrate.
+
+Those values are downstream of the cached lossless premaster and therefore must not invalidate it.
+
+`AudioIntermediateCache` publishes derivation-keyed intermediates atomically, uses a unique temporary file for each publication attempt, fsyncs file data before replacement, and fsyncs POSIX directory metadata after replacement. Concurrent same-key publishers therefore do not share or delete each other's temporary files.
 
 ## Renderer evidence
 
-When PR14 actually rewrites audio, the command manifest records:
+When PR14 actually rewrites final audio, the command manifest records:
 
 - `audio_policy_backend=pr14_audio_policy_v1`;
 - `audio_cache_key`;
@@ -120,16 +136,18 @@ The existing base path remains responsible for `atrim`, `asetpts`, `aformat`, `v
 
 PR14 adds coverage for:
 
-- policy materialization and stable base-gain evidence;
+- policy materialization and stable base-gain/fade/duck evidence;
 - music/original helpers;
-- loudnorm JSON parsing and QC decisions;
-- content-addressed intermediate publication;
+- finite and silent loudnorm JSON parsing;
+- silence QC plus fail-closed normalization of non-finite measurements;
+- derivation-keyed intermediate publication;
+- concurrent same-key cache publication;
 - fade/duck/limiter filtergraph compilation;
 - fail-closed normalization without measurement;
 - frozen-measurement second-pass compilation;
-- audio cache identity surviving visual-only edits;
+- audio premaster cache identity surviving visual/mastering-only edits;
 - byte-for-byte delegation when PR14 features are absent;
-- real FFmpeg premaster rendering, loudness analysis, second-pass mastering, AAC output, and audio/video probing.
+- real FFmpeg lossless premaster rendering, loudness analysis, second-pass mastering, AAC output, and audio/video probing.
 
 ## Explicit exclusions
 
