@@ -57,5 +57,6 @@ jobs:
             tests/test_ffmpeg_integration.py \
             tests/test_hook_overlay_integration.py \
             tests/test_initial_template_pack_integration.py \
+            tests/test_pr13_motion_integration.py \
             tests/test_render_orchestration_integration.py \
             tests/test_api_ffmpeg_integration.py
