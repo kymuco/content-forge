@@ -34,7 +34,7 @@ A text component:
 1. normalizes and bounds input text;
 2. performs deterministic wrapping once;
 3. preflights the wrapped result against **every** output profile configured on the project;
-4. fails closed if any profile exceeds the configured region;
+4. fails closed if any profile exceeds the configured region or protected safe zone;
 5. emits an ordinary text `Overlay` with concrete layout evidence.
 
 There is no silent truncation.
@@ -62,13 +62,28 @@ blur_reveal -> MotionSpec.motion_type = blur_reveal
 
 ### Crop-window motion
 
-`slow_zoom`, `pan`, and `crop_reveal` resolve aspect-correct normalized source crop rectangles and compile through FFmpeg `zoompan`.
+`slow_zoom`, `pan`, and `crop_reveal` resolve aspect-correct normalized **source** rectangles. Those rectangles are semantic crop windows, not renderer zoom factors.
+
+The FFmpeg backend compiles each image-motion frame as:
+
+```text
+source image
+  -> trim / canonical fps
+  -> uniform per-frame scale preserving source aspect ratio
+  -> fixed-size crop at the interpolated normalized source-window origin
+  -> scene placement
+```
+
+This is intentionally **not** implemented with FFmpeg `zoompan`. `zoompan` derives both crop dimensions from the input frame and therefore keeps the input frame aspect before scaling to its configured output size. When source and output aspects differ, treating a canonical 9:16 source rectangle as a raw zoom factor would stretch the selected source window. PR13 instead interpolates canonical `x/y/width/height` directly, uses `scale` with `force_original_aspect_ratio=increase`, and lets `crop` perform selection only.
+
+The start and end frames therefore correspond to the canonical `MotionSpec.start_rect` and `MotionSpec.end_rect` up to unavoidable raster rounding, while source geometry remains aspect-preserving.
 
 Current PR13 boundary:
 
 - image scenes only;
 - `cover` fit semantics only;
 - source width/height metadata required;
+- start/end motion rectangles must match the resolved placement aspect;
 - no additional canonical `Scene.crop` on the same moving scene;
 - unknown motion types remain fail-closed.
 
@@ -100,6 +115,8 @@ No-motion plans delegate byte-for-byte through the existing compiler path.
 
 `FFmpegBackend` and the public `content_forge.render.ffmpeg.compile_ffmpeg_command` use this wrapper. The low-level PR5 compiler module stays available as the stable implementation primitive.
 
+Motion manifests record `motion_geometry=aspect_preserving_source_rect_v1` so the geometry contract is explicit in reproducibility evidence.
+
 ## Transitions
 
 `transition@1.0` validates the simple transition set already supported by the generic xfade backend:
@@ -115,12 +132,13 @@ The component emits an ordinary `TransitionSpec`; timeline adjacency and duratio
 PR13 adds:
 
 - registry identity/collision tests for all component definitions;
-- text overflow and provenance regressions;
+- text overflow, safe-zone, and provenance regressions;
 - asset identity, aspect, duration, and loop-policy regressions;
 - canonical motion geometry tests;
-- deterministic motion-aware FFmpeg command tests;
+- deterministic motion-aware FFmpeg command tests that run without `zoompan` capability;
+- an explicit wrong-aspect motion-rectangle fail-closed regression;
 - fail-closed tests for unknown motion and video crop-window motion;
-- real FFmpeg integration renders for slow zoom and blur reveal.
+- real FFmpeg integration renders for slow zoom, pan, crop reveal, and blur reveal.
 
 The dedicated FFmpeg CI job runs the real-motion integration coverage in addition to the existing renderer suite.
 

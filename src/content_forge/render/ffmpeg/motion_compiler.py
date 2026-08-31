@@ -97,7 +97,11 @@ def _validate_motion_rect(
         )
 
 
-def _zoompan_part(
+def _interpolated(start: float, end: float, progress: str) -> str:
+    return f"({_number(start)}+({_number(end - start)})*{progress})"
+
+
+def _dynamic_crop_part(
     plan: RenderPlan,
     scene: PlannedScene,
     *,
@@ -105,6 +109,17 @@ def _zoompan_part(
     input_index: int,
     asset: PlannedAsset,
 ) -> str:
+    """Compile a normalized source-window path without changing source aspect ratio.
+
+    FFmpeg zoompan always crops a window with the input frame's aspect ratio before
+    scaling it to the requested output size. That is not equivalent to our canonical
+    normalized source rectangles when source and output aspects differ. Instead, scale
+    the complete source uniformly on every frame so the requested semantic window covers
+    the target rectangle, then crop the fixed target pixel rectangle at the interpolated
+    normalized source origin. The scale filter keeps the original aspect ratio; crop owns
+    only selection, so no hidden source stretching is introduced.
+    """
+
     if asset.media_type is not MediaType.IMAGE:
         raise UnsupportedRenderFeatureError(
             f"{scene.motion_type} currently supports image scenes only"
@@ -140,23 +155,26 @@ def _zoompan_part(
 
     total_frames = max(2, int(round(scene.duration_seconds * plan.output_profile.fps)))
     denominator = total_frames - 1
-    progress = f"min(on/{denominator},1)"
-    start_zoom = 1.0 / start.width
-    end_zoom = 1.0 / end.width
-    zoom_delta = end_zoom - start_zoom
-    x_delta = end.x - start.x
-    y_delta = end.y - start.y
+    progress = f"min(n/{denominator},1)"
+    width = _interpolated(start.width, end.width, progress)
+    height = _interpolated(start.height, end.height, progress)
+    x = _interpolated(start.x, end.x, progress)
+    y = _interpolated(start.y, end.y, progress)
     duration = _number(scene.duration_seconds)
     fps = _number(plan.output_profile.fps)
 
+    # Both scale dimensions express the semantic source window independently. The
+    # force_original_aspect_ratio=increase policy then chooses one uniform source scale,
+    # so raster rounding can only over-cover the requested crop rather than distort it.
     return (
         f"[{input_index}:v]"
         f"trim=duration={duration},setpts=PTS-STARTPTS,fps={fps},"
-        "zoompan="
-        f"z='{_number(start_zoom)}+({_number(zoom_delta)})*{progress}':"
-        f"x='iw*({_number(start.x)}+({_number(x_delta)})*{progress})':"
-        f"y='ih*({_number(start.y)}+({_number(y_delta)})*{progress})':"
-        f"d=1:s={placement.width}x{placement.height}:fps={fps},"
+        "scale="
+        f"w='ceil({placement.width}/{width})':"
+        f"h='ceil({placement.height}/{height})':"
+        "force_original_aspect_ratio=increase:eval=frame,"
+        f"crop={placement.width}:{placement.height}:"
+        f"x='in_w*{x}':y='in_h*{y}',"
         f"trim=duration={duration},setpts=PTS-STARTPTS"
         f"[scene_fit_{scene_index}]"
     )
@@ -217,14 +235,13 @@ def _rewrite_filtergraph(
         fit_index = _fit_part_index(parts, scene_index)
         if motion_type in _CROP_MOTION_TYPES:
             input_index = _input_index_for_scene(manifest, scene.scene_id)
-            parts[fit_index] = _zoompan_part(
+            parts[fit_index] = _dynamic_crop_part(
                 plan,
                 scene,
                 scene_index=scene_index,
                 input_index=input_index,
                 asset=asset,
             )
-            extra_filters.add("zoompan")
         elif motion_type == "blur_reveal":
             parts[fit_index : fit_index + 1] = _blur_reveal_parts(
                 scene, parts[fit_index], scene_index=scene_index
@@ -294,6 +311,7 @@ def compile_ffmpeg_command(
     metadata.update(
         {
             "motion_backend": "pr13_v1",
+            "motion_geometry": "aspect_preserving_source_rect_v1",
             "motion_scene_count": sum(
                 1 for scene in plan.scenes if scene.motion_type is not None
             ),
