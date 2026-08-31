@@ -173,6 +173,10 @@ def _paths(tmp_path: Path) -> tuple[RenderPlan, dict[str, Path]]:
     return _plan(image_id, music_id, original_id), paths
 
 
+def _profile_properties(plan: RenderPlan) -> dict[str, object]:
+    return plan.output_profile.model_dump(mode="json")["properties"]
+
+
 def test_audio_wrapper_adds_fades_ducking_limiter_and_evidence(tmp_path: Path) -> None:
     plan, paths = _paths(tmp_path)
     manifest = compile_ffmpeg_command(
@@ -193,17 +197,11 @@ def test_audio_wrapper_adds_fades_ducking_limiter_and_evidence(tmp_path: Path) -
 
 def test_normalization_fails_closed_without_frozen_measurement(tmp_path: Path) -> None:
     plan, paths = _paths(tmp_path)
-    profile = plan.output_profile.validated_copy(
-        update={
-            "properties": {
-                **dict(plan.output_profile.properties),
-                "audio_mastering": {
-                    **dict(plan.output_profile.properties["audio_mastering"]),
-                    "normalize": True,
-                },
-            }
-        }
-    )
+    properties = _profile_properties(plan)
+    mastering = dict(properties["audio_mastering"])
+    mastering["normalize"] = True
+    properties["audio_mastering"] = mastering
+    profile = plan.output_profile.validated_copy(update={"properties": properties})
     plan = plan.validated_copy(update={"output_profile": profile})
     with pytest.raises(
         UnsupportedRenderFeatureError,
@@ -223,18 +221,13 @@ def test_normalization_uses_frozen_first_pass_measurement(tmp_path: Path) -> Non
         input_thresh=-30.0,
         target_offset=0.1,
     )
-    mastering = dict(plan.output_profile.properties["audio_mastering"])
+    properties = _profile_properties(plan)
+    mastering = dict(properties["audio_mastering"])
     mastering.update(
         {"normalize": True, "measurement": measurement.model_dump(mode="json")}
     )
-    profile = plan.output_profile.validated_copy(
-        update={
-            "properties": {
-                **dict(plan.output_profile.properties),
-                "audio_mastering": mastering,
-            }
-        }
-    )
+    properties["audio_mastering"] = mastering
+    profile = plan.output_profile.validated_copy(update={"properties": properties})
     normalized = plan.validated_copy(update={"output_profile": profile})
 
     manifest = compile_ffmpeg_command(
