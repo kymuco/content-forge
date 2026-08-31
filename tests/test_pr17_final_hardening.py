@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 import content_forge.batch.final as batch_final
-from content_forge.batch import BatchCoordinator, BatchRunError
+from content_forge.batch import (
+    AcceptedStateSnapshot,
+    BatchCoordinator,
+    BatchItemSnapshot,
+    BatchRunError,
+)
 from content_forge.batch.lease import BatchRunLease
 from content_forge.storage import LocalLibrary, StoredJob
 
@@ -20,17 +25,27 @@ def test_live_batch_lease_rejects_concurrent_runner_before_durable_state_changes
     library = LocalLibrary(tmp_path / "runtime")
     coordinator = BatchCoordinator(library)
     batch_job_id = _batch_id("a")
+    parent = StoredJob(
+        job_id=batch_job_id,
+        project_id=None,
+        job_type="batch",
+        state="running",
+        payload={"sentinel": "unchanged"},
+    )
+    library.database.create_job(parent)
     lock_path = library.paths.root / "batches" / batch_job_id / ".run.lock"
 
     with BatchRunLease.acquire(lock_path):
         with pytest.raises(BatchRunError, match="already owned by a live runner"):
             coordinator.run_batch(batch_job_id, object())  # type: ignore[arg-type]
 
-    # The lease check happens before the coordinator asks SQLite for the batch job.
-    assert library.database.get_job(batch_job_id) is None
+    persisted = library.database.get_job(batch_job_id)
+    assert persisted is not None
+    assert persisted.state == "running"
+    assert persisted.payload == {"sentinel": "unchanged"}
 
 
-def test_run_batch_indexes_render_attempts_once_for_all_items(
+def test_run_batch_indexes_render_attempts_once_for_all_item_lookups(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -38,25 +53,38 @@ def test_run_batch_indexes_render_attempts_once_for_all_items(
     coordinator = BatchCoordinator(library)
     batch_job_id = _batch_id("b")
 
-    expected_item_keys = {f"item_{index:04d}" for index in range(5)}
-    for index, item_key in enumerate(sorted(expected_item_keys)):
-        library.database.create_job(
-            StoredJob(
-                project_id=None,
-                job_type="render",
-                state="batch_held",
-                payload={
-                    "batch_context": {
-                        "batch_job_id": batch_job_id,
-                        "item_key": item_key,
-                        "attempt_index": 0,
-                    }
-                },
+    items: list[BatchItemSnapshot] = []
+    for index in range(5):
+        item_key = f"item_{index:04d}"
+        job = StoredJob(
+            project_id=None,
+            job_type="render",
+            state="batch_held",
+            payload={
+                "batch_context": {
+                    "batch_job_id": batch_job_id,
+                    "item_key": item_key,
+                    "attempt_index": 0,
+                }
+            },
+        )
+        library.database.create_job(job)
+        items.append(
+            BatchItemSnapshot(
+                item_key=item_key,
+                project_id="cf_project_" + "1" * 32,
+                purpose="preview",
+                profile_id="test_preview",
+                render_plan_digest="0" * 64,
+                accepted_state=AcceptedStateSnapshot(),
+                initial_job_id=job.job_id,
             )
         )
 
+    expected_item_keys = {item.item_key for item in items}
+
     # Historical/unrelated renders may exist; the public drain still performs one scan,
-    # then all per-item lookups use the in-memory batch index.
+    # then every per-item `_current_attempt` lookup uses the in-memory batch index.
     library.database.create_job(
         StoredJob(
             project_id=None,
@@ -76,10 +104,17 @@ def test_run_batch_indexes_render_attempts_once_for_all_items(
 
     def fake_hardened_run(self, requested_batch_job_id, capabilities, **kwargs):
         del capabilities, kwargs
-        indexed = self._pr17_attempt_index[requested_batch_job_id]  # noqa: SLF001
-        assert set(indexed) == expected_item_keys
-        assert all(len(attempts) == 1 for attempts in indexed.values())
-        return tuple(attempts[0].job_id for attempts in indexed.values())
+        resolved = []
+        for item in items:
+            attempt, attempt_index = self._current_attempt(  # noqa: SLF001
+                requested_batch_job_id,
+                item,
+                "single-public-drain",
+            )
+            assert attempt_index == 0
+            assert attempt.state == "queued"
+            resolved.append(attempt.job_id)
+        return tuple(resolved)
 
     monkeypatch.setattr(batch_final, "list_jobs", counted_list_jobs)
     monkeypatch.setattr(
