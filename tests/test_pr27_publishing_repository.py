@@ -213,5 +213,5 @@ def test_pr27_state_machine_rejects_invalid_transitions_and_provider_identity(tm
     repository.mark_running(attempt.attempt_id, _health())
     with pytest.raises(StorageConflictError, match="expected prepared"):
         repository.mark_running(attempt.attempt_id, _health())
-    with pytest.raises(StorageConflictError, match="expected running"):
+    with pytest.raises(StorageConflictError, match="unknown publish attempt"):
         repository.mark_succeeded(new_entity_id(EntityKind.PUBLISH), _result(approved, _health()))
