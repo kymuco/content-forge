@@ -74,6 +74,20 @@ from .voice_cast import (
     VoiceCastWorkflow,
     voice_cast_manifest,
 )
+from .voiced_story import (
+    ProjectVoicedStoryManifest,
+    TimedTextCue,
+    VoicedStoryConflictError,
+    VoicedStoryError,
+    VoicedStoryLine,
+    VoicedStoryNotFoundError,
+    VoicedStoryNotReadyError,
+    VoicedStoryScene,
+    VoicedStoryTimingPolicy,
+    VoicedStoryValidationError,
+    VoicedStoryWorkflow,
+    voiced_story_manifest,
+)
 # Install the PR17 startup ownership boundary in place before exposing the existing
 # seventh-pass ReviewService class. This preserves all public class identities.
 from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
@@ -115,6 +129,7 @@ __all__ = [
     "ProjectDialogueManifest",
     "ProjectTTSManifest",
     "ProjectVoiceCastManifest",
+    "ProjectVoicedStoryManifest",
     "ResolvedLineVoice",
     "ReviewConflictError",
     "ReviewError",
@@ -131,6 +146,7 @@ __all__ = [
     "TTSNotFoundError",
     "TTSSynthesisError",
     "TTSValidationError",
+    "TimedTextCue",
     "UploadTooLargeError",
     "VoiceCastConflictError",
     "VoiceCastDefinition",
@@ -141,10 +157,20 @@ __all__ = [
     "VoiceCastUnavailableError",
     "VoiceCastValidationError",
     "VoiceCastWorkflow",
+    "VoicedStoryConflictError",
+    "VoicedStoryError",
+    "VoicedStoryLine",
+    "VoicedStoryNotFoundError",
+    "VoicedStoryNotReadyError",
+    "VoicedStoryScene",
+    "VoicedStoryTimingPolicy",
+    "VoicedStoryValidationError",
+    "VoicedStoryWorkflow",
     "dialogue_manifest",
     "panel_extraction_digest",
     "prepare_panel_ocr",
     "scene_dialogue_digest",
     "tts_manifest",
     "voice_cast_manifest",
+    "voiced_story_manifest",
 ]
