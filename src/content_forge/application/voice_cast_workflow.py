@@ -103,7 +103,10 @@ class VoiceCastWorkflow:
             if revision.definition_sha256 != binding.cast_definition_sha256:
                 raise VoiceCastConflictError("voice cast binding revision digest mismatch")
             if binding.settings_override is not None:
-                self.registry._validate_reference(binding.settings_override)
+                self.registry._validate_reference(
+                    binding.settings_override,
+                    expected_sha256=binding.settings_override_reference_sha256,
+                )
         return manifest
 
     def manifest(self, project_id: str) -> ProjectVoiceCastManifest:
@@ -130,14 +133,16 @@ class VoiceCastWorkflow:
         if character_id not in {item.character_id for item in dialogue.characters}:
             raise VoiceCastNotFoundError(f"unknown PR19 character: {character_id}")
         revision = self.registry.get(cast_id, cast_revision)
+        override_reference_sha256 = None
         if settings_override is not None:
-            self.registry._validate_reference(settings_override)
+            override_reference_sha256 = self.registry._validate_reference(settings_override)
         binding = CharacterCastBinding(
             character_id=character_id,
             cast_id=revision.cast_id,
             cast_revision=revision.revision,
             cast_definition_sha256=revision.definition_sha256,
             settings_override=settings_override,
+            settings_override_reference_sha256=override_reference_sha256,
         )
         retained = tuple(
             item for item in current_manifest.bindings if item.character_id != character_id
@@ -207,7 +212,13 @@ class VoiceCastWorkflow:
         revision = self.registry.get(binding.cast_id, binding.cast_revision)
         if revision.definition_sha256 != binding.cast_definition_sha256:
             raise VoiceCastConflictError("voice cast binding changed after validation")
+        override_applied = binding.settings_override is not None
         settings = binding.settings_override or revision.settings
+        reference_audio_sha256 = (
+            binding.settings_override_reference_sha256
+            if override_applied
+            else revision.reference_audio_sha256
+        )
         return ResolvedLineVoice(
             project_id=project.project_id,
             scene_id=scene.scene_id,
@@ -217,7 +228,8 @@ class VoiceCastWorkflow:
             cast_revision=revision.revision,
             cast_definition_sha256=revision.definition_sha256,
             settings=settings,
-            override_applied=binding.settings_override is not None,
+            reference_audio_sha256=reference_audio_sha256,
+            override_applied=override_applied,
         )
 
     def resolve_line(self, project_id: str, scene_id: str, line_id: str) -> ResolvedLineVoice:
