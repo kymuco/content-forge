@@ -28,9 +28,45 @@ def _panel_extraction(project: Project, scene_id: str):
     return extraction
 
 
-# Base workflow methods resolve this module global at execution time, so install the
-# provenance guard once for prepare/apply without creating a second dialogue engine.
+def _suggestions(values, extraction, manifest):
+    """Materialize assisted proposals with stable semantic IDs for idempotent prepare."""
+
+    result = []
+    for index, item in enumerate(values):
+        _base._validate_assignment(item.assignment, extraction, manifest)
+        semantic = {
+            "project_id": extraction.project_id,
+            "scene_id": extraction.scene_id,
+            "index": index,
+            "label": item.label,
+            "assignment": item.assignment.model_dump(mode="json"),
+            "provider": item.provider,
+            "metadata": item.model_dump(mode="json")["metadata"],
+        }
+        encoded = _base.json.dumps(
+            semantic,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        suggestion_id = f"cf_suggestion_{_base.hashlib.sha256(encoded).hexdigest()[:32]}"
+        result.append(
+            _base.ReviewSuggestion(
+                suggestion_id=suggestion_id,
+                label=item.label,
+                value=item.assignment.model_dump(mode="json"),
+                provider=item.provider,
+                metadata=item.metadata,
+            )
+        )
+    return tuple(result)
+
+
+# Base workflow methods resolve these module globals at execution time, so install the
+# hardening once without creating a second dialogue engine.
 _base._panel_extraction = _panel_extraction
+_base._suggestions = _suggestions
 
 
 class DialogueWorkflow(_base.DialogueWorkflow):
@@ -113,6 +149,19 @@ class DialogueWorkflow(_base.DialogueWorkflow):
             update={"metadata": metadata, "updated_at": datetime.now(timezone.utc)}
         )
         return self._cas_project(expected_json, updated)
+
+    def manifest(self, project_id: str) -> _base.ProjectDialogueManifest:
+        """Return dialogue only while its retained PR18 provenance is still current."""
+
+        project, _ = self._snapshot(project_id)
+        manifest = _base.dialogue_manifest(project)
+        for accepted_scene in manifest.scenes:
+            extraction = _base._panel_extraction(project, accepted_scene.scene_id)
+            if accepted_scene.extraction_digest != _base.panel_extraction_digest(extraction):
+                raise _base.DialogueConflictError(
+                    "accepted dialogue no longer matches retained OCR extraction"
+                )
+        return manifest
 
 
 # Preserve direct-module consumers as well as the package facade.
