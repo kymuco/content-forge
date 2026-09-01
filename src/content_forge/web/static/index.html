@@ -100,6 +100,23 @@
       <div id="voice-cast-characters" class="review-list" aria-live="polite"></div>
       <p id="voice-cast-status" class="status"></p>
     </section>
+    <section id="voiced-story-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">VOICED STORY</p><h2>Panel timing & text</h2></div>
+        <span id="voiced-story-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Review derived panel timing from accepted dialogue, current cast bindings, and verified synthesized audio. Phrase cues are deterministic editorial timing, not forced alignment.</p>
+      <div class="stack compact">
+        <label>Project ID<input id="voiced-story-project" list="voiced-story-project-options" placeholder="Choose a recent project or paste its ID"></label>
+        <datalist id="voiced-story-project-options"></datalist>
+        <div class="row">
+          <button id="voiced-story-preview" class="secondary" type="button">Preview timing</button>
+          <button id="voiced-story-materialize" class="primary" type="button">Materialize timing</button>
+        </div>
+      </div>
+      <div id="voiced-story-scenes" class="review-list" aria-live="polite"></div>
+      <p id="voiced-story-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -113,5 +130,6 @@
   <script src="review.js"></script>
   <script src="dialogue.js"></script>
   <script src="voice-cast.js"></script>
+  <script src="voiced-story.js"></script>
 </body>
 </html>
