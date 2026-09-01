@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -19,6 +21,7 @@ from content_forge.providers.tts import (
     TTSGenerationSettings,
     TTSInvocationEvidence,
     TTSProvider,
+    TTSProviderError,
     TTSProviderHealth,
     TTSRequest,
     TTSResult,
@@ -32,6 +35,7 @@ _TTS_MANIFEST_VERSION = "pr20_tts_manifest_v1"
 _TTS_LINE_VERSION = "pr20_line_synthesis_v1"
 _TTS_METADATA_KEY = "pr20_tts"
 _MAX_TTS_LINES = 10000
+_MAX_TTS_TEXT_CHARS = 4_000_000
 _MAX_LINE_AUDIO_BYTES = 512 * 1024 * 1024
 _MAX_LINE_DURATION_SECONDS = 30 * 60.0
 _TTS_STATES = frozenset({ProjectState.DRAFT, ProjectState.PREPARED, ProjectState.READY})
@@ -84,7 +88,7 @@ class LineTTSSettings(FrozenModel):
 
 
 class SynthesizedDialogueLine(FrozenModel):
-    contract_version: str = Field(default=_TTS_LINE_VERSION, pattern=r"^pr20_line_synthesis_v1$")
+    contract_version: Literal["pr20_line_synthesis_v1"] = _TTS_LINE_VERSION
     scene_id: str
     line_id: str = Field(pattern=r"^dlg_ocr_[0-9]{4}$")
     scene_dialogue_digest: SHA256
@@ -95,7 +99,7 @@ class SynthesizedDialogueLine(FrozenModel):
     evidence: TTSInvocationEvidence
     asset_id: str
     audio_sha256: SHA256
-    size_bytes: int = Field(ge=1)
+    size_bytes: int = Field(ge=1, le=_MAX_LINE_AUDIO_BYTES)
     sample_rate_hz: int = Field(ge=1, le=768000)
     channels: int = Field(ge=1, le=64)
     sample_count: int = Field(ge=1)
@@ -105,13 +109,11 @@ class SynthesizedDialogueLine(FrozenModel):
     def validate_ids(self):
         require_entity_id(self.scene_id, EntityKind.SCENE)
         require_entity_id(self.asset_id, EntityKind.ASSET)
-        if self.size_bytes > _MAX_LINE_AUDIO_BYTES:
-            raise ValueError("line TTS audio exceeds artifact budget")
         return self
 
 
 class ProjectTTSManifest(FrozenModel):
-    contract_version: str = Field(default=_TTS_MANIFEST_VERSION, pattern=r"^pr20_tts_manifest_v1$")
+    contract_version: Literal["pr20_tts_manifest_v1"] = _TTS_MANIFEST_VERSION
     project_id: str
     lines: tuple[SynthesizedDialogueLine, ...] = Field(default=(), max_length=_MAX_TTS_LINES)
 
@@ -121,6 +123,8 @@ class ProjectTTSManifest(FrozenModel):
         keys = tuple((line.scene_id, line.line_id) for line in self.lines)
         if len(set(keys)) != len(keys):
             raise ValueError("duplicate PR20 synthesized dialogue line")
+        if sum(len(line.source_text) for line in self.lines) > _MAX_TTS_TEXT_CHARS:
+            raise ValueError("PR20 TTS manifest source text exceeds project budget")
         return self
 
 
@@ -288,6 +292,16 @@ class LineTTSWorkflow:
             raise TTSSynthesisError(health.reason or "TTS provider is unavailable")
         return health
 
+    def _provider_health(self) -> TTSProviderHealth:
+        try:
+            return self._health_identity(self.provider.health())
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise TTSSynthesisError(
+                f"TTS provider health check failed: {type(exc).__name__}"
+            ) from exc
+
     @staticmethod
     def _validate_evidence(
         result: TTSResult,
@@ -305,7 +319,7 @@ class LineTTSWorkflow:
         ):
             raise TTSValidationError("TTS provider identity changed during synthesis")
 
-    def _validate_cached_line(
+    def _validate_record_identity(
         self,
         record: SynthesizedDialogueLine,
         *,
@@ -339,6 +353,11 @@ class LineTTSWorkflow:
             raise TTSConflictError("cached TTS asset is not catalogued as audio")
         if asset.sha256 != record.audio_sha256 or asset.size_bytes != record.size_bytes:
             raise TTSConflictError("cached TTS asset identity no longer matches manifest")
+
+    def _validate_cached_asset(self, record: SynthesizedDialogueLine) -> None:
+        asset = self.library.database.get_asset(record.asset_id)
+        if asset is None:  # identity validation normally catches this first
+            raise TTSConflictError("cached TTS asset metadata is missing")
         try:
             if not self.library.assets.verify(asset):
                 raise TTSConflictError("cached TTS asset failed content verification")
@@ -357,9 +376,7 @@ class LineTTSWorkflow:
         ):
             raise TTSConflictError("cached TTS WAV evidence no longer matches manifest")
 
-    def manifest(self, project_id: str) -> ProjectTTSManifest:
-        project, _ = self._snapshot(project_id)
-        dialogue = validated_dialogue_manifest(project)
+    def _validated_manifest_identity(self, project: Project, dialogue) -> ProjectTTSManifest:
         manifest = tts_manifest(project)
         scene_by_id = {scene.scene_id: scene for scene in dialogue.scenes}
         for record in manifest.lines:
@@ -369,7 +386,15 @@ class LineTTSWorkflow:
             line = next((item for item in scene.lines if item.line_id == record.line_id), None)
             if line is None:
                 raise TTSConflictError("cached TTS source line no longer exists")
-            self._validate_cached_line(record, scene=scene, line=line)
+            self._validate_record_identity(record, scene=scene, line=line)
+        return manifest
+
+    def manifest(self, project_id: str) -> ProjectTTSManifest:
+        project, _ = self._snapshot(project_id)
+        dialogue = validated_dialogue_manifest(project)
+        manifest = self._validated_manifest_identity(project, dialogue)
+        for record in manifest.lines:
+            self._validate_cached_asset(record)
         return manifest
 
     def synthesize_line(
@@ -385,7 +410,7 @@ class LineTTSWorkflow:
                 f"TTS cannot mutate project in state {project.state.value}"
             )
         dialogue, scene, line = self._dialogue_source(project, scene_id, line_id)
-        current_manifest = tts_manifest(project)
+        current_manifest = self._validated_manifest_identity(project, dialogue)
         current = next(
             (
                 item
@@ -395,36 +420,34 @@ class LineTTSWorkflow:
             None,
         )
 
-        health = self._health_identity(self.provider.health())
+        health = self._provider_health()
         semantic_request = self._request(
             line=line,
             settings=settings,
             output_path=self.library.paths.incoming / "pr20-semantic-request.wav",
         )
         expected_cache_key = tts_cache_key(semantic_request, health)
-        if current is not None and current.cache_key == expected_cache_key:
-            self._validate_cached_line(current, scene=scene, line=line)
-            return current
+        if current is not None:
+            self._validate_cached_asset(current)
+            if current.cache_key == expected_cache_key:
+                return current
 
         descriptor, temporary_name = tempfile.mkstemp(
             dir=self.library.paths.incoming,
             prefix="pr20-tts-",
             suffix=".wav",
         )
-        Path(temporary_name).unlink(missing_ok=True)
-        try:
-            import os
-
-            os.close(descriptor)
-        except OSError:
-            pass
+        os.close(descriptor)
         output_path = Path(temporary_name)
+        output_path.unlink(missing_ok=True)
         try:
             request = self._request(line=line, settings=settings, output_path=output_path)
             if semantic_tts_request_digest(request) != semantic_tts_request_digest(semantic_request):
                 raise TTSValidationError("TTS runtime path changed semantic request identity")
             try:
                 result = self.provider.synthesize(request)
+            except TTSProviderError as exc:
+                raise TTSSynthesisError(f"TTS provider failed: {type(exc).__name__}") from exc
             except TTSError:
                 raise
             except Exception as exc:
