@@ -16,6 +16,10 @@ def _service(tmp_path) -> ReviewService:
     return ReviewService(LocalLibrary(tmp_path / "runtime"))
 
 
+def test_pr23_render_gate_preserves_seventh_pass_review_service_identity() -> None:
+    assert ReviewService is BaseReviewService
+
+
 def test_pr23_render_gate_leaves_non_voiced_projects_on_existing_path(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -25,8 +29,8 @@ def test_pr23_render_gate_leaves_non_voiced_projects_on_existing_path(
     sentinel = object()
     monkeypatch.setattr(hardening, "voiced_story_manifest", lambda candidate: None)
     monkeypatch.setattr(
-        BaseReviewService,
-        "_compile_plan",
+        hardening,
+        "_BASE_COMPILE_PLAN",
         lambda self, candidate, profile_id: sentinel,
     )
 
@@ -75,8 +79,8 @@ def test_pr23_render_gate_accepts_exact_rederived_presentation(
     monkeypatch.setattr(hardening, "voiced_scene_manifest", lambda candidate: stored)
     monkeypatch.setattr(hardening, "VoicedSceneWorkflow", FakeWorkflow)
     monkeypatch.setattr(
-        BaseReviewService,
-        "_compile_plan",
+        hardening,
+        "_BASE_COMPILE_PLAN",
         lambda self, candidate, profile_id: sentinel,
     )
 
@@ -101,7 +105,7 @@ def test_pr23_render_gate_blocks_stale_presentation_before_base_compile(
             return candidate
 
         def derive(self, candidate, *, preset):
-            return SimpleNamespace(preset=preset)
+            return SimpleNamespace(preset=preset, drifted=True)
 
     def base_compile(self, candidate, profile_id):
         nonlocal base_called
@@ -111,7 +115,7 @@ def test_pr23_render_gate_blocks_stale_presentation_before_base_compile(
     monkeypatch.setattr(hardening, "voiced_story_manifest", lambda candidate: object())
     monkeypatch.setattr(hardening, "voiced_scene_manifest", lambda candidate: stored)
     monkeypatch.setattr(hardening, "VoicedSceneWorkflow", FakeWorkflow)
-    monkeypatch.setattr(BaseReviewService, "_compile_plan", base_compile)
+    monkeypatch.setattr(hardening, "_BASE_COMPILE_PLAN", base_compile)
 
     with pytest.raises(ReviewNotReadyError, match="stale"):
         service._compile_plan(project, "final")
