@@ -135,7 +135,6 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
         text="Hello there",
         language="en-US",
         voice_id="Ryan",
-        instruction="Very calm",
         generation=TTSGenerationSettings(top_p=0.91, max_new_tokens=512),
     )
     result = provider.synthesize(request)
@@ -147,7 +146,6 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
             "speaker": "Ryan",
             "max_new_tokens": 512,
             "top_p": 0.91,
-            "instruct": "Very calm",
         }
     ]
     assert result.evidence.request_sha256 == semantic_tts_request_digest(request)
@@ -172,6 +170,52 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
     assert different_revision.model_id == health.model_id
     assert different_revision.model_revision != health.model_revision
     assert tts_cache_key(request, different_revision) != tts_cache_key(request, health)
+
+
+def test_qwen_06b_rejects_instruction_while_17b_forwards_it(tmp_path: Path) -> None:
+    default_runtime = _CustomRuntime()
+    default_provider = QwenTTSProvider(
+        runtime_factory=lambda _config: default_runtime,
+        provider_version="0.1.1",
+    )
+    with pytest.raises(TTSResponseError, match="0.6B CustomVoice ignores instructions"):
+        default_provider.synthesize(
+            TTSRequest(
+                output_path=tmp_path / "ignored.wav",
+                text="Do not silently ignore this",
+                language="en",
+                voice_id="Ryan",
+                instruction="Very calm",
+            )
+        )
+    assert default_runtime.calls == []
+
+    runtime = _CustomRuntime()
+    provider = QwenTTSProvider(
+        QwenTTSConfig(
+            model_id="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            revision=_TEST_REVISION,
+            mode="custom_voice",
+        ),
+        runtime_factory=lambda _config: runtime,
+        provider_version="0.1.1",
+    )
+    request = TTSRequest(
+        output_path=tmp_path / "instruct.wav",
+        text="Instruction-aware line",
+        language="en",
+        voice_id="Ryan",
+        instruction="Very calm",
+    )
+    provider.synthesize(request)
+    assert runtime.calls == [
+        {
+            "text": "Instruction-aware line",
+            "language": "English",
+            "speaker": "Ryan",
+            "instruct": "Very calm",
+        }
+    ]
 
 
 def test_qwen_voice_clone_verifies_reference_and_maps_arguments(tmp_path: Path) -> None:
