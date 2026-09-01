@@ -47,6 +47,18 @@ from .review import (
     ReviewRenderError,
     ReviewValidationError,
 )
+from .tts import (
+    LineTTSSettings,
+    LineTTSWorkflow,
+    ProjectTTSManifest,
+    SynthesizedDialogueLine,
+    TTSConflictError,
+    TTSError,
+    TTSNotFoundError,
+    TTSSynthesisError,
+    TTSValidationError,
+    tts_manifest,
+)
 # Install the PR17 startup ownership boundary in place before exposing the existing
 # seventh-pass ReviewService class. This preserves all public class identities.
 from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
@@ -72,6 +84,8 @@ __all__ = [
     "IntakeKind",
     "IntakeState",
     "IssuedSession",
+    "LineTTSSettings",
+    "LineTTSWorkflow",
     "PairingChallenge",
     "PanelOCRConflictError",
     "PanelOCRError",
@@ -83,6 +97,7 @@ __all__ = [
     "PanelTextRegion",
     "PreparationState",
     "ProjectDialogueManifest",
+    "ProjectTTSManifest",
     "ReviewConflictError",
     "ReviewError",
     "ReviewNotFoundError",
@@ -92,9 +107,16 @@ __all__ = [
     "ReviewValidationError",
     "SceneDialogue",
     "SceneFocusHint",
+    "SynthesizedDialogueLine",
+    "TTSConflictError",
+    "TTSError",
+    "TTSNotFoundError",
+    "TTSSynthesisError",
+    "TTSValidationError",
     "UploadTooLargeError",
     "dialogue_manifest",
     "panel_extraction_digest",
     "prepare_panel_ocr",
     "scene_dialogue_digest",
+    "tts_manifest",
 ]
