@@ -19,7 +19,15 @@ class LocalLibrary:
         self.paths = RuntimePaths.from_root(root).ensure()
         self.database = LibraryDatabase(self.paths.database).initialize()
         self.assets = AssetStore(self.paths, self.database)
-        self.index = ProductionLibraryIndex(self.database).initialize()
+        self._index: ProductionLibraryIndex | None = None
+
+    @property
+    def index(self) -> ProductionLibraryIndex:
+        """Open the additive PR26 index only when production-library features are used."""
+
+        if self._index is None:
+            self._index = ProductionLibraryIndex(self.database).initialize()
+        return self._index
 
     def save_project(self, project: Project) -> Project:
         return self.database.save_project(project)
