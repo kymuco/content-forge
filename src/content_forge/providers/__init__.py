@@ -43,6 +43,23 @@ from .ocr import (
     semantic_ocr_request_digest,
 )
 from .paddleocr import PaddleOCRConfig, PaddleOCRProvider
+from .qwen_tts import QwenTTSConfig, QwenTTSProvider
+from .tts import (
+    TTSExecutionError,
+    TTSGenerationSettings,
+    TTSInvocationEvidence,
+    TTSProvider,
+    TTSProviderError,
+    TTSProviderHealth,
+    TTSRequest,
+    TTSResponseError,
+    TTSResult,
+    TTSUnavailableError,
+    TTSVoiceReference,
+    semantic_tts_request_digest,
+    tts_cache_key,
+    tts_config_digest,
+)
 
 __all__ = [
     "ChatGPTWebAdapterLLMProvider",
@@ -74,6 +91,19 @@ __all__ = [
     "OCRUnavailableError",
     "PaddleOCRConfig",
     "PaddleOCRProvider",
+    "QwenTTSConfig",
+    "QwenTTSProvider",
+    "TTSExecutionError",
+    "TTSGenerationSettings",
+    "TTSInvocationEvidence",
+    "TTSProvider",
+    "TTSProviderError",
+    "TTSProviderHealth",
+    "TTSRequest",
+    "TTSResponseError",
+    "TTSResult",
+    "TTSUnavailableError",
+    "TTSVoiceReference",
     "TextCleanupRequest",
     "TextCleanupResult",
     "TranslationRequest",
@@ -83,6 +113,9 @@ __all__ = [
     "replace_provider_suggestions",
     "semantic_ocr_request_digest",
     "semantic_request_digest",
+    "semantic_tts_request_digest",
     "strict_json_object",
     "to_review_suggestions",
+    "tts_cache_key",
+    "tts_config_digest",
 ]

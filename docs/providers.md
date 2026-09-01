@@ -9,12 +9,12 @@ Core project state, timelines, rendering, and storage must not depend directly o
 The provider families are:
 
 ```text
-LLMProvider       # implemented in PR15
-OCRProvider       # implemented in PR18
-TTSProvider       # later
-SourceProvider    # later
+LLMProvider        # implemented in PR15
+OCRProvider        # implemented in PR18
+TTSProvider        # implemented in PR20
+SourceProvider     # later
 PublishingProvider # later
-AnalyticsProvider # later
+AnalyticsProvider  # later
 ```
 
 ## General provider rules
@@ -74,7 +74,7 @@ Output is several candidate hooks, not an automatically accepted headline by def
 
 #### OCR cleanup
 
-PR18 retains raw OCR separately. An LLM may later propose normalized punctuation/spelling through the PR15 text-cleanup contract, but that proposal must never erase raw OCR or bypass OCR correction authority.
+PR18 retains raw OCR separately. An LLM may propose normalized punctuation/spelling through the PR15 text-cleanup contract, but that proposal must never erase raw OCR or bypass OCR correction authority.
 
 #### Translation/localization
 
@@ -158,7 +158,7 @@ Source geometry is pixel-based and fail closed: malformed/non-finite geometry, b
 
 ### First local adapter: PaddleOCR
 
-The first implementation is a lazy `PaddleOCRProvider` targeting PaddleOCR 3.x (currently the 3.7 generation).
+The first implementation is a lazy `PaddleOCRProvider` targeting PaddleOCR 3.x.
 
 The adapter consumes structured pipeline fields:
 
@@ -192,61 +192,129 @@ PR18's retained project snapshot is the first cache/reuse boundary: reopening or
 
 See [`pr18-ocr-panel-text.md`](pr18-ocr-panel-text.md) for the complete contract.
 
-## `TTSProvider` (later)
+## `TTSProvider`
 
-The intended first implementation is a local Qwen TTS integration, but core contracts should remain model-agnostic.
+PR20 freezes a model-agnostic line-synthesis boundary:
 
-Conceptual request:
+```python
+class TTSProvider(Protocol):
+    def health(self) -> TTSProviderHealth: ...
+    def synthesize(self, request: TTSRequest) -> TTSResult: ...
+```
+
+A request contains exact accepted dialogue text plus explicit language/voice/style intent, optional verified voice-reference audio, and bounded generation settings. The provider writes one line artifact to a caller-owned runtime path and returns bounded evidence describing those bytes.
+
+The semantic request digest deliberately excludes local output/reference paths. It includes:
 
 ```text
-text
-voice_id
-style/settings
+accepted text
 language
-seed/determinism options where supported
+voice_id
+instruction/style
+reference audio SHA-256 + transcript + clone mode
+generation settings
 ```
 
-Conceptual result:
+The reusable line cache key then binds that semantic digest to:
 
 ```text
-audio asset
-duration
-provider/model/version
-resolved voice/settings
+provider_id
+provider_version
+model_id
+model_revision
+provider config SHA-256
 ```
+
+This gives deterministic cache invalidation. It does **not** claim that a stochastic TTS model will reproduce bit-identical bytes after the cached artifact is deliberately discarded and regenerated.
 
 ### Per-line synthesis
 
-Dialogue should be synthesized one line at a time rather than as one large scene file.
+Dialogue is synthesized one accepted PR19 line at a time rather than as one scene waveform.
 
 Benefits:
 
-- cache reuse;
+- exact cache reuse;
 - isolated regeneration;
 - known line durations;
-- straightforward timed text;
-- speaker-level mixing/control;
-- editing one line does not invalidate the whole episode.
+- straightforward later timed text;
+- speaker-level control;
+- editing or changing the voice of one line does not force regeneration of an entire episode.
 
-### Cache key
+Every durable PR20 line receipt retains the exact PR19 scene-dialogue digest, accepted source text, narrative speaker ID, synthesis settings, provider/model/revision/config/request evidence, generated audio asset identity, sample geometry, and duration.
 
-At minimum:
+### Independent artifact verification
+
+A provider result does not authorize project state merely because its schema validates.
+
+Before publication, Content Forge independently reopens the generated file and requires a bounded uncompressed PCM16 WAV whose:
+
+- SHA-256;
+- byte size;
+- sample rate;
+- channel count;
+- sample/frame count;
+- duration
+
+match the provider result. Only then are the bytes ingested into the normal content-addressed `AssetStore`.
+
+Cache reads revalidate PR19 source authority and semantic request/cache identity. Public PR20 manifest reads also re-hash/reopen retained generated audio, so post-publication byte or metadata tampering fails closed.
+
+### PR19 authority and concurrency
+
+PR20 synthesizes only dialogue that still passes the complete accepted PR19 provenance/review check. PR19 exposes that validation over one exact `Project` snapshot so PR20 does not introduce a second-snapshot TOCTOU between source validation and synthesis planning.
+
+The Project snapshot used to plan the provider request is retained as exact serialized JSON. After expensive generation and artifact verification, PR20 updates Project metadata with compare-and-swap. If the Project changed concurrently, the stale write is rejected rather than overwriting newer state.
+
+### First local adapter: Qwen3-TTS
+
+The first implementation is `QwenTTSProvider`, a lazy adapter for the official Qwen3-TTS `qwen-tts` 0.1.x package/API.
+
+It supports three explicit model modes:
 
 ```text
-provider/model version
-+ voice identity
-+ text
-+ language
-+ synthesis settings
+custom_voice -> ...-CustomVoice -> generate_custom_voice
+voice_clone  -> ...-Base        -> generate_voice_clone
+voice_design -> ...-VoiceDesign -> generate_voice_design
 ```
 
-A different voice or changed text must invalidate the line, while changing visual crop must not.
+The configured checkpoint name must match the selected mode. This avoids silently invoking the wrong Qwen capability family.
 
-## Voice cast registry
+The released 12Hz Qwen3-TTS family supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. PR20 maps BCP-47 base subtags to the Qwen language names and uses Qwen `Auto` when language is omitted or `und`.
 
-The voice cast is application/project data above the provider.
+Qwen repositories are pinned by an explicit immutable 40-hex Hugging Face commit SHA. `model_revision` is retained separately in evidence and cache identity. Before model construction, Content Forge resolves the complete repository with `snapshot_download(repo_id=..., revision=...)` and passes Qwen the resulting local snapshot path. This ensures model weights and the separately loaded processor/config files come from the same checkpoint.
 
-Example:
+The default adapter uses:
+
+```text
+Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+revision=85e237c12c027371202489a0ec509ded67b5e4b5
+```
+
+A different Qwen repository requires its own explicit pinned commit SHA. Qwen model weights, Torch/CUDA, `qwen-tts`, and `huggingface-hub` remain optional local TTS runtime dependencies and are not installed by base Content Forge.
+
+Install the optional adapter environment with:
+
+```text
+pip install 'content-forge[tts]'
+```
+
+`health()` resolves package/config/cache identity without loading model weights; pinned snapshot resolution and actual `Qwen3TTSModel.from_pretrained(...)` construction are lazy on the first cache miss. This allows cached projects to remain cheap to inspect/use.
+
+The upstream 0.6B CustomVoice implementation ignores `instruct`. PR20 therefore rejects an instruction for a 0.6B CustomVoice model instead of recording a style request that the selected model did not execute. Instruction-controlled CustomVoice requires a compatible 1.7B checkpoint with its own pinned revision.
+
+Qwen waveform samples are normalized by Content Forge into a standard mono PCM16 WAV using the Python standard library, keeping durable artifact encoding outside provider convenience writers.
+
+### Voice cloning
+
+`voice_clone` requires a Content Forge audio asset as the reference. The asset's content-addressed bytes are verified before provider execution. Reference SHA-256, transcript, and `x_vector_only_mode` all participate in request identity.
+
+When `x_vector_only_mode=False`, the Qwen adapter requires reference transcript text. Embedding-only cloning can omit the transcript only when the weaker `x_vector_only_mode=True` is explicit.
+
+### Voice cast registry
+
+Persistent voice casting remains the application layer above the provider and is PR21 scope.
+
+PR20 accepts an explicit line `voice_id`; PR21 can later define stable entries such as:
 
 ```text
 cast.female_energetic -> provider voice/config A
@@ -255,7 +323,9 @@ cast.male_lead        -> provider voice/config C
 cast.narrator         -> provider voice/config D
 ```
 
-Characters map to cast entries. This keeps narrative identity stable even if the underlying TTS provider is upgraded or replaced.
+Characters can then map to cast entries without changing the PR20 request/cache/artifact contract or tying narrative identity to one TTS engine.
+
+See [`pr20-tts-qwen.md`](pr20-tts-qwen.md) for the complete PR20 contract.
 
 ## `SourceProvider` (later)
 
@@ -323,17 +393,17 @@ providers:
     enabled: false
 
   tts:
-    kind: qwen_local
+    kind: qwen3_tts_local
     enabled: false
 ```
 
-Secrets/session details and local model/runtime configuration live outside committed config files.
+Secrets/session details, model weights, and machine-local runtime configuration live outside committed config files.
 
 ## Testing
 
 Core and workflow tests use fake/injected providers implementing the same protocols.
 
-This allows CI to test:
+This allows normal CI to test:
 
 - proposal acceptance/rejection;
 - strict provider-output parsing;
@@ -341,6 +411,11 @@ This allows CI to test:
 - raw OCR versus corrected-text retention;
 - confidence/review boundaries;
 - deterministic project state;
+- PR20 per-line synthesis identity/cache invalidation;
+- Qwen call-shape/language/mode/revision boundaries;
+- complete pinned Qwen repository snapshot resolution;
+- fail-closed unsupported 0.6B instruction handling;
+- PCM16 WAV verification and generated-asset integrity;
 - future dialogue timing with synthetic audio
 
-without needing a live ChatGPT session, downloaded OCR model weights, GPU TTS model, or external service.
+without needing a live ChatGPT session, downloaded OCR model weights, Qwen/Torch model weights, a GPU, or external service.
