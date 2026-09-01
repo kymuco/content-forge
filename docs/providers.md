@@ -221,6 +221,7 @@ The reusable line cache key then binds that semantic digest to:
 provider_id
 provider_version
 model_id
+model_revision
 provider config SHA-256
 ```
 
@@ -239,7 +240,7 @@ Benefits:
 - speaker-level control;
 - editing or changing the voice of one line does not force regeneration of an entire episode.
 
-Every durable PR20 line receipt retains the exact PR19 scene-dialogue digest, accepted source text, narrative speaker ID, synthesis settings, provider/model/config/request evidence, generated audio asset identity, sample geometry, and duration.
+Every durable PR20 line receipt retains the exact PR19 scene-dialogue digest, accepted source text, narrative speaker ID, synthesis settings, provider/model/revision/config/request evidence, generated audio asset identity, sample geometry, and duration.
 
 ### Independent artifact verification
 
@@ -280,7 +281,16 @@ The configured checkpoint name must match the selected mode. This avoids silentl
 
 The released 12Hz Qwen3-TTS family supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. PR20 maps BCP-47 base subtags to the Qwen language names and uses Qwen `Auto` when language is omitted or `und`.
 
-The default adapter configuration uses the lighter `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` checkpoint. Qwen model weights, Torch/CUDA, and the `qwen-tts` package remain optional local runtime data/dependencies and are not installed by base Content Forge.
+Qwen repositories are pinned by an explicit immutable 40-hex Hugging Face commit SHA. `model_revision` is retained separately in evidence and cache identity. Before model construction, Content Forge resolves the complete repository with `snapshot_download(repo_id=..., revision=...)` and passes Qwen the resulting local snapshot path. This ensures model weights and the separately loaded processor/config files come from the same checkpoint.
+
+The default adapter uses:
+
+```text
+Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+revision=85e237c12c027371202489a0ec509ded67b5e4b5
+```
+
+A different Qwen repository requires its own explicit pinned commit SHA. Qwen model weights, Torch/CUDA, `qwen-tts`, and `huggingface-hub` remain optional local TTS runtime dependencies and are not installed by base Content Forge.
 
 Install the optional adapter environment with:
 
@@ -288,7 +298,9 @@ Install the optional adapter environment with:
 pip install 'content-forge[tts]'
 ```
 
-`health()` resolves package/config/cache identity without loading model weights; actual `Qwen3TTSModel.from_pretrained(...)` construction is lazy on the first cache miss. This allows cached projects to remain cheap to inspect/use.
+`health()` resolves package/config/cache identity without loading model weights; pinned snapshot resolution and actual `Qwen3TTSModel.from_pretrained(...)` construction are lazy on the first cache miss. This allows cached projects to remain cheap to inspect/use.
+
+The upstream 0.6B CustomVoice implementation ignores `instruct`. PR20 therefore rejects an instruction for a 0.6B CustomVoice model instead of recording a style request that the selected model did not execute. Instruction-controlled CustomVoice requires a compatible 1.7B checkpoint with its own pinned revision.
 
 Qwen waveform samples are normalized by Content Forge into a standard mono PCM16 WAV using the Python standard library, keeping durable artifact encoding outside provider convenience writers.
 
@@ -400,7 +412,9 @@ This allows normal CI to test:
 - confidence/review boundaries;
 - deterministic project state;
 - PR20 per-line synthesis identity/cache invalidation;
-- Qwen call-shape/language/mode boundaries;
+- Qwen call-shape/language/mode/revision boundaries;
+- complete pinned Qwen repository snapshot resolution;
+- fail-closed unsupported 0.6B instruction handling;
 - PCM16 WAV verification and generated-asset integrity;
 - future dialogue timing with synthetic audio
 
