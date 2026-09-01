@@ -125,7 +125,7 @@ Provider failures, malformed output, hash mismatches, invalid WAV geometry, miss
 
 ## Qwen3-TTS adapter
 
-The first local implementation targets the official Qwen3-TTS family through the optional `qwen-tts` Python package. PR20 currently supports the package's 0.1.x API family and keeps it outside base dependencies:
+The first local implementation targets the official Qwen3-TTS family through the optional `qwen-tts` Python package. PR20 pins the verified adapter API to `qwen-tts==0.1.1` and keeps it outside base dependencies:
 
 ```text
 pip install 'content-forge[tts]'
@@ -185,13 +185,14 @@ Qwen returns waveform samples plus a sample rate. Content Forge converts one ret
 
 For `voice_clone`, `LineTTSSettings.reference_asset_id` must resolve to an existing Content Forge audio asset. Its canonical bytes are verified before the provider sees them.
 
-The semantic request includes:
+Qwen's `generate_voice_clone` surface does not accept style/instruction text, so PR20 rejects a non-empty `instruction` in clone mode instead of retaining a semantic setting that the provider would ignore.
 
-- reference asset SHA-256;
-- optional reference transcript;
-- `x_vector_only_mode`.
+The semantic request includes reference asset SHA-256 and `x_vector_only_mode`. Reference transcript behavior is mode-specific:
 
-If `x_vector_only_mode` is false, the Qwen adapter requires reference text. When it is true, transcript-free embedding-only cloning is allowed, matching the Qwen3-TTS API boundary while explicitly retaining that weaker clone mode in cache identity.
+- with `x_vector_only_mode=False`, transcript text is required and participates in synthesis/cache identity;
+- with `x_vector_only_mode=True`, Qwen uses only the speaker embedding and ignores transcript/code context, so PR20 requires `reference_text=None` rather than allowing ignored text into cache identity.
+
+This keeps every Qwen-specific semantic field honest: if PR20 retains a setting as synthesis identity, the selected Qwen mode must actually consume it.
 
 ## Voice design and PR21
 
@@ -218,6 +219,7 @@ Provider tests inject fake Qwen runtimes and verify:
 - language mapping;
 - custom voice, clone, and design call shapes;
 - fail-closed 0.6B CustomVoice instruction handling;
+- fail-closed clone instruction and x-vector transcript handling;
 - reference-audio digest verification;
 - generation-kwarg forwarding;
 - one-waveform/finite-sample boundaries;
