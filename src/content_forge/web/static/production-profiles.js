@@ -33,6 +33,22 @@
     node.textContent = value == null ? "" : String(value);
     return node;
   }
+  function currentProjectId() { return projectInput.value.trim(); }
+  function updateUnbindAvailability() {
+    const projectId = currentProjectId();
+    if (!projectId) {
+      unbindButton.disabled = true;
+      return;
+    }
+    if (loadedProject && loadedProject.project_id === projectId) {
+      unbindButton.disabled = !loadedProject.profile;
+      return;
+    }
+    // An unreadable old profile may have a missing optional dependency. Keep the
+    // explicit recovery action reachable by Project ID even when strict GET validation
+    // cannot load that stale authority snapshot.
+    unbindButton.disabled = false;
+  }
   async function token() {
     try { return await window.CFStore.getToken(); } catch (_) { return null; }
   }
@@ -136,7 +152,7 @@
         "Choose a project to inspect or change its explicit production-profile snapshot.",
         "empty-state"
       ));
-      unbindButton.disabled = true;
+      updateUnbindAvailability();
       return;
     }
     const card = document.createElement("article");
@@ -178,7 +194,7 @@
       profileSelect.value = `${manifest.revision.profile_id}@${manifest.revision.revision}`;
     }
     projectView.appendChild(card);
-    unbindButton.disabled = !manifest;
+    updateUnbindAvailability();
   }
 
   async function refreshRegistry() {
@@ -204,8 +220,10 @@
   }
 
   async function loadProject() {
-    const projectId = projectInput.value.trim();
+    const projectId = currentProjectId();
     if (!projectId) throw new Error("Choose or paste a project ID.");
+    loadedProject = null;
+    drawProject();
     loadedProject = await apiJson(`production-profiles/projects/${encodeURIComponent(projectId)}`);
     drawProject();
     setStatus(`Loaded ${projectId}.`, "success");
@@ -248,14 +266,17 @@
   loadProjectButton.addEventListener("click", async () => {
     loadProjectButton.disabled = true;
     try { await loadProject(); }
-    catch (error) { setStatus(error.message || "Project profile could not be loaded.", "error"); }
+    catch (error) {
+      updateUnbindAvailability();
+      setStatus(`${error.message || "Project profile could not be loaded."} You can still unbind or rebind by Project ID if an old optional profile dependency disappeared.`, "error");
+    }
     finally { loadProjectButton.disabled = false; }
   });
 
   bindButton.addEventListener("click", async () => {
     bindButton.disabled = true;
     try {
-      const projectId = projectInput.value.trim();
+      const projectId = currentProjectId();
       const selected = selectedRevision();
       if (!projectId) throw new Error("Choose or paste a project ID.");
       if (!selected) throw new Error("Choose a production profile revision.");
@@ -269,13 +290,14 @@
       setStatus(error.message || "Production profile could not be bound.", "error");
     } finally {
       bindButton.disabled = false;
+      updateUnbindAvailability();
     }
   });
 
   unbindButton.addEventListener("click", async () => {
     unbindButton.disabled = true;
     try {
-      const projectId = projectInput.value.trim();
+      const projectId = currentProjectId();
       if (!projectId) throw new Error("Choose or paste a project ID.");
       loadedProject = await apiJson(
         `production-profiles/projects/${encodeURIComponent(projectId)}`,
@@ -286,8 +308,14 @@
     } catch (error) {
       setStatus(error.message || "Production profile could not be removed.", "error");
     } finally {
-      unbindButton.disabled = !(loadedProject && loadedProject.profile);
+      updateUnbindAvailability();
     }
+  });
+
+  projectInput.addEventListener("input", () => {
+    const projectId = currentProjectId();
+    if (loadedProject && loadedProject.project_id !== projectId) loadedProject = null;
+    drawProject();
   });
 
   async function refresh() {
@@ -299,6 +327,7 @@
       registryList.replaceChildren();
       projectView.replaceChildren();
       count.textContent = "0";
+      unbindButton.disabled = true;
       return;
     }
     try {
@@ -308,6 +337,7 @@
         setStatus(`${profiles.length} reusable production profile(s) available.`);
       }
     } catch (error) {
+      updateUnbindAvailability();
       setStatus(error.message || "Production profiles could not be loaded.", "error");
     }
   }
