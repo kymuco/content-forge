@@ -54,7 +54,7 @@ def _capabilities() -> FFmpegCapabilities:
     )
 
 
-def _plan() -> tuple[RenderPlan, dict[str, Path]]:
+def _plan(tmp_path: Path) -> tuple[RenderPlan, dict[str, Path]]:
     project_id = new_entity_id(EntityKind.PROJECT)
     scene_id = new_entity_id(EntityKind.SCENE)
     image_id = new_entity_id(EntityKind.ASSET)
@@ -136,21 +136,27 @@ def _plan() -> tuple[RenderPlan, dict[str, Path]]:
         audio_tracks=(voice_track, ambience_track),
         assets=(image, voice, ambience),
     )
+    panel_path = tmp_path / "panel.png"
+    voice_path = tmp_path / "voice.wav"
+    ambience_path = tmp_path / "ambience.wav"
+    panel_path.write_bytes(b"panel")
+    voice_path.write_bytes(b"voice")
+    ambience_path.write_bytes(b"ambience")
     paths = {
-        image_id: Path("/synthetic/panel.png"),
-        voice_id: Path("/synthetic/voice.wav"),
-        ambience_id: Path("/synthetic/ambience.wav"),
+        image_id: panel_path,
+        voice_id: voice_path,
+        ambience_id: ambience_path,
     }
     return plan, paths
 
 
-def test_pr23_compiler_reuses_shared_motion_audio_pipeline() -> None:
-    plan, paths = _plan()
+def test_pr23_compiler_reuses_shared_motion_audio_pipeline(tmp_path: Path) -> None:
+    plan, paths = _plan(tmp_path)
     manifest = compile_ffmpeg_command(
         plan,
         paths,
         _capabilities(),
-        "/synthetic/output.mp4",
+        tmp_path / "output.mp4",
         prefer_nvenc=False,
     )
 
@@ -165,13 +171,13 @@ def test_pr23_compiler_reuses_shared_motion_audio_pipeline() -> None:
     assert "[audio_1]" in manifest.filtergraph
 
 
-def test_pr23_focus_zoom_remains_profile_dependent_at_compile_time() -> None:
-    plan, paths = _plan()
+def test_pr23_focus_zoom_remains_profile_dependent_at_compile_time(tmp_path: Path) -> None:
+    plan, paths = _plan(tmp_path)
     vertical = compile_ffmpeg_command(
         plan,
         paths,
         _capabilities(),
-        "/synthetic/vertical.mp4",
+        tmp_path / "vertical.mp4",
         prefer_nvenc=False,
     )
     landscape_plan = plan.validated_copy(
@@ -188,7 +194,7 @@ def test_pr23_focus_zoom_remains_profile_dependent_at_compile_time() -> None:
         landscape_plan,
         paths,
         _capabilities(),
-        "/synthetic/landscape.mp4",
+        tmp_path / "landscape.mp4",
         prefer_nvenc=False,
     )
 
