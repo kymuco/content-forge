@@ -13,7 +13,7 @@ from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths
 
 if TYPE_CHECKING:
-    from .publishing import PublishingRepository
+    from .publishing_hardening import PublishingRepository
 
 
 class LocalLibrary:
@@ -39,7 +39,7 @@ class LocalLibrary:
         """Open the additive PR27 publishing ledger only when publishing is used."""
 
         if self._publishing is None:
-            from .publishing import PublishingRepository
+            from .publishing_hardening import PublishingRepository
 
             self._publishing = PublishingRepository(self.database).initialize()
         return self._publishing
