@@ -27,7 +27,7 @@ Supported tag kinds are deliberately bounded:
 - `topic`
 - `source`
 
-Values are normalized with Unicode NFKC, surrounding/internal whitespace collapse, and Unicode case-folding for lookup identity. Human-facing normalized casing is retained separately. Empty values and control/format characters are rejected.
+Values are normalized with Unicode NFKC, surrounding/internal whitespace collapse, and Unicode case-folding for lookup identity. Human-facing normalized casing is retained separately. Empty values and Unicode control, format, and surrogate code points are rejected before SQLite encoding.
 
 Tag assignment is asset-level mutable library metadata. Replacing tags does not mutate the Asset manifest or any SourceRecord.
 
@@ -39,6 +39,10 @@ Tag assignment is asset-level mutable library metadata. Replacing tags does not 
 - normalized tag-prefix lookup;
 - previously-used / not-yet-used filtering;
 - bounded `limit` and `offset`.
+
+The hardened index accepts at most 128 exact tags in one query or saved virtual collection. This prevents a bounded HTTP body from expanding into an unbounded SQLite expression tree.
+
+Prefix lookup remains index-friendly. The half-open SQLite range uses the lexicographic successor of the normalized Unicode prefix rather than treating U+FFFF as a maximum suffix, so non-BMP characters such as emoji and the full valid scalar range remain searchable.
 
 Tag lookup uses SQLite indices rather than filesystem traversal. Search hits enrich the immutable Asset with current tags, source count, and Project-use count.
 
@@ -61,27 +65,71 @@ A virtual collection stores only:
 
 Its members are resolved dynamically from the current tag/use index. No asset copy, folder move, or persisted membership list is created.
 
-## Persistence
+## Persistence and compatibility
 
 PR26 uses an additive `application_schema` component named `production_library`, version 1. Initialization is atomic and idempotent and fails closed if a newer feature schema is encountered. The base `LibraryDatabase` schema version is unchanged.
+
+The extension is lazy: constructing `LocalLibrary` or installing the API routes does not create PR26 tables. The feature schema is initialized only on first `library.index` use, preserving pre-PR26 application-schema expectations for unrelated workflows.
 
 Tables:
 
 - `library_asset_tags`
 - `library_virtual_collections`
 
-## Initial validation
+## Authenticated API
 
-The first vertical slice must prove:
+The local API exposes production-library operations under `/api/v1/production-library`:
+
+- search;
+- read/replace asset tags;
+- asset reuse history;
+- SHA-256 duplicate lookup;
+- list/create/read/open/delete virtual collections.
+
+The boundary follows the existing local security model:
+
+- loopback plaintext or HTTPS transport only;
+- bearer authentication before JSON parsing;
+- exact `application/json` media type for parsed writes;
+- required `Content-Length`;
+- 64 KiB request-body cap;
+- malformed asset/collection identities return 422;
+- syntactically valid missing resources return 404;
+- excessive exact-tag query complexity returns controlled 422;
+- future PR26 schema versions return a controlled schema-unavailable 500 instead of leaking initialization exceptions.
+
+Duplicate lookup deliberately returns `match: null` for a valid SHA-256 that is not present, because “not a duplicate” is a normal lookup result.
+
+## PWA surface
+
+The phone/desktop shell includes a Production Library panel backed only by the authenticated API. The browser does not become a second library authority.
+
+The panel supports:
+
+- exact `kind:value` tags and prefix search;
+- used / unused filtering;
+- exact tag replacement;
+- Project reuse-history inspection;
+- virtual collection save/open/delete;
+- SHA-256 duplicate checks with source/use warnings.
+
+`production-library.js` is no-cache at the live route and is precached by service-worker shell version v14. The v13 namespace is retained as an upgrade predecessor so installed shells migrate without stale UI authority.
+
+## Validation
+
+PR26 regressions cover:
 
 - normalization and bounded tag kinds;
 - indexed exact/prefix tag retrieval;
 - AND tag semantics;
+- non-BMP and maximum-Unicode-scalar prefix lookup;
+- lone-surrogate rejection before SQLite;
+- 128-exact-tag query complexity boundary;
 - existing SHA dedup integration;
 - live previously-used filtering;
 - source reuse history from `project_assets`;
 - dynamic virtual collections;
-- additive schema initialization over an existing library;
-- future feature-schema fail-closed behavior.
-
-API/PWA browsing and editing are follow-up layers after this storage contract is green.
+- additive lazy schema initialization over an existing library;
+- future feature-schema fail-closed behavior;
+- authenticated API transport/body/error boundaries;
+- PWA panel/script/service-worker v14 regression coverage.
