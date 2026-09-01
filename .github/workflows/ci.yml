@@ -88,5 +88,6 @@ jobs:
             tests/test_pr13_motion_integration.py \
             tests/test_pr14_audio_integration.py \
             tests/test_pr23_presentation_integration.py \
+            tests/test_pr24_long_form_integration.py \
             tests/test_render_orchestration_integration.py \
             tests/test_api_ffmpeg_integration.py
