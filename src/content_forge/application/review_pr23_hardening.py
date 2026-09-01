@@ -13,7 +13,7 @@ from content_forge.core import Project
 from .dialogue import DialogueError
 from .review import ReviewNotReadyError
 from .review_seventh_hardening import ReviewService as _BaseReviewService
-from .voiced_scene import VoicedSceneError, VoicedSceneNotFoundError
+from .voiced_scene import VoicedSceneError, voiced_scene_manifest
 from .voiced_scene_hardening import VoicedSceneWorkflow
 from .voiced_story import VoicedStoryError, voiced_story_manifest
 
@@ -32,19 +32,24 @@ def _require_pr23_render_authority(self: _BaseReviewService, project: Project) -
         return
 
     try:
+        stored = voiced_scene_manifest(project)
+        if stored is None:
+            raise ReviewNotReadyError(
+                "materialized PR22 voiced story requires PR23 presentation before render"
+            )
+        workflow = VoicedSceneWorkflow(self.library)
         # Validate from the exact Project object supplied by PR10. Do not call
         # workflow.manifest(project_id), which would take a second database snapshot and
         # introduce a TOCTOU gap between review claim validation and compilation.
-        VoicedSceneWorkflow(self.library).validate_snapshot(project)
-    except VoicedSceneNotFoundError as exc:
-        raise ReviewNotReadyError(
-            "materialized PR22 voiced story requires PR23 presentation before render"
-        ) from exc
-    except VoicedSceneError as exc:
-        raise ReviewNotReadyError(
-            f"materialized PR23 presentation authority is invalid: {exc}"
-        ) from exc
-    except (DialogueError, VoicedStoryError) as exc:
+        base = workflow._base_project(project, stored)
+        expected = workflow.derive(base, preset=stored.plan.preset)
+        if expected != stored.plan:
+            raise ReviewNotReadyError(
+                "materialized PR23 presentation is stale for current voiced project"
+            )
+    except ReviewNotReadyError:
+        raise
+    except (VoicedSceneError, DialogueError, VoicedStoryError) as exc:
         raise ReviewNotReadyError(
             f"materialized PR23 presentation authority is invalid: {exc}"
         ) from exc
