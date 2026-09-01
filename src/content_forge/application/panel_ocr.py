@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -86,7 +86,7 @@ class PanelTextRegion(FrozenModel):
 
 
 class PanelTextExtraction(FrozenModel):
-    contract_version: str = _PANEL_OCR_VERSION
+    contract_version: Literal["pr18_panel_ocr_v1"] = _PANEL_OCR_VERSION
     project_id: str
     scene_id: str
     asset_id: str
@@ -135,11 +135,18 @@ def panel_extraction_digest(extraction: PanelTextExtraction) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _plain_metadata(project: Project) -> dict[str, object]:
+    metadata = project.model_dump(mode="json")["metadata"]
+    if not isinstance(metadata, dict):  # pragma: no cover - Project guarantees JSON object
+        raise PanelOCRValidationError("project metadata is malformed")
+    return metadata
+
+
 def _metadata_snapshots(project: Project) -> dict[str, object]:
-    value = project.metadata.get(_PANEL_OCR_METADATA_KEY, {})
-    if not isinstance(value, Mapping):
+    value = _plain_metadata(project).get(_PANEL_OCR_METADATA_KEY, {})
+    if not isinstance(value, dict):
         raise PanelOCRValidationError("project PR18 OCR metadata is malformed")
-    return {str(key): item for key, item in value.items()}
+    return dict(value)
 
 
 def _load_extraction(project: Project, scene_id: str) -> PanelTextExtraction:
@@ -308,6 +315,24 @@ class PanelOCRWorkflow:
             )
         return _validated_resume_state(raw, label="project OCR resume state")
 
+    @staticmethod
+    def _assert_extraction_identity(
+        extraction: PanelTextExtraction,
+        *,
+        project: Project,
+        scene_id: str,
+        asset_id: str,
+        source_sha256: str,
+        width: int,
+        height: int,
+    ) -> None:
+        if extraction.project_id != project.project_id or extraction.scene_id != scene_id:
+            raise PanelOCRConflictError("retained OCR extraction identity does not match project scene")
+        if extraction.asset_id != asset_id or extraction.source_sha256 != source_sha256:
+            raise PanelOCRConflictError("retained OCR extraction no longer matches the immutable scene asset")
+        if extraction.width != width or extraction.height != height:
+            raise PanelOCRConflictError("retained OCR extraction dimensions no longer match scene asset")
+
     def extract_scene(
         self,
         project_id: str,
@@ -350,10 +375,15 @@ class PanelOCRWorkflow:
         snapshots = _metadata_snapshots(project)
         if scene_id in snapshots:
             existing = _load_extraction(project, scene_id)
-            if existing.asset_id != asset.asset_id or existing.source_sha256 != asset.sha256:
-                raise PanelOCRConflictError(
-                    "retained OCR extraction no longer matches the immutable scene asset"
-                )
+            self._assert_extraction_identity(
+                existing,
+                project=project,
+                scene_id=scene_id,
+                asset_id=asset.asset_id,
+                source_sha256=asset.sha256,
+                width=asset.width,
+                height=asset.height,
+            )
             if existing.review_confidence_threshold != review_confidence_threshold:
                 raise PanelOCRConflictError(
                     "retained OCR extraction uses a different review confidence threshold; explicit re-OCR/review-policy migration is required"
@@ -394,8 +424,7 @@ class PanelOCRWorkflow:
         if prepared.review_task is not None:
             tasks.append(prepared.review_task)
 
-        metadata = project.model_dump(mode="json")["metadata"]
-        assert isinstance(metadata, dict)
+        metadata = _plain_metadata(project)
         metadata[_PANEL_OCR_METADATA_KEY] = snapshots
         if prepared.review_task is not None:
             existing_resume = metadata.get(_OCR_RESUME_STATE_KEY)
@@ -456,7 +485,29 @@ class PanelOCRWorkflow:
         scene_id = task.payload.get("scene_id")
         if not isinstance(scene_id, str):
             raise PanelOCRValidationError("OCR correction task scene identity is malformed")
+        try:
+            require_entity_id(scene_id, EntityKind.SCENE)
+        except ValueError as exc:
+            raise PanelOCRValidationError("OCR correction task scene identity is malformed") from exc
         extraction = _load_extraction(project, scene_id)
+        scene = next((item for item in project.scenes if item.scene_id == scene_id), None)
+        if scene is None or scene.media is None:
+            raise PanelOCRConflictError("OCR correction scene no longer has its source asset")
+        task_asset_id = task.payload.get("asset_id")
+        if not isinstance(task_asset_id, str) or task_asset_id != scene.media.asset_id:
+            raise PanelOCRConflictError("OCR correction task asset identity no longer matches scene")
+        asset = self.library.database.get_asset(scene.media.asset_id)
+        if asset is None or asset.width is None or asset.height is None:
+            raise PanelOCRConflictError("OCR correction source asset metadata is unavailable")
+        self._assert_extraction_identity(
+            extraction,
+            project=project,
+            scene_id=scene_id,
+            asset_id=asset.asset_id,
+            source_sha256=asset.sha256,
+            width=asset.width,
+            height=asset.height,
+        )
         expected_digest = task.payload.get("extraction_digest")
         if expected_digest != panel_extraction_digest(extraction):
             raise PanelOCRConflictError("OCR correction task no longer matches raw extraction")
@@ -496,8 +547,7 @@ class PanelOCRWorkflow:
 
         snapshots = _metadata_snapshots(project)
         snapshots[scene_id] = corrected.model_dump(mode="json")
-        metadata = project.model_dump(mode="json")["metadata"]
-        assert isinstance(metadata, dict)
+        metadata = _plain_metadata(project)
         metadata[_PANEL_OCR_METADATA_KEY] = snapshots
 
         now = datetime.now(timezone.utc)
