@@ -15,9 +15,11 @@ from content_forge.providers.publishing import (
     PublishApproval,
     PublishRequest,
     PublishResult,
+    PublishingProviderHealth,
     publish_idempotency_key,
     semantic_publish_request_digest,
 )
+from content_forge.providers.publishing_validation import validate_publish_result
 
 from .database import LibraryDatabase, StorageConflictError, StorageSchemaError
 
@@ -72,6 +74,7 @@ class PublishAttemptRecord(FrozenModel):
     attempt_number: int = Field(ge=1)
     state: PublishAttemptState
     approval: PublishApproval
+    provider_health: PublishingProviderHealth | None = None
     result: PublishResult | None = None
     error_code: str | None = Field(default=None, max_length=128)
     error_message: str | None = Field(default=None, max_length=8192)
@@ -82,7 +85,7 @@ class PublishAttemptRecord(FrozenModel):
     @field_validator("attempt_id")
     @classmethod
     def validate_attempt_id(cls, value: str) -> str:
-        return require_entity_id(value, EntityKind.JOB)
+        return require_entity_id(value, EntityKind.PUBLISH)
 
     @field_validator("created_at", "started_at", "finished_at")
     @classmethod
@@ -96,12 +99,18 @@ class PublishAttemptRecord(FrozenModel):
         if self.state == "prepared":
             if self.started_at is not None or self.finished_at is not None:
                 raise ValueError("prepared publish attempt cannot have execution timestamps")
+            if self.provider_health is not None:
+                raise ValueError("prepared publish attempt cannot pin provider health")
         elif self.state == "running":
             if self.started_at is None or self.finished_at is not None:
                 raise ValueError("running publish attempt requires only started_at")
+            if self.provider_health is None:
+                raise ValueError("running publish attempt requires provider health snapshot")
         else:
             if self.finished_at is None:
                 raise ValueError("terminal publish attempt requires finished_at")
+            if self.state in {"succeeded", "outcome_unknown"} and self.provider_health is None:
+                raise ValueError(f"{self.state} publish attempt requires provider health snapshot")
         if self.state == "succeeded":
             if self.result is None or self.error_code is not None or self.error_message is not None:
                 raise ValueError("succeeded publish attempt requires only result")
@@ -160,6 +169,7 @@ class PublishingRepository:
                     attempt_number INTEGER NOT NULL,
                     state TEXT NOT NULL,
                     approval_json TEXT NOT NULL,
+                    provider_health_json TEXT,
                     result_json TEXT,
                     error_code TEXT,
                     error_message TEXT,
@@ -194,13 +204,23 @@ class PublishingRepository:
 
     @staticmethod
     def _decode_attempt(row) -> PublishAttemptRecord:
-        result = None if row["result_json"] is None else PublishResult.model_validate_json(str(row["result_json"]))
+        health = (
+            None
+            if row["provider_health_json"] is None
+            else PublishingProviderHealth.model_validate_json(str(row["provider_health_json"]))
+        )
+        result = (
+            None
+            if row["result_json"] is None
+            else PublishResult.model_validate_json(str(row["result_json"]))
+        )
         return PublishAttemptRecord(
             attempt_id=str(row["attempt_id"]),
             request_sha256=str(row["request_sha256"]),
             attempt_number=int(row["attempt_number"]),
             state=str(row["state"]),
             approval=PublishApproval.model_validate_json(str(row["approval_json"])),
+            provider_health=health,
             result=result,
             error_code=None if row["error_code"] is None else str(row["error_code"]),
             error_message=None if row["error_message"] is None else str(row["error_message"]),
@@ -260,6 +280,15 @@ class PublishingRepository:
             ).fetchone()
         return None if row is None else self._decode_attempt(row)
 
+    def approved_request(self, attempt_id: str) -> ApprovedPublishRequest:
+        attempt = self.get_attempt(attempt_id)
+        if attempt is None:
+            raise StorageConflictError("unknown publish attempt")
+        operation = self.get_operation(attempt.request_sha256)
+        if operation is None:
+            raise StorageConflictError("publish attempt references missing operation")
+        return ApprovedPublishRequest(request=operation.request, approval=attempt.approval)
+
     def prepare_attempt(self, approved: ApprovedPublishRequest) -> PublishAttemptRecord:
         operation = self.ensure_operation(approved)
         now = _now()
@@ -276,13 +305,14 @@ class PublishingRepository:
             if any(state in {"prepared", "running"} for state in states):
                 raise StorageConflictError("publish operation already has an active attempt")
             number = 1 if not rows else max(int(row["attempt_number"]) for row in rows) + 1
-            attempt_id = new_entity_id(EntityKind.JOB)
+            attempt_id = new_entity_id(EntityKind.PUBLISH)
             connection.execute(
                 """
                 INSERT INTO publish_attempts(
                     attempt_id, request_sha256, attempt_number, state, approval_json,
-                    result_json, error_code, error_message, created_at, started_at, finished_at
-                ) VALUES (?, ?, ?, 'prepared', ?, NULL, NULL, NULL, ?, NULL, NULL)
+                    provider_health_json, result_json, error_code, error_message,
+                    created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, 'prepared', ?, NULL, NULL, NULL, NULL, ?, NULL, NULL)
                 """,
                 (attempt_id, operation.request_sha256, number, _json(approved.approval), now.isoformat()),
             )
@@ -295,7 +325,13 @@ class PublishingRepository:
             created_at=now,
         )
 
-    def mark_running(self, attempt_id: str) -> PublishAttemptRecord:
+    def mark_running(
+        self,
+        attempt_id: str,
+        health: PublishingProviderHealth,
+    ) -> PublishAttemptRecord:
+        if not health.available:
+            raise StorageConflictError("cannot start publish attempt with unavailable provider")
         now = _now()
         with self.database.transaction() as connection:
             row = connection.execute(
@@ -307,25 +343,59 @@ class PublishingRepository:
             current = self._decode_attempt(row)
             if current.state != "prepared":
                 raise StorageConflictError(f"publish attempt is {current.state}, expected prepared")
+            operation_row = connection.execute(
+                "SELECT * FROM publish_operations WHERE request_sha256 = ?",
+                (current.request_sha256,),
+            ).fetchone()
+            if operation_row is None:
+                raise StorageConflictError("publish attempt references missing operation")
+            operation = self._decode_operation(operation_row)
+            if operation.request.target.provider_id != health.provider_id:
+                raise StorageConflictError("publish target provider does not match provider health")
             connection.execute(
-                "UPDATE publish_attempts SET state = 'running', started_at = ? WHERE attempt_id = ?",
-                (now.isoformat(), attempt_id),
+                """
+                UPDATE publish_attempts
+                SET state = 'running', provider_health_json = ?, started_at = ?
+                WHERE attempt_id = ?
+                """,
+                (_json(health), now.isoformat(), attempt_id),
             )
-        return current.model_copy(update={"state": "running", "started_at": now})
+        return current.model_copy(
+            update={"state": "running", "provider_health": health, "started_at": now}
+        )
 
     def mark_succeeded(self, attempt_id: str, result: PublishResult) -> PublishAttemptRecord:
         now = _now()
         with self.database.transaction() as connection:
-            row = connection.execute("SELECT * FROM publish_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM publish_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
             if row is None:
                 raise StorageConflictError("unknown publish attempt")
             current = self._decode_attempt(row)
             if current.state != "running":
                 raise StorageConflictError(f"publish attempt is {current.state}, expected running")
-            if result.evidence.request_sha256 != current.request_sha256:
-                raise StorageConflictError("publish result does not belong to attempt operation")
+            if current.provider_health is None:
+                raise StorageConflictError("running publish attempt is missing provider health")
+            operation_row = connection.execute(
+                "SELECT * FROM publish_operations WHERE request_sha256 = ?",
+                (current.request_sha256,),
+            ).fetchone()
+            if operation_row is None:
+                raise StorageConflictError("publish attempt references missing operation")
+            operation = self._decode_operation(operation_row)
+            approved = ApprovedPublishRequest(request=operation.request, approval=current.approval)
+            try:
+                validate_publish_result(approved, current.provider_health, result)
+            except Exception as exc:
+                raise StorageConflictError("publish result evidence does not match attempt") from exc
             connection.execute(
-                "UPDATE publish_attempts SET state = 'succeeded', result_json = ?, finished_at = ? WHERE attempt_id = ?",
+                """
+                UPDATE publish_attempts
+                SET state = 'succeeded', result_json = ?, finished_at = ?
+                WHERE attempt_id = ?
+                """,
                 (_json(result), now.isoformat(), attempt_id),
             )
         return current.model_copy(update={"state": "succeeded", "result": result, "finished_at": now})
@@ -350,7 +420,10 @@ class PublishingRepository:
             raise ValueError("publish error evidence must be non-empty and bounded")
         now = _now()
         with self.database.transaction() as connection:
-            row = connection.execute("SELECT * FROM publish_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM publish_attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
             if row is None:
                 raise StorageConflictError("unknown publish attempt")
             current = self._decode_attempt(row)
