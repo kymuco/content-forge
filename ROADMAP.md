@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR20: **complete** in the intended post-merge repository state.
-- Current step: **PR21 — Voice Cast registry**.
+- PR1–PR21: **complete** in the intended post-merge repository state.
+- Current step: **PR22 — Voiced story review UI and timed text**.
 - Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
 - The intended **v0.1 batch-production boundary is complete through PR17**.
 
@@ -374,17 +374,26 @@ Exit condition: accepted PR19 dialogue lines can synthesize independently verifi
 
 ### PR21 — Voice Cast registry
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
-- persistent cast voices such as protagonist, secondary characters, narrator;
-- character-to-cast mapping;
-- preview voice button from phone/desktop;
+- runtime-wide immutable/revisioned persistent cast voices such as protagonist, secondary characters, and narrator;
+- explicit separation between PR19 narrative `character_id` and reusable PR21 `cast_id`;
+- project character-to-cast mapping pinned to exact cast revision and definition digest;
+- exact reference-audio SHA pinning for global cast recipes and project-local overrides;
 - project overrides without mutating global cast;
-- channel/profile-specific casts later.
+- authenticated phone/desktop registry, assignment, unassignment, and voice-preview surface;
+- guarded PR21→PR20 synthesis against Project TOCTOU changes;
+- immediate invalidation of affected current PR20 synthesis receipts when cast authority changes;
+- optional CLI wiring to the existing lazy Qwen provider;
+- channel/profile-specific casts deferred to a later profile layer.
+
+Exit condition: accepted PR19 characters can reuse persistent immutable voice recipes across projects, resolve them into the PR20 synthesis contract with exact reference evidence, preview them from the authenticated PWA, and change cast authority without leaving stale synthesized audio represented as current project state.
 
 ### PR22 — Voiced story review UI and timed text
+
+Status: **in progress**
 
 Deliverables:
 
