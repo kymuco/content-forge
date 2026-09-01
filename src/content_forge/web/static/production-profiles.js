@@ -78,12 +78,28 @@
   }
   function selectedRevision() {
     const value = profileSelect.value;
-    if (!value) return null;
-    const separator = value.lastIndexOf("@");
-    if (separator < 1) return null;
-    const revision = Number(value.slice(separator + 1));
+    if (value) {
+      const separator = value.lastIndexOf("@");
+      if (separator >= 1) {
+        const revision = Number(value.slice(separator + 1));
+        if (Number.isInteger(revision) && revision >= 1) {
+          return { profile_id: value.slice(0, separator), revision };
+        }
+      }
+    }
+
+    // Registry listing is intentionally fail-closed when any latest revision has stale
+    // external evidence. Recovery rebind must still be possible, so allow the operator
+    // to enter an exact known-good revision explicitly instead of depending on the list.
+    const manualProfileId = window.prompt(
+      "No selectable profile revision is available. Enter an exact profile ID for recovery rebind:"
+    );
+    if (manualProfileId == null || !manualProfileId.trim()) return null;
+    const manualRevision = window.prompt("Enter the exact profile revision number:");
+    if (manualRevision == null) return null;
+    const revision = Number(manualRevision.trim());
     if (!Number.isInteger(revision) || revision < 1) return null;
-    return { profile_id: value.slice(0, separator), revision };
+    return { profile_id: manualProfileId.trim(), revision };
   }
   function profileLabel(item) {
     const definition = item.definition || {};
@@ -96,13 +112,13 @@
     profileSelect.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = profiles.length ? "Choose production profile…" : "Create a profile first";
+    placeholder.textContent = profiles.length ? "Choose production profile…" : "No selectable profiles — manual recovery remains available";
     profileSelect.appendChild(placeholder);
 
     if (!profiles.length) {
       registryList.appendChild(text(
         "div",
-        "No production profiles yet. Create a project, series, or channel default below.",
+        "No validated production profiles are selectable. Create a profile, or use Bind / rebind and enter an exact profile ID + revision for recovery.",
         "empty-state"
       ));
       return;
@@ -279,7 +295,7 @@
       const projectId = currentProjectId();
       const selected = selectedRevision();
       if (!projectId) throw new Error("Choose or paste a project ID.");
-      if (!selected) throw new Error("Choose a production profile revision.");
+      if (!selected) throw new Error("Choose or enter an exact production profile revision.");
       loadedProject = await apiJson(
         `production-profiles/projects/${encodeURIComponent(projectId)}`,
         jsonRequest("PUT", selected)
@@ -337,8 +353,10 @@
         setStatus(`${profiles.length} reusable production profile(s) available.`);
       }
     } catch (error) {
+      profiles = [];
+      drawRegistry();
       updateUnbindAvailability();
-      setStatus(error.message || "Production profiles could not be loaded.", "error");
+      setStatus(`${error.message || "Production profiles could not be loaded."} Manual exact profile ID + revision rebind remains available from Bind / rebind.`, "error");
     }
   }
 
