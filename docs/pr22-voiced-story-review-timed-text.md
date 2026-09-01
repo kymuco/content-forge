@@ -56,6 +56,10 @@ After materialization, the existing renderer-independent path receives the voice
 → existing `compile_timeline()`
 → existing FFmpeg drawtext/audio-mix compilation.
 
+`compile_timeline()` remains renderer-generic and deliberately does not learn PR18–PR22 application authority. The PR10 preview/final render service adds the fail-closed boundary instead: whenever `pr22_voiced_story` is present, it re-derives and validates that materialization against the exact `Project` snapshot about to be compiled. Stale PR19 dialogue, PR20 audio, PR21 cast evidence, PR22 metadata, or PR22-owned scene state therefore blocks preview/final compilation before renderer work begins. The same guard is repeated when PR10 rechecks the Project during render claims, preserving the existing revision/CAS race protection.
+
+This also covers a partial explicit-regeneration outcome: if PR20 successfully commits a new WAV but PR22 rematerialization subsequently loses a CAS race, the older PR22 core tracks remain diagnosable but are no longer renderable through the review/final path until PR22 is refreshed.
+
 This means the same canonical scene graph is used for preview/final rendering. PR23 can later add camera choreography, ambience/music ducking, and richer dialogue mixing without migrating PR22 data out of a temporary timeline.
 
 PR22 owns only basic deterministic placement of each current dialogue WAV. PR23 remains responsible for presentation-level mix decisions such as gain automation, ambience/music interaction, overlap policy, pan/spatial choices, and camera choreography.
