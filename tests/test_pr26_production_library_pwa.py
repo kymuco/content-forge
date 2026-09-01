@@ -13,9 +13,11 @@ def test_pr26_pwa_shell_serves_and_precaches_production_library(tmp_path) -> Non
         assert shell.status_code == 200
         assert 'id="production-library-panel"' in shell.text
         assert '<script src="production-library.js"></script>' in shell.text
-        assert "Production Library" in shell.text
-        assert "Virtual collections" in shell.text
-        assert "Duplicate SHA-256 check" in shell.text
+        assert "PRODUCTION LIBRARY" in shell.text
+        assert "Save current search as a virtual collection" in shell.text
+        assert "Check SHA-256 duplicate" in shell.text
+        assert 'id="production-library-results"' in shell.text
+        assert 'id="production-library-collections"' in shell.text
 
         script = client.get("/app/production-library.js")
         assert script.status_code == 200
