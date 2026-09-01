@@ -9,8 +9,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import Field, model_validator
 
-from content_forge.core import LanguageTag, SHA256
-from content_forge.core.models import FrozenModel
+from content_forge.core.models import FrozenModel, LanguageTag, SHA256
 
 _OCR_CONTRACT_VERSION = "pr18_ocr_contract_v1"
 
