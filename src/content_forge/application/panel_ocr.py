@@ -29,8 +29,9 @@ from content_forge.providers.ocr import (
     OCRProvider,
     OCRRequest,
     OCRResult,
+    semantic_ocr_request_digest,
 )
-from content_forge.storage import LocalLibrary, StorageConflictError
+from content_forge.storage import LocalLibrary
 
 _PANEL_OCR_VERSION = "pr18_panel_ocr_v1"
 _PANEL_OCR_METADATA_KEY = "pr18_panel_ocr"
@@ -272,8 +273,19 @@ class PanelOCRWorkflow:
             raise PanelOCRValidationError("panel OCR requires authoritative image dimensions")
         if not self.library.assets.verify(asset):
             raise PanelOCRValidationError("panel OCR source bytes failed SHA-256 verification")
-        path = self.library.assets.resolve(asset)
 
+        snapshots = _metadata_snapshots(project)
+        if scene_id in snapshots:
+            existing = _load_extraction(project, scene_id)
+            if existing.asset_id != asset.asset_id or existing.source_sha256 != asset.sha256:
+                raise PanelOCRConflictError(
+                    "retained OCR extraction no longer matches the immutable scene asset"
+                )
+            # PR18 v1 has no implicit re-OCR. Repeating the operation is an idempotent
+            # read of the retained raw/corrected snapshot, independent of provider state.
+            return project
+
+        path = self.library.assets.resolve(asset)
         request = OCRRequest(
             image_path=path,
             source_sha256=asset.sha256,
@@ -284,6 +296,10 @@ class PanelOCRWorkflow:
         result = self.provider.extract(request)
         if result.source_sha256 != asset.sha256:
             raise PanelOCRValidationError("OCR provider result source digest mismatch")
+        if result.width != asset.width or result.height != asset.height:
+            raise PanelOCRValidationError("OCR provider result source dimensions mismatch")
+        if result.evidence.request_sha256 != semantic_ocr_request_digest(request):
+            raise PanelOCRValidationError("OCR provider evidence request digest mismatch")
 
         prepared = prepare_panel_ocr(
             project,
@@ -291,14 +307,7 @@ class PanelOCRWorkflow:
             result,
             review_confidence_threshold=review_confidence_threshold,
         )
-        snapshots = _metadata_snapshots(project)
-        existing = snapshots.get(scene_id)
-        serialized_extraction = prepared.extraction.model_dump(mode="json")
-        if existing is not None and existing != serialized_extraction:
-            raise PanelOCRConflictError(
-                "scene already has a different retained OCR extraction; explicit re-OCR is not part of PR18 v1"
-            )
-        snapshots[scene_id] = serialized_extraction
+        snapshots[scene_id] = prepared.extraction.model_dump(mode="json")
 
         tasks = list(project.review_tasks)
         existing_tasks = [
@@ -307,16 +316,10 @@ class PanelOCRWorkflow:
             if task.task_type == _OCR_REVIEW_TASK
             and task.payload.get("scene_id") == scene_id
         ]
-        if len(existing_tasks) > 1:
-            raise PanelOCRConflictError("scene has multiple OCR correction tasks")
+        if existing_tasks:
+            raise PanelOCRConflictError("scene already has an OCR correction task without extraction")
         if prepared.review_task is not None:
-            if existing_tasks:
-                current_task = existing_tasks[0]
-                if current_task.status is not ReviewStatus.OPEN:
-                    raise PanelOCRConflictError("closed OCR review cannot be replaced")
-                tasks[tasks.index(current_task)] = prepared.review_task
-            else:
-                tasks.append(prepared.review_task)
+            tasks.append(prepared.review_task)
 
         metadata = project.model_dump(mode="json")["metadata"]
         assert isinstance(metadata, dict)
