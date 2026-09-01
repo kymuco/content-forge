@@ -14,6 +14,7 @@ from content_forge.core import (
     AttentionMode,
     MediaType,
     Project,
+    ProjectState,
     ReviewPriority,
     ReviewStatus,
     ReviewTask,
@@ -41,6 +42,15 @@ _MAX_PANEL_RAW_TEXT_CHARS = 1_000_000
 _MAX_REVIEW_REGIONS = 256
 _MAX_REVIEW_RAW_TEXT_CHARS = 250_000
 _MAX_CORRECTION_TEXT_CHARS = 250_000
+_EDITABLE_OCR_STATES = frozenset(
+    {
+        ProjectState.INBOX,
+        ProjectState.DRAFT,
+        ProjectState.PREPARED,
+        ProjectState.NEEDS_REVIEW,
+        ProjectState.READY,
+    }
+)
 
 
 class PanelOCRError(RuntimeError):
@@ -141,7 +151,11 @@ def _load_extraction(project: Project, scene_id: str) -> PanelTextExtraction:
         raise PanelOCRValidationError("stored panel OCR extraction is malformed") from exc
 
 
-def _review_task_for(extraction: PanelTextExtraction) -> ReviewTask | None:
+def _review_task_for(
+    extraction: PanelTextExtraction,
+    *,
+    resume_state: ProjectState,
+) -> ReviewTask | None:
     uncertain = extraction.uncertain_region_ids
     if not uncertain:
         return None
@@ -168,6 +182,7 @@ def _review_task_for(extraction: PanelTextExtraction) -> ReviewTask | None:
         payload={
             "scene_id": extraction.scene_id,
             "asset_id": extraction.asset_id,
+            "resume_state": resume_state.value,
             "extraction_digest": panel_extraction_digest(extraction),
             "uncertain_region_ids": list(uncertain),
             "regions": payload_regions,
@@ -183,6 +198,10 @@ def prepare_panel_ocr(
     review_confidence_threshold: float = 0.80,
 ) -> PanelOCRPreparation:
     require_entity_id(scene_id, EntityKind.SCENE)
+    if project.state not in _EDITABLE_OCR_STATES:
+        raise PanelOCRConflictError(
+            f"panel OCR cannot mutate project in state {project.state.value}"
+        )
     scene = next((item for item in project.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise PanelOCRNotFoundError(f"unknown project scene: {scene_id}")
@@ -217,7 +236,7 @@ def prepare_panel_ocr(
     )
     return PanelOCRPreparation(
         extraction=extraction,
-        review_task=_review_task_for(extraction),
+        review_task=_review_task_for(extraction, resume_state=project.state),
     )
 
 
@@ -273,6 +292,10 @@ class PanelOCRWorkflow:
         review_confidence_threshold: float = 0.80,
     ) -> Project:
         project, expected_json = self._snapshot(project_id)
+        if project.state not in _EDITABLE_OCR_STATES:
+            raise PanelOCRConflictError(
+                f"panel OCR cannot mutate project in state {project.state.value}"
+            )
         require_entity_id(scene_id, EntityKind.SCENE)
         scene = next((item for item in project.scenes if item.scene_id == scene_id), None)
         if scene is None:
@@ -349,6 +372,11 @@ class PanelOCRWorkflow:
         metadata[_PANEL_OCR_METADATA_KEY] = snapshots
         updated = project.validated_copy(
             update={
+                "state": (
+                    ProjectState.NEEDS_REVIEW
+                    if prepared.review_task is not None
+                    else project.state
+                ),
                 "metadata": metadata,
                 "review_tasks": tuple(tasks),
                 "updated_at": datetime.now(timezone.utc),
@@ -364,6 +392,10 @@ class PanelOCRWorkflow:
     ) -> Project:
         require_entity_id(review_task_id, EntityKind.REVIEW)
         project, expected_json = self._snapshot(project_id)
+        if project.state not in _EDITABLE_OCR_STATES:
+            raise PanelOCRConflictError(
+                f"panel OCR cannot mutate project in state {project.state.value}"
+            )
         task = next(
             (item for item in project.review_tasks if item.review_task_id == review_task_id),
             None,
@@ -374,6 +406,10 @@ class PanelOCRWorkflow:
             raise PanelOCRValidationError("review task is not an OCR correction task")
         if task.status is not ReviewStatus.OPEN or task.resolved_at is not None:
             raise PanelOCRConflictError("OCR correction task is already closed")
+        if project.state is not ProjectState.NEEDS_REVIEW:
+            raise PanelOCRConflictError(
+                "open OCR correction task requires project state needs_review"
+            )
         scene_id = task.payload.get("scene_id")
         if not isinstance(scene_id, str):
             raise PanelOCRValidationError("OCR correction task scene identity is malformed")
@@ -436,8 +472,24 @@ class PanelOCRWorkflow:
             resolved if item.review_task_id == task.review_task_id else item
             for item in project.review_tasks
         )
+        remaining_blocking = any(
+            item.status is ReviewStatus.OPEN and item.blocking for item in tasks
+        )
+        raw_resume_state = task.payload.get("resume_state")
+        try:
+            resume_state = ProjectState(raw_resume_state)
+        except (TypeError, ValueError) as exc:
+            raise PanelOCRValidationError("OCR correction task resume state is malformed") from exc
+        if resume_state not in _EDITABLE_OCR_STATES:
+            raise PanelOCRValidationError("OCR correction task resume state is not editable")
+        next_state = ProjectState.NEEDS_REVIEW if remaining_blocking else resume_state
         updated = project.validated_copy(
-            update={"metadata": metadata, "review_tasks": tasks, "updated_at": now}
+            update={
+                "state": next_state,
+                "metadata": metadata,
+                "review_tasks": tasks,
+                "updated_at": now,
+            }
         )
         return self._cas_project(expected_json, updated)
 
