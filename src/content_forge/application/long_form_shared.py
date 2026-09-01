@@ -44,6 +44,7 @@ class SharedVoicedSceneRef(FrozenModel):
     source_project_id: str
     source_scene_id: str
     source_scene_sha256: SHA256
+    source_provenance_sha256: SHA256
     pr22_scene_sha256: SHA256
     pr23_scene_plan_sha256: SHA256
 
@@ -57,6 +58,39 @@ class SharedVoicedSceneRef(FrozenModel):
 def _digest(model: FrozenModel) -> str:
     encoded = json.dumps(
         model.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _scene_source_ids(scene: Scene) -> tuple[str, ...]:
+    source_ids: set[str] = set()
+    refs = []
+    if scene.media is not None:
+        refs.append(scene.media)
+    refs.extend(item.asset_ref for item in scene.overlays if item.asset_ref is not None)
+    refs.extend(item.asset_ref for item in scene.audio_tracks if item.asset_ref is not None)
+    for ref in refs:
+        if ref.source_id is not None:
+            source_ids.add(ref.source_id)
+    return tuple(sorted(source_ids))
+
+
+def _scene_provenance_digest(project: Project, scene: Scene) -> str:
+    records = {item.source_id: item for item in project.source_records}
+    payload = []
+    for source_id in _scene_source_ids(scene):
+        record = records.get(source_id)
+        if record is None:
+            raise LongFormSharedSceneConflictError(
+                "shared source Scene references missing provenance authority"
+            )
+        payload.append(record.model_dump(mode="json"))
+    encoded = json.dumps(
+        payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -106,6 +140,35 @@ def _select_scene_authority(
     return scene, scene_plan
 
 
+def _validate_reference_authority(
+    project: Project,
+    manifest: ProjectVoicedSceneManifest,
+    reference: SharedVoicedSceneRef,
+) -> tuple[Scene, VoicedSceneScenePlan]:
+    scene, scene_plan = _select_scene_authority(
+        project,
+        manifest,
+        reference.source_scene_id,
+    )
+    if _digest(scene) != reference.source_scene_sha256:
+        raise LongFormSharedSceneConflictError(
+            "shared source Scene changed after the PR24 reference was captured"
+        )
+    if _scene_provenance_digest(project, scene) != reference.source_provenance_sha256:
+        raise LongFormSharedSceneConflictError(
+            "shared source provenance changed after the PR24 reference was captured"
+        )
+    if scene_plan.pr22_scene_sha256 != reference.pr22_scene_sha256:
+        raise LongFormSharedSceneConflictError(
+            "shared source PR22 voiced-scene authority changed after capture"
+        )
+    if _digest(scene_plan) != reference.pr23_scene_plan_sha256:
+        raise LongFormSharedSceneConflictError(
+            "shared source PR23 presentation authority changed after capture"
+        )
+    return scene, scene_plan
+
+
 def capture_shared_voiced_scene(
     library: LocalLibrary,
     source_project_id: str,
@@ -119,6 +182,7 @@ def capture_shared_voiced_scene(
         source_project_id=source_project_id,
         source_scene_id=source_scene_id,
         source_scene_sha256=_digest(scene),
+        source_provenance_sha256=_scene_provenance_digest(project, scene),
         pr22_scene_sha256=scene_plan.pr22_scene_sha256,
         pr23_scene_plan_sha256=_digest(scene_plan),
     )
@@ -131,23 +195,7 @@ def resolve_shared_voiced_scene(
     """Resolve a reference from one exact live source snapshot or fail closed."""
 
     project, manifest = _source_snapshot(library, reference.source_project_id)
-    scene, scene_plan = _select_scene_authority(
-        project,
-        manifest,
-        reference.source_scene_id,
-    )
-    if _digest(scene) != reference.source_scene_sha256:
-        raise LongFormSharedSceneConflictError(
-            "shared source Scene changed after the PR24 reference was captured"
-        )
-    if scene_plan.pr22_scene_sha256 != reference.pr22_scene_sha256:
-        raise LongFormSharedSceneConflictError(
-            "shared source PR22 voiced-scene authority changed after capture"
-        )
-    if _digest(scene_plan) != reference.pr23_scene_plan_sha256:
-        raise LongFormSharedSceneConflictError(
-            "shared source PR23 presentation authority changed after capture"
-        )
+    scene, _ = _validate_reference_authority(project, manifest, reference)
     return scene
 
 
