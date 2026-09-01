@@ -72,7 +72,6 @@ from .production_profile import (
     ProductionProfileRegistry,
     ProductionProfileRevision,
     ProductionProfileValidationError,
-    ProductionProfileWorkflow,
     ProfileAssetPin,
     ProfileBranding,
     ProfileCastDefault,
@@ -81,6 +80,7 @@ from .production_profile import (
     production_profile_definition_digest,
     production_profile_manifest,
 )
+from .production_profile_hardening import ProductionProfileWorkflow
 from .repository import ApplicationRepository
 from .review import (
     ReviewConflictError,
