@@ -26,12 +26,16 @@ class PublishArtifactError(PublishOrchestrationError):
     """The approved publish request no longer matches authenticated final-render evidence."""
 
 
+class PublishAttemptError(PublishOrchestrationError):
+    """The requested durable publish attempt cannot enter remote execution."""
+
+
 class PublishOutcomeUnknownError(PublishOrchestrationError):
     """Remote publishing began but no authenticated durable outcome is known."""
 
 
 class PublishingService:
-    """Execute one approved remote publish without weakening render or publish authority."""
+    """Prepare and execute approved remote publishing without weakening render authority."""
 
     def __init__(
         self,
@@ -78,10 +82,40 @@ class PublishingService:
             raise PublishArtifactError("authenticated final artifact path is missing")
         return path
 
-    def publish(self, approved: ApprovedPublishRequest) -> PublishAttemptRecord:
+    def prepare(self, approved: ApprovedPublishRequest) -> PublishAttemptRecord:
+        """Persist exact human approval without beginning remote execution."""
+
+        self._authenticated_artifact(approved)
+        existing = self.library.publishing.attempts(approved.approval.request_sha256)
+        for attempt in reversed(existing):
+            if attempt.state in {"prepared", "running", "succeeded"}:
+                return attempt
+            if attempt.state == "outcome_unknown":
+                raise PublishOutcomeUnknownError(
+                    "remote publish outcome is unknown; automatic retry is blocked"
+                )
+        return self.library.publishing.prepare_attempt(approved)
+
+    def execute_prepared(self, attempt_id: str) -> PublishAttemptRecord:
+        """Execute one durable approved attempt, retry-safe by attempt identity."""
+
+        attempt = self.library.publishing.get_attempt(attempt_id)
+        if attempt is None:
+            raise PublishAttemptError("publish attempt not found")
+        if attempt.state == "succeeded":
+            return attempt
+        if attempt.state == "outcome_unknown":
+            raise PublishOutcomeUnknownError(
+                "remote publish outcome is unknown; automatic retry is blocked"
+            )
+        if attempt.state != "prepared":
+            raise PublishAttemptError(
+                f"publish attempt is {attempt.state}; expected prepared"
+            )
+
+        approved = self.library.publishing.approved_request(attempt_id)
         artifact = self._authenticated_artifact(approved)
         media_path = self._media_path(artifact)
-        attempt = self.library.publishing.prepare_attempt(approved)
 
         try:
             health = self.provider.health()
@@ -141,14 +175,21 @@ class PublishingService:
                 "remote publish outcome is unknown; automatic retry is blocked"
             ) from exc
 
+    def publish(self, approved: ApprovedPublishRequest) -> PublishAttemptRecord:
+        """Convenience path for trusted callers that intentionally approve and execute now."""
+
+        attempt = self.prepare(approved)
+        return self.execute_prepared(attempt.attempt_id)
+
     def reconcile_interrupted(self) -> int:
-        """Recover orphan preflight/running attempts without risking duplicate publishing."""
+        """Convert abandoned running attempts into retry-blocking unknown outcomes."""
 
         return self.library.publishing.reconcile_interrupted()
 
 
 __all__ = [
     "PublishArtifactError",
+    "PublishAttemptError",
     "PublishOrchestrationError",
     "PublishOutcomeUnknownError",
     "PublishingService",
