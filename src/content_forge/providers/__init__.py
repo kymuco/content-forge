@@ -64,6 +64,7 @@ from .publishing import (
     publish_artifact_ref,
     semantic_publish_request_digest,
 )
+from .publishing_validation import validate_publish_result
 from .qwen_tts import QwenTTSConfig, QwenTTSProvider
 from .tts import (
     TTSExecutionError,
@@ -158,4 +159,5 @@ __all__ = [
     "to_review_suggestions",
     "tts_cache_key",
     "tts_config_digest",
+    "validate_publish_result",
 ]
