@@ -211,16 +211,58 @@ def test_dialogue_assignment_rejects_partial_reading_order_and_unknown_speaker(
         )
 
 
-def test_dialogue_cannot_start_before_uncertain_ocr_is_corrected(tmp_path: Path) -> None:
+def test_dialogue_cannot_start_or_change_cast_during_uncertain_ocr_review(
+    tmp_path: Path,
+) -> None:
     library, project, scenes, ocr = _project(tmp_path, confidence=0.20)
+    workflow = DialogueWorkflow(library)
+    _register_cast(workflow, project.project_id)
+
     extracted = ocr.extract_scene(project.project_id, scenes[0].scene_id)
     assert extracted.state is ProjectState.NEEDS_REVIEW
-    workflow = DialogueWorkflow(library)
+
+    with pytest.raises(DialogueConflictError, match="another blocking review"):
+        workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
+
     with pytest.raises(DialogueConflictError, match="another blocking review"):
         workflow.register_character(
             project.project_id,
-            CharacterRecord(character_id="alice", display_name="Alice"),
-        ) if False else workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
+            CharacterRecord(character_id="charlie", display_name="Charlie"),
+        )
+
+
+def test_dialogue_rejects_retained_ocr_after_scene_media_replacement(tmp_path: Path) -> None:
+    library, project, scenes, ocr = _project(tmp_path)
+    ocr.extract_scene(project.project_id, scenes[0].scene_id)
+    workflow = DialogueWorkflow(library)
+    _register_cast(workflow, project.project_id)
+
+    replacement_source = tmp_path / "replacement-panel.bin"
+    replacement_source.write_bytes(b"replacement dialogue panel")
+    ingested = library.assets.ingest_file(
+        replacement_source,
+        media_type=MediaType.IMAGE,
+        mime_type="image/png",
+    )
+    replacement = ingested.asset.validated_copy(update={"width": 100, "height": 100})
+    ApplicationRepository(library.database).enrich_asset(replacement)
+
+    current = library.load_project(project.project_id)
+    assert current is not None
+    replaced_scene = current.scenes[0].validated_copy(
+        update={"media": AssetRef(asset_id=replacement.asset_id)}
+    )
+    library.save_project(
+        current.validated_copy(
+            update={
+                "source_refs": (*current.source_refs, AssetRef(asset_id=replacement.asset_id)),
+                "scenes": (replaced_scene,),
+            }
+        )
+    )
+
+    with pytest.raises(DialogueConflictError, match="no longer matches"):
+        workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
 
 
 def test_tampered_dialogue_review_payload_cannot_authorize_assignment(tmp_path: Path) -> None:
