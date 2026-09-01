@@ -8,7 +8,9 @@ from content_forge.application.dialogue_pr19_integrity import validated_dialogue
 from content_forge.application.tts import (
     LineTTSWorkflow,
     SynthesizedDialogueLine,
+    TTSError,
     TTSConflictError,
+    tts_manifest,
 )
 from content_forge.core import Project, ProjectState, dump_json, load_json
 from content_forge.core.ids import EntityKind, require_entity_id
@@ -29,6 +31,7 @@ from .voice_cast_models import (
 from .voice_cast_registry import VoiceCastRegistry
 
 _CAST_STATES = frozenset({ProjectState.DRAFT, ProjectState.PREPARED, ProjectState.READY})
+_PR20_TTS_METADATA_KEY = "pr20_tts"
 
 
 class _SnapshotGuardedLineTTSWorkflow(LineTTSWorkflow):
@@ -109,6 +112,46 @@ class VoiceCastWorkflow:
                 )
         return manifest
 
+    @staticmethod
+    def _invalidate_character_tts(
+        project: Project,
+        dialogue,
+        character_id: str,
+        metadata: dict[str, object],
+    ) -> None:
+        """Remove materialized PR20 receipts whose voice authority just changed.
+
+        Generated audio blobs stay immutable/content-addressed, but their Project receipts
+        must not remain visible as current line synthesis after a bind/rebind/unbind. A
+        later PR21 synthesis can materialize the line again through the normal PR20 cache
+        identity and evidence path.
+        """
+
+        try:
+            manifest = tts_manifest(project)
+        except TTSError as exc:
+            raise VoiceCastConflictError(
+                "stored PR20 TTS manifest is invalid; refusing voice cast mutation"
+            ) from exc
+        affected = {
+            (scene.scene_id, line.line_id)
+            for scene in dialogue.scenes
+            for line in scene.lines
+            if line.speaker_id == character_id
+        }
+        if not affected:
+            return
+        retained = tuple(
+            record
+            for record in manifest.lines
+            if (record.scene_id, record.line_id) not in affected
+        )
+        if len(retained) == len(manifest.lines):
+            return
+        metadata[_PR20_TTS_METADATA_KEY] = manifest.validated_copy(
+            update={"lines": retained}
+        ).model_dump(mode="json")
+
     def manifest(self, project_id: str) -> ProjectVoiceCastManifest:
         project, _ = self._snapshot(project_id)
         dialogue = validated_dialogue_manifest(project)
@@ -144,6 +187,12 @@ class VoiceCastWorkflow:
             settings_override=settings_override,
             settings_override_reference_sha256=override_reference_sha256,
         )
+        existing = next(
+            (item for item in current_manifest.bindings if item.character_id == character_id),
+            None,
+        )
+        if existing == binding:
+            return binding
         retained = tuple(
             item for item in current_manifest.bindings if item.character_id != character_id
         )
@@ -159,6 +208,7 @@ class VoiceCastWorkflow:
         updated_manifest = current_manifest.validated_copy(update={"bindings": bindings})
         metadata = project_metadata_copy(project)
         metadata[CAST_METADATA_KEY] = updated_manifest.model_dump(mode="json")
+        self._invalidate_character_tts(project, dialogue, character_id, metadata)
         updated = project.validated_copy(
             update={"metadata": metadata, "updated_at": datetime.now(timezone.utc)}
         )
@@ -181,6 +231,7 @@ class VoiceCastWorkflow:
         updated_manifest = current_manifest.validated_copy(update={"bindings": bindings})
         metadata = project_metadata_copy(project)
         metadata[CAST_METADATA_KEY] = updated_manifest.model_dump(mode="json")
+        self._invalidate_character_tts(project, dialogue, character_id, metadata)
         updated = project.validated_copy(
             update={"metadata": metadata, "updated_at": datetime.now(timezone.utc)}
         )
