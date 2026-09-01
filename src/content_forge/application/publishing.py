@@ -7,12 +7,17 @@ from pathlib import Path
 from content_forge.orchestration import RenderArtifactManifest, RenderOrchestrator
 from content_forge.providers import (
     ApprovedPublishRequest,
+    PublishMetadata,
+    PublishRequest,
+    PublishTarget,
     PublishingExecutionError,
     PublishingProvider,
     PublishingResponseError,
     PublishingUnavailableError,
+    approve_publish_request,
     publish_artifact_ref,
     publish_idempotency_key,
+    semantic_publish_request_digest,
     validate_publish_result,
 )
 from content_forge.storage import LocalLibrary, PublishAttemptRecord, StorageConflictError
@@ -35,12 +40,12 @@ class PublishOutcomeUnknownError(PublishOrchestrationError):
 
 
 class PublishingService:
-    """Prepare and execute approved remote publishing without weakening render authority."""
+    """Prepare and optionally execute publishing without weakening render authority."""
 
     def __init__(
         self,
         library: LocalLibrary,
-        provider: PublishingProvider,
+        provider: PublishingProvider | None = None,
         *,
         render_orchestrator: RenderOrchestrator | None = None,
         ffprobe_path: str = "ffprobe",
@@ -54,22 +59,43 @@ class PublishingService:
         self.ffprobe_path = ffprobe_path
         self.probe_timeout = probe_timeout
 
-    def _authenticated_artifact(self, approved: ApprovedPublishRequest) -> RenderArtifactManifest:
-        expected = approved.request.artifact
+    def _artifact_by_job_id(self, render_job_id: str) -> RenderArtifactManifest:
         try:
             artifact = self.render_orchestrator.load_artifact(
-                expected.render_job_id,
+                render_job_id,
                 ffprobe_path=self.ffprobe_path,
                 probe_timeout=self.probe_timeout,
             )
         except Exception as exc:
-            raise PublishArtifactError("failed to authenticate approved final render artifact") from exc
+            raise PublishArtifactError("failed to authenticate final render artifact") from exc
         if artifact is None:
-            raise PublishArtifactError("approved render job has no authenticated successful artifact")
+            raise PublishArtifactError("render job has no authenticated successful artifact")
         try:
-            actual = publish_artifact_ref(artifact)
+            publish_artifact_ref(artifact)
         except ValueError as exc:
-            raise PublishArtifactError("approved render job is not a final artifact") from exc
+            raise PublishArtifactError("render job is not a final artifact") from exc
+        return artifact
+
+    def candidate(
+        self,
+        render_job_id: str,
+        *,
+        target: PublishTarget,
+        metadata: PublishMetadata,
+    ) -> PublishRequest:
+        """Build a credential-free candidate from one authenticated final render."""
+
+        artifact = self._artifact_by_job_id(render_job_id)
+        return PublishRequest(
+            artifact=publish_artifact_ref(artifact),
+            target=target,
+            metadata=metadata,
+        )
+
+    def _authenticated_artifact(self, approved: ApprovedPublishRequest) -> RenderArtifactManifest:
+        expected = approved.request.artifact
+        artifact = self._artifact_by_job_id(expected.render_job_id)
+        actual = publish_artifact_ref(artifact)
         if actual != expected:
             raise PublishArtifactError("authenticated final artifact differs from approved publish input")
         return artifact
@@ -81,6 +107,21 @@ class PublishingService:
         if not path.is_file():
             raise PublishArtifactError("authenticated final artifact path is missing")
         return path
+
+    def approve(
+        self,
+        request: PublishRequest,
+        *,
+        confirm_request_sha256: str,
+        note: str | None = None,
+    ) -> PublishAttemptRecord:
+        """Persist explicit approval only when the client confirms the exact request digest."""
+
+        expected = semantic_publish_request_digest(request)
+        if confirm_request_sha256 != expected:
+            raise PublishAttemptError("publish approval digest does not match exact request")
+        approved = approve_publish_request(request, note=note)
+        return self.prepare(approved)
 
     def prepare(self, approved: ApprovedPublishRequest) -> PublishAttemptRecord:
         """Persist exact human approval without beginning remote execution."""
@@ -112,13 +153,16 @@ class PublishingService:
             raise PublishAttemptError(
                 f"publish attempt is {attempt.state}; expected prepared"
             )
+        provider = self.provider
+        if provider is None:
+            raise PublishingUnavailableError("publishing provider is not configured")
 
         approved = self.library.publishing.approved_request(attempt_id)
         artifact = self._authenticated_artifact(approved)
         media_path = self._media_path(artifact)
 
         try:
-            health = self.provider.health()
+            health = provider.health()
         except Exception as exc:
             self.library.publishing.mark_failed(
                 attempt.attempt_id,
@@ -150,7 +194,7 @@ class PublishingService:
             raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         idempotency_key = publish_idempotency_key(approved.request)
         try:
-            result = self.provider.publish(
+            result = provider.publish(
                 approved,
                 media_path=media_path,
                 idempotency_key=idempotency_key,
