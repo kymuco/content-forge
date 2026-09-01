@@ -39,7 +39,7 @@ from .long_form_shared_workflow import (
     ProjectLongFormSharedManifest,
     long_form_shared_manifest,
 )
-from .long_form_shared_hardening import (
+from .long_form_shared_integrity import (
     LongFormSharedSceneWorkflow,
     ProjectLongFormSharedProvenance,
 )
