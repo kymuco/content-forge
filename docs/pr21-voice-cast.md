@@ -48,7 +48,9 @@ Bindings pin a revision. Creating a newer global revision never silently changes
 
 A project may explicitly rebind a character to the latest or another chosen revision. A project-local override changes only that binding; it never mutates the runtime-wide cast definition.
 
-PR21 mutations are allowed only while the project remains in the same editable states used by PR20 (`draft`, `prepared`, or `ready`).
+A real bind/rebind/unbind also removes existing PR20 synthesized-line receipts for every accepted dialogue line spoken by that character. The immutable generated audio blobs are not deleted, but they stop being represented as current Project synthesis authority immediately. This prevents old voice audio from looking current during the interval before the next PR21/PR20 synthesis. Re-applying the exact same binding is idempotent and does not invalidate matching materialized audio.
+
+PR21 mutations are allowed only while the project remains in the same editable states used by PR20 (`draft`, `prepared`, or `ready`). If the retained PR20 TTS manifest is malformed, cast mutation fails closed rather than rewriting around corrupted synthesis state.
 
 ## Resolution into PR20
 
@@ -82,7 +84,8 @@ Once a cast binding resolves to `LineTTSSettings`, synthesis uses the normal PR2
 - repeated preview/synthesis of the same line and effective voice can reuse the existing verified PR20 line asset;
 - changing voice/style/reference/generation settings invalidates that line's cache naturally;
 - merely creating a newer global cast revision does not invalidate projects still pinned to an older unchanged recipe;
-- rebinding to a semantically different revision produces the corresponding new PR20 request/cache identity.
+- a real bind/rebind/unbind removes affected current Project receipts immediately;
+- rebinding to a semantically different revision produces the corresponding new PR20 request/cache identity when synthesized again.
 
 ## HTTP surface
 
@@ -120,6 +123,10 @@ The panel supports:
 - unassigning a character;
 - generating and playing a voice preview through the authenticated API.
 
+Voice Cast actions surface request/validation failures in the panel instead of leaving unhandled browser promise rejections, and starting a new preview stops/revokes the previous preview object URL so repeated checks do not overlap indefinitely.
+
+The service worker advances the shell cache to `v10`, precaches `voice-cast.js`, and explicitly cleans both retained predecessor namespaces (`v8` and `v9`) so already-installed older shells can upgrade without stale UI authority.
+
 This is intentionally not the PR22 panel-centric voiced-story editor. Fine-grained listen/regenerate controls, timed text, scene duration editing, and full voiced-story review remain PR22.
 
 ## Deferred boundaries
@@ -147,8 +154,10 @@ PR21 regression coverage includes:
 - project-only overrides without global mutation;
 - reuse of one cast revision across projects;
 - PR20 cache reuse and invalidation after rebinding;
+- affected PR20 Project receipts disappearing when cast authority changes;
 - rejection of a Project change between cast resolution and PR20 snapshot;
 - authenticated registry/binding/preview HTTP behavior;
 - bounded pre-parser transport behavior;
 - optional-provider preview failure;
+- versioned PWA shell precaching for Voice Cast;
 - real WAV preview publication through the existing PR20 asset/cache path.
