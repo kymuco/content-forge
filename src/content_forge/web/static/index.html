@@ -66,6 +66,15 @@
       <div id="ready-projects" class="review-list"></div>
       <p id="review-status" class="status"></p>
     </section>
+    <section id="dialogue-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">DIALOGUE</p><h2>Reading order & speakers</h2></div>
+        <span id="dialogue-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Confirm panel reading flow, assign every accepted OCR line to a character, and optionally retain a scene focus hint. Assisted proposals only prefill this editor; they never accept themselves.</p>
+      <div id="dialogue-list" class="review-list" aria-live="polite"></div>
+      <p id="dialogue-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -77,5 +86,6 @@
   <script src="shared.js"></script>
   <script src="app.js"></script>
   <script src="review.js"></script>
+  <script src="dialogue.js"></script>
 </body>
 </html>
