@@ -12,7 +12,12 @@ from content_forge.core import EntityKind, Project, Scene, require_entity_id
 from content_forge.core.models import FrozenModel, SHA256
 from content_forge.storage import LocalLibrary
 
-from .voiced_scene import ProjectVoicedSceneManifest, VoicedSceneScenePlan
+from .dialogue import DialogueError
+from .voiced_scene import (
+    ProjectVoicedSceneManifest,
+    VoicedSceneError,
+    VoicedSceneScenePlan,
+)
 from .voiced_scene_hardening import VoicedSceneWorkflow
 
 _SHARED_VOICED_SCENE_REF_VERSION = "pr24_shared_voiced_scene_ref_v1"
@@ -72,7 +77,7 @@ def _source_snapshot(
         )
     try:
         manifest = VoicedSceneWorkflow(library).validate_snapshot(project)
-    except Exception as exc:
+    except (VoicedSceneError, DialogueError) as exc:
         raise LongFormSharedSceneConflictError(
             f"shared-scene source has no current PR22/PR23 authority: {exc}"
         ) from exc
