@@ -132,11 +132,9 @@ from .voiced_story import (
     VoicedStoryWorkflow,
     voiced_story_manifest,
 )
-# Install the PR17 startup ownership boundary before exposing the final ReviewService.
-# PR23 then layers an exact-snapshot voiced presentation gate over the established
-# seventh-pass review/recovery implementation without changing non-voiced authority.
+# Install startup and render-authority hardening before exposing the final ReviewService.
 from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
-from .review_pr23_hardening import ReviewService
+from .review_pr24_hardening import ReviewService
 
 __all__ = [
     "ApplicationRepository",
