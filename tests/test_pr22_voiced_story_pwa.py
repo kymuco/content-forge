@@ -21,6 +21,10 @@ def test_pr22_pwa_shell_serves_and_precaches_voiced_story_surface(tmp_path) -> N
         assert "voiced-story/projects/" in script.text
         assert "Preview timing" not in script.text  # labels belong to the shell, not JS authority
         assert "materialize" in script.text
+        assert 'listen.textContent = "Listen"' in script.text
+        assert 'regenerate.textContent = "Regenerate"' in script.text
+        assert "/audio`" in script.text
+        assert "/regenerate`" in script.text
         assert script.headers["Cache-Control"] == "no-cache"
 
         worker = client.get("/app/sw.js")
