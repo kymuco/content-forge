@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -13,7 +14,15 @@ from content_forge.application.dialogue import ProjectDialogueManifest, scene_di
 from content_forge.application.dialogue_pr19_integrity import validated_dialogue_manifest
 from content_forge.application.tts import ProjectTTSManifest, SynthesizedDialogueLine, _wav_metadata, tts_manifest
 from content_forge.application.voice_cast_workflow import VoiceCastWorkflow
-from content_forge.core import MediaType, Project, ProjectState, dump_json, load_json
+from content_forge.core import (
+    MediaType,
+    NormalizedRect,
+    Overlay,
+    Project,
+    ProjectState,
+    dump_json,
+    load_json,
+)
 from content_forge.core.ids import EntityKind, RegistryKey, require_entity_id
 from content_forge.core.models import FrozenModel, SHA256
 from content_forge.storage import LocalLibrary
@@ -24,12 +33,14 @@ _VOICED_STORY_LINE_VERSION = "pr22_voiced_story_line_v1"
 _TIMED_TEXT_CUE_VERSION = "pr22_timed_text_cue_v1"
 _TIMING_POLICY_VERSION = "pr22_timing_policy_v1"
 _VOICED_STORY_METADATA_KEY = "pr22_voiced_story"
+_TIMED_TEXT_OWNER = "pr22_timed_text_v1"
 _MAX_SCENES = 10000
 _MAX_LINES = 10000
 _MAX_CUES_PER_LINE = 256
 _EDITABLE_STATES = frozenset({ProjectState.DRAFT, ProjectState.PREPARED, ProjectState.READY})
 _PHRASE_END = frozenset(".!?。！？;；…")
 _SOFT_BREAK = frozenset(",，:：")
+_TIMED_TEXT_PLACEMENT = NormalizedRect(x=0.08, y=0.78, width=0.84, height=0.14)
 
 
 class VoicedStoryError(RuntimeError):
@@ -112,6 +123,7 @@ class VoicedStoryScene(FrozenModel):
     contract_version: Literal["pr22_voiced_story_scene_v1"] = _VOICED_STORY_SCENE_VERSION
     scene_id: str
     scene_dialogue_digest: SHA256
+    base_duration_seconds: float = Field(gt=0.0)
     duration_seconds: float = Field(gt=0.0)
     lines: tuple[VoicedStoryLine, ...] = Field(min_length=1, max_length=_MAX_LINES)
 
@@ -233,13 +245,77 @@ def _timed_cues(text: str, *, line_start_us: int, duration_us: int) -> tuple[Tim
     return tuple(cues)
 
 
-def _scene_durations_match(project: Project, manifest: ProjectVoicedStoryManifest) -> bool:
-    expected = {scene.scene_id: scene.duration_seconds for scene in manifest.scenes}
-    actual = {scene.scene_id: scene.duration_seconds for scene in project.scenes}
-    return all(
-        scene_id in actual and abs(actual[scene_id] - duration) <= 1e-6
-        for scene_id, duration in expected.items()
+def _timed_text_overlay_id(
+    project_id: str,
+    scene_id: str,
+    line_id: str,
+    phrase_index: int,
+) -> str:
+    identity = (
+        f"{_TIMED_TEXT_OWNER}|{project_id}|{scene_id}|{line_id}|{phrase_index}"
+    ).encode("utf-8")
+    return f"cf_overlay_{hashlib.sha256(identity).hexdigest()[:32]}"
+
+
+def _timed_text_overlays(
+    manifest: ProjectVoicedStoryManifest,
+) -> dict[str, tuple[Overlay, ...]]:
+    result: dict[str, tuple[Overlay, ...]] = {}
+    for scene in manifest.scenes:
+        overlays: list[Overlay] = []
+        for line in scene.lines:
+            for cue in line.cues:
+                overlays.append(
+                    Overlay(
+                        overlay_id=_timed_text_overlay_id(
+                            manifest.project_id,
+                            scene.scene_id,
+                            line.line_id,
+                            cue.phrase_index,
+                        ),
+                        component_type="timed_text",
+                        start_seconds=cue.start_seconds,
+                        duration_seconds=cue.end_seconds - cue.start_seconds,
+                        placement=_TIMED_TEXT_PLACEMENT,
+                        z_index=200,
+                        text=cue.text,
+                        properties={
+                            "pr22_owner": _TIMED_TEXT_OWNER,
+                            "line_id": line.line_id,
+                            "phrase_index": cue.phrase_index,
+                            "box": True,
+                            "border_width": 2,
+                            "font_color": "white",
+                            "border_color": "black",
+                            "box_color": "black@0.55",
+                        },
+                    )
+                )
+        result[scene.scene_id] = tuple(overlays)
+    return result
+
+
+def _is_pr22_timed_text(overlay: Overlay) -> bool:
+    return (
+        overlay.component_type == "timed_text"
+        and overlay.properties.get("pr22_owner") == _TIMED_TEXT_OWNER
     )
+
+
+def _scene_materialization_matches(
+    project: Project,
+    manifest: ProjectVoicedStoryManifest,
+) -> bool:
+    expected_duration = {scene.scene_id: scene.duration_seconds for scene in manifest.scenes}
+    expected_overlays = _timed_text_overlays(manifest)
+    for scene in project.scenes:
+        owned = tuple(item for item in scene.overlays if _is_pr22_timed_text(item))
+        if owned != expected_overlays.get(scene.scene_id, ()):
+            return False
+        if scene.scene_id in expected_duration:
+            if abs(scene.duration_seconds - expected_duration[scene.scene_id]) > 1e-6:
+                return False
+    return set(expected_duration).issubset({scene.scene_id for scene in project.scenes})
 
 
 class VoicedStoryWorkflow:
@@ -354,11 +430,25 @@ class VoicedStoryWorkflow:
         binding_by_character = {item.character_id: item for item in cast_manifest.bindings}
         tts = self._validated_tts(project, dialogue)
         tts_by_line = {(item.scene_id, item.line_id): item for item in tts.lines}
+        stored = voiced_story_manifest(project)
+        stored_by_scene = {} if stored is None else {item.scene_id: item for item in stored.scenes}
+        core_by_scene = {item.scene_id: item for item in project.scenes}
         pause_us = _microseconds(timing_policy.between_line_pause_seconds)
         tail_us = _microseconds(timing_policy.scene_tail_seconds)
         scenes: list[VoicedStoryScene] = []
 
         for dialogue_scene in dialogue.scenes:
+            core_scene = core_by_scene.get(dialogue_scene.scene_id)
+            if core_scene is None:
+                raise VoicedStoryConflictError(
+                    "accepted PR19 dialogue references a scene missing from the core Project timeline"
+                )
+            previous = stored_by_scene.get(dialogue_scene.scene_id)
+            base_duration = (
+                core_scene.duration_seconds
+                if previous is None
+                else previous.base_duration_seconds
+            )
             cursor_us = 0
             lines: list[VoicedStoryLine] = []
             for index, dialogue_line in enumerate(dialogue_scene.lines):
@@ -413,6 +503,7 @@ class VoicedStoryWorkflow:
                 VoicedStoryScene(
                     scene_id=dialogue_scene.scene_id,
                     scene_dialogue_digest=scene_dialogue_digest(dialogue_scene),
+                    base_duration_seconds=base_duration,
                     duration_seconds=_seconds(max(1, cursor_us)),
                     lines=tuple(lines),
                 )
@@ -438,7 +529,7 @@ class VoicedStoryWorkflow:
         if stored is None:
             raise VoicedStoryNotFoundError("project has no materialized PR22 voiced story")
         expected = self.derive(project, policy=stored.timing_policy)
-        if stored != expected or not _scene_durations_match(project, stored):
+        if stored != expected or not _scene_materialization_matches(project, stored):
             raise VoicedStoryConflictError(
                 "materialized PR22 voiced story no longer matches current upstream authority"
             )
@@ -455,31 +546,53 @@ class VoicedStoryWorkflow:
             raise VoicedStoryConflictError(
                 f"voiced story cannot mutate project in state {project.state.value}"
             )
+        previous = voiced_story_manifest(project)
         derived = self.derive(project, policy=policy)
-        current = voiced_story_manifest(project)
-        if current == derived and _scene_durations_match(project, derived):
-            return current
+        if previous == derived and _scene_materialization_matches(project, derived):
+            return previous
 
         duration_by_scene = {scene.scene_id: scene.duration_seconds for scene in derived.scenes}
-        known_scene_ids = {scene.scene_id for scene in project.scenes}
-        missing = set(duration_by_scene) - known_scene_ids
-        if missing:
-            raise VoicedStoryConflictError(
-                "voiced story dialogue references a scene missing from the core Project timeline"
-            )
-        scenes = tuple(
-            scene.validated_copy(
-                update={"duration_seconds": duration_by_scene[scene.scene_id]}
-            )
-            if scene.scene_id in duration_by_scene
-            else scene
-            for scene in project.scenes
+        restore_duration = (
+            {}
+            if previous is None
+            else {
+                scene.scene_id: scene.base_duration_seconds
+                for scene in previous.scenes
+                if scene.scene_id not in duration_by_scene
+            }
         )
+        expected_overlays = _timed_text_overlays(derived)
+        expected_overlay_ids = {
+            overlay.overlay_id
+            for overlays in expected_overlays.values()
+            for overlay in overlays
+        }
+        scenes = []
+        for scene in project.scenes:
+            retained = tuple(item for item in scene.overlays if not _is_pr22_timed_text(item))
+            if any(item.overlay_id in expected_overlay_ids for item in retained):
+                raise VoicedStoryConflictError(
+                    "PR22 deterministic timed-text overlay ID collides with non-PR22 Project state"
+                )
+            overlays = (*retained, *expected_overlays.get(scene.scene_id, ()))
+            target_duration = duration_by_scene.get(
+                scene.scene_id,
+                restore_duration.get(scene.scene_id, scene.duration_seconds),
+            )
+            scenes.append(
+                scene.validated_copy(
+                    update={
+                        "duration_seconds": target_duration,
+                        "overlays": tuple(overlays),
+                    }
+                )
+            )
+
         metadata = _metadata(project)
         metadata[_VOICED_STORY_METADATA_KEY] = derived.model_dump(mode="json")
         updated = project.validated_copy(
             update={
-                "scenes": scenes,
+                "scenes": tuple(scenes),
                 "metadata": metadata,
                 "updated_at": datetime.now(timezone.utc),
             }
