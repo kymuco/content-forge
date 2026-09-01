@@ -3,8 +3,9 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-// Keep the immediately previous namespace explicit so PR21's worker upgrade has a
-// testable migration edge from already-installed PR19 shells.
+// Retain both known predecessor namespaces so an installed shell may upgrade directly
+// from the PR10/PR18 generation or from PR19 without leaving stale cache authority.
+const OLDEST_LEGACY_CACHE_NAME = `${CACHE_PREFIX}v8`;
 const LEGACY_CACHE_NAME = `${CACHE_PREFIX}v9`;
 const CACHE_NAME = `${CACHE_PREFIX}v10`;
 const LIMITS = self.CFStore.limits;
@@ -55,7 +56,8 @@ self.addEventListener("activate", (event) => {
       .then((keys) => Promise.all(
         keys
           .filter((key) => (
-            key === LEGACY_CACHE_NAME
+            key === OLDEST_LEGACY_CACHE_NAME
+            || key === LEGACY_CACHE_NAME
             || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           ))
           .map((key) => caches.delete(key))
