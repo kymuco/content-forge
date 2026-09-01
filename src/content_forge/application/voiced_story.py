@@ -586,7 +586,13 @@ class VoicedStoryWorkflow:
         policy: VoicedStoryTimingPolicy | None = None,
     ) -> ProjectVoicedStoryManifest:
         project, _ = self._snapshot(project_id)
-        return self.derive(project, policy=policy)
+        stored = voiced_story_manifest(project)
+        effective_policy = (
+            policy
+            if policy is not None
+            else (None if stored is None else stored.timing_policy)
+        )
+        return self.derive(project, policy=effective_policy)
 
     def manifest(self, project_id: str) -> ProjectVoicedStoryManifest:
         project, _ = self._snapshot(project_id)
@@ -632,6 +638,10 @@ class VoicedStoryWorkflow:
         expected_json: str,
         previous: ProjectVoicedStoryManifest,
     ) -> None:
+        if not _scene_materialization_matches(project, previous):
+            raise VoicedStoryConflictError(
+                "cannot dematerialize PR22 state after owned materialization drift"
+            )
         base_duration = {
             scene.scene_id: scene.base_duration_seconds for scene in previous.scenes
         }
@@ -695,7 +705,12 @@ class VoicedStoryWorkflow:
             self._dematerialize_snapshot(project, expected_json, previous)
             return None
 
-        derived = self.derive(project, policy=policy)
+        effective_policy = (
+            policy
+            if policy is not None
+            else (None if previous is None else previous.timing_policy)
+        )
+        derived = self.derive(project, policy=effective_policy)
         if previous == derived and _scene_materialization_matches(project, derived):
             return previous
 
@@ -775,18 +790,16 @@ class VoicedStoryWorkflow:
         scene_id: str,
         line_id: str,
     ) -> tuple[SynthesizedDialogueLine, ProjectVoicedStoryManifest | None]:
-        project, _ = self._snapshot(project_id)
-        previous = voiced_story_manifest(project)
-        policy = None if previous is None else previous.timing_policy
         synthesized = self.voice_cast.synthesize_line(
             project_id,
             scene_id,
             line_id,
             force=True,
         )
+        project, _ = self._snapshot(project_id)
         materialized = None
-        if previous is not None:
-            materialized = self.materialize(project_id, policy=policy)
+        if voiced_story_manifest(project) is not None:
+            materialized = self.materialize(project_id)
             if materialized is None:  # accepted dialogue cannot disappear during successful line synthesis
                 raise VoicedStoryConflictError(
                     "voiced story disappeared while regenerating an accepted dialogue line"
