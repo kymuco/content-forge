@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from content_forge.api.__main__ import validate_transport
+from content_forge.api.__main__ import build_tts_provider, validate_transport
+from content_forge.providers.qwen_tts import QwenTTSProvider
 
 
 def test_plain_http_is_loopback_only() -> None:
@@ -28,3 +29,10 @@ def test_tls_configuration_requires_cert_and_key_pair() -> None:
             ssl_certfile="content-forge.crt",
             ssl_keyfile=None,
         )
+
+
+def test_cli_tts_selection_is_explicit_and_qwen_stays_lazy() -> None:
+    assert build_tts_provider("none") is None
+    provider = build_tts_provider("qwen")
+    assert isinstance(provider, QwenTTSProvider)
+    assert provider._runtime is None

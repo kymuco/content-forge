@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from content_forge.providers.tts import TTSProvider
 from content_forge.web.routes import install_pwa_routes
 
 from .app import (
@@ -14,6 +15,7 @@ from .app import (
 from .dialogue_routes import install_dialogue_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
+from .voice_cast_routes import install_voice_cast_routes
 
 
 def create_app(
@@ -22,8 +24,9 @@ def create_app(
     ffprobe_path: str = "ffprobe",
     ffmpeg_path: str = "ffmpeg",
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
+    tts_provider: TTSProvider | None = None,
 ):
-    """Build the local API, PWA, review surface, and PR19 dialogue authority."""
+    """Build the local API/PWA with optional PR21 voice preview synthesis."""
 
     app = _create_api_app(
         root=root,
@@ -48,6 +51,12 @@ def create_app(
             app,
             auth=app.state.auth,
             library=app.state.library,
+        )
+        install_voice_cast_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            tts_provider=tts_provider,
         )
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old

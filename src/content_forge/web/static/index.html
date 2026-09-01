@@ -75,6 +75,31 @@
       <div id="dialogue-list" class="review-list" aria-live="polite"></div>
       <p id="dialogue-status" class="status"></p>
     </section>
+    <section id="voice-cast-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">VOICE CAST</p><h2>Persistent voices</h2></div>
+        <span id="voice-cast-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Keep reusable voice identity separate from project characters. Projects pin an immutable cast revision and may apply a local override without changing the global voice.</p>
+      <div id="voice-cast-registry" class="review-list" aria-live="polite"></div>
+      <form id="voice-cast-create-form" class="stack compact">
+        <strong>Create or revise a cast voice</strong>
+        <label>Cast ID<input id="voice-cast-id" maxlength="128" placeholder="protagonist" required></label>
+        <label>Display name<input id="voice-cast-name" maxlength="512" placeholder="Protagonist" required></label>
+        <label>Provider voice ID<input id="voice-cast-voice-id" maxlength="256" placeholder="Ryan" required></label>
+        <label>Language<input id="voice-cast-language" maxlength="128" placeholder="en"></label>
+        <label>Style instruction<textarea id="voice-cast-instruction" maxlength="4096" rows="2" placeholder="Optional; only for provider/model modes that support it"></textarea></label>
+        <button class="secondary" type="submit">Save cast revision</button>
+      </form>
+      <div class="stack compact">
+        <strong>Assign project characters</strong>
+        <label>Project ID<input id="voice-cast-project" list="voice-cast-project-options" placeholder="Choose a recent project or paste its ID"></label>
+        <datalist id="voice-cast-project-options"></datalist>
+        <div class="row"><button id="voice-cast-load-project" class="secondary" type="button">Load project voices</button></div>
+      </div>
+      <div id="voice-cast-characters" class="review-list" aria-live="polite"></div>
+      <p id="voice-cast-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -87,5 +112,6 @@
   <script src="app.js"></script>
   <script src="review.js"></script>
   <script src="dialogue.js"></script>
+  <script src="voice-cast.js"></script>
 </body>
 </html>
