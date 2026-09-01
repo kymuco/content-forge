@@ -21,6 +21,9 @@ def test_pr25_pwa_shell_serves_and_precaches_production_profiles(tmp_path) -> No
         assert 'apiJson("production-profiles")' in script.text
         assert "production-profiles/projects/" in script.text
         assert "PR25-owned defaults" in script.text
+        assert "updateUnbindAvailability" in script.text
+        assert 'projectInput.addEventListener("input"' in script.text
+        assert "You can still unbind or rebind by Project ID" in script.text
         assert script.headers["Cache-Control"] == "no-cache"
 
         worker = client.get("/app/sw.js")
