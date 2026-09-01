@@ -16,6 +16,7 @@ from .dialogue_routes import install_dialogue_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
 from .voice_cast_routes import install_voice_cast_routes
+from .voiced_story_routes import install_voiced_story_routes
 
 
 def create_app(
@@ -26,7 +27,7 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
     tts_provider: TTSProvider | None = None,
 ):
-    """Build the local API/PWA with optional PR21 voice preview synthesis."""
+    """Build the local API/PWA with PR21 voice and PR22 voiced-story surfaces."""
 
     app = _create_api_app(
         root=root,
@@ -53,6 +54,12 @@ def create_app(
             library=app.state.library,
         )
         install_voice_cast_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            tts_provider=tts_provider,
+        )
+        install_voiced_story_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,

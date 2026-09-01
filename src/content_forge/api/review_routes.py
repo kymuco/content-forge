@@ -18,6 +18,7 @@ from content_forge.application.review import (
     ReviewService,
     ReviewValidationError,
 )
+from content_forge.application.voiced_story_review import VoicedStoryAwareReviewService
 from content_forge.storage import LocalLibrary
 from content_forge.web import static_path
 
@@ -90,7 +91,7 @@ def install_review_routes(
 ) -> ReviewService:
     """Install PR10 routes without granting HTTP handlers renderer authority."""
 
-    review = ReviewService(
+    review = VoicedStoryAwareReviewService(
         library,
         ffmpeg_path=ffmpeg_path,
         ffprobe_path=ffprobe_path,

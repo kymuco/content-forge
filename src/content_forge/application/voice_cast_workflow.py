@@ -297,6 +297,8 @@ class VoiceCastWorkflow:
         project_id: str,
         scene_id: str,
         line_id: str,
+        *,
+        force: bool = False,
     ) -> SynthesizedDialogueLine:
         project, expected_json = self._snapshot(project_id)
         resolved = self._resolve_from_project(project, scene_id, line_id)
@@ -305,6 +307,7 @@ class VoiceCastWorkflow:
             scene_id,
             line_id,
             resolved.settings,
+            force=force,
         )
 
     def preview_character(
