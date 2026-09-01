@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR17: **complete** in the intended post-merge repository state.
-- Current step: **PR18 — OCR provider and panel text extraction workflow**.
+- PR1–PR19: **complete** in the intended post-merge repository state.
+- Current step: **PR20 — TTS provider and Qwen TTS integration**.
 - Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
 - The intended **v0.1 batch-production boundary is complete through PR17**.
 
@@ -329,7 +329,7 @@ v0.1 intentionally excludes automatic publishing, broad web scraping, and voiced
 
 ### PR18 — OCR provider and panel text extraction workflow
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
@@ -344,6 +344,8 @@ Exit condition: a verified panel image can produce retained raw text/geometry/co
 
 ### PR19 — Dialogue scene model and speaker assignment
 
+Status: **complete**
+
 Deliverables:
 
 - dialogue lines attached to panels/scenes;
@@ -353,7 +355,11 @@ Deliverables:
 - manual/assisted speaker assignment UI;
 - scene focus hints (`speaker`, `face`, explicit crop).
 
+Exit condition: verified PR18 regions can be turned into a durable scene dialogue with explicit human-approved reading order, complete speaker identity, retained source geometry/text, and optional semantic focus hints without conflating narrative character identity with future voice-cast identity.
+
 ### PR20 — TTS provider and Qwen TTS integration
+
+Status: **in progress**
 
 Deliverables:
 
