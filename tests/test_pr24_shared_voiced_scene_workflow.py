@@ -106,6 +106,21 @@ def _source_with_provenance(
     )
 
 
+def _register_asset(library: LocalLibrary, project: Project, sha_char: str) -> None:
+    record = project.source_records[0]
+    library.database.put_asset(
+        Asset(
+            asset_id=record.asset_id,
+            sha256=sha_char * 64,
+            media_type=MediaType.IMAGE,
+            mime_type="image/png",
+            size_bytes=1,
+            width=100,
+            height=100,
+        )
+    )
+
+
 def _install_authority(
     monkeypatch: pytest.MonkeyPatch,
     manifests: dict[str, ProjectVoicedSceneManifest],
@@ -131,6 +146,7 @@ def test_pr24_shared_workflow_materializes_host_owned_scene_and_is_idempotent(
     library = LocalLibrary(tmp_path / "runtime")
     source, _ = _source_with_provenance(sha_char="1")
     host = _host()
+    _register_asset(library, source, "1")
     library.save_project(source)
     library.save_project(host)
     _install_authority(monkeypatch, {source.project_id: _manifest(source)})
@@ -149,6 +165,7 @@ def test_pr24_shared_workflow_materializes_host_owned_scene_and_is_idempotent(
     assert copied.order == 1
     assert copied.properties["pr24_source_project_id"] == source.project_id
     assert copied.properties["pr24_source_scene_id"] == source.scenes[0].scene_id
+    assert copied.properties["pr24_source_provenance_sha256"] == reference.source_provenance_sha256
     assert copied.properties["pr24_owner"] == "pr24_shared_voiced_scene_v1"
     assert "pr23_owner" not in copied.motion.properties
     assert "pr22_owner" not in copied.overlays[0].properties
@@ -171,6 +188,7 @@ def test_pr24_shared_workflow_dematerialize_restores_host_and_removes_owned_prov
     library = LocalLibrary(tmp_path / "runtime")
     source, record = _source_with_provenance(sha_char="2")
     host = _host()
+    _register_asset(library, source, "2")
     library.save_project(source)
     library.save_project(host)
     _install_authority(monkeypatch, {source.project_id: _manifest(source)})
@@ -204,6 +222,7 @@ def test_pr24_dematerialize_preserves_imported_record_if_host_adopts_it(
     library = LocalLibrary(tmp_path / "runtime")
     source, record = _source_with_provenance(sha_char="3")
     host = _host()
+    _register_asset(library, source, "3")
     library.save_project(source)
     library.save_project(host)
     _install_authority(monkeypatch, {source.project_id: _manifest(source)})
@@ -242,6 +261,7 @@ def test_pr24_shared_workflow_detects_owned_host_scene_drift(
     library = LocalLibrary(tmp_path / "runtime")
     source, _ = _source_with_provenance(sha_char="4")
     host = _host()
+    _register_asset(library, source, "4")
     library.save_project(source)
     library.save_project(host)
     _install_authority(monkeypatch, {source.project_id: _manifest(source)})
@@ -274,6 +294,8 @@ def test_pr24_replacing_shared_scene_removes_stale_pr24_provenance(
     first_source, first_record = _source_with_provenance(sha_char="5")
     second_source, second_record = _source_with_provenance(sha_char="6")
     host = _host()
+    _register_asset(library, first_source, "5")
+    _register_asset(library, second_source, "6")
     library.save_project(first_source)
     library.save_project(second_source)
     library.save_project(host)
