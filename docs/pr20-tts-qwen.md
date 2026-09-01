@@ -49,7 +49,7 @@ The output path and reference-audio **local path** are runtime details and are e
 - channel count;
 - sample/frame count;
 - duration;
-- provider/model/config/request evidence;
+- provider/model/revision/config/request evidence;
 - resolved voice/language evidence.
 
 The application never trusts those claims blindly. The resulting file is opened independently with Python's WAV reader and must be a bounded, uncompressed PCM16 WAV whose bytes, sample geometry, duration, and SHA-256 agree with the provider result before it can be ingested.
@@ -72,6 +72,7 @@ line cache key
 + provider_id
 + provider_version
 + model_id
++ model_revision
 + provider config SHA-256
 ```
 
@@ -80,7 +81,7 @@ This means:
 - moving runtime files does not invalidate a line;
 - changing the accepted text invalidates it;
 - changing voice, language, style, clone reference, or generation settings invalidates it;
-- changing provider/model/config invalidates it;
+- changing provider/model/model revision/config invalidates it;
 - visual crop/template changes do not invalidate line audio by themselves.
 
 This is **deterministic cache invalidation**, not a claim that a stochastic GPU synthesis rerun is bit-identical. Once accepted into the cache, the exact generated WAV bytes are content-addressed and reused by SHA-256. Regeneration after deliberate invalidation may produce different bytes even for semantically similar settings unless the chosen provider/runtime itself guarantees stronger determinism.
@@ -104,7 +105,7 @@ Each durable `SynthesizedDialogueLine` stores:
 - exact accepted source text and narrative `speaker_id`;
 - explicit line synthesis settings;
 - semantic cache key;
-- complete TTS invocation evidence;
+- complete TTS invocation evidence including model revision;
 - generated `asset_id`, SHA-256, size, duration, sample rate, channels, and sample count.
 
 A persisted PR20 record is revalidated against current accepted dialogue and its request/cache identity before it can be reused. Public manifest reads additionally re-hash and reopen the generated WAV.
@@ -142,22 +143,39 @@ A config/model name that does not match the selected mode is rejected before inf
 
 The released Qwen3-TTS 12Hz family supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. Content Forge maps the base subtag of the supplied BCP-47 language (for example `en-US -> English`) and uses Qwen's `Auto` mode when no language or `und` is supplied.
 
+### Immutable checkpoint resolution
+
+A Qwen model name alone is not sufficient reproducibility evidence because a Hub repository's default branch can move. PR20 therefore requires an immutable 40-hex Hugging Face commit SHA as `revision`, retains it separately in provider evidence, and includes it in cache identity.
+
+Content Forge resolves the **entire model repository snapshot** through `huggingface_hub.snapshot_download(repo_id=..., revision=...)` before constructing Qwen. Qwen then receives the resolved local snapshot directory instead of the floating repository ID.
+
+This is intentionally stronger than passing `revision=` directly to the current upstream `Qwen3TTSModel.from_pretrained(...)`: the upstream wrapper forwards model kwargs to `AutoModel`, while its processor load is performed separately. Resolving the whole snapshot first guarantees that model weights, processor, tokenizer/config, and generation files all originate from the same immutable repository commit.
+
 The default lightweight adapter configuration is:
 
 ```text
 Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+revision=85e237c12c027371202489a0ec509ded67b5e4b5
 mode=custom_voice
 device_map=auto
 dtype=bfloat16
 ```
 
+Selecting a different Qwen repository requires supplying its own explicit commit SHA; PR20 does not silently reuse the default model's revision for another repository.
+
 FlashAttention is not a Content Forge requirement. A local installation may opt into an `attn_implementation` supported by its hardware/runtime; that choice is retained in the provider config digest.
+
+### 0.6B CustomVoice instruction boundary
+
+The upstream Qwen3-TTS 0.6B CustomVoice implementation does not apply `instruct` control; it explicitly discards the instruction. PR20 therefore rejects a non-empty instruction for a 0.6B CustomVoice model instead of pretending the requested style was honored.
+
+Instruction-controlled `custom_voice` synthesis requires a compatible 1.7B CustomVoice checkpoint with its own explicit pinned revision. `voice_design` remains the separate free-form voice-description capability.
 
 ### Lazy loading
 
-`QwenTTSProvider.health()` resolves package/config identity without loading multi-gigabyte model weights. This is important because an exact PR20 cache hit should not initialize CUDA merely to discover that synthesis is unnecessary.
+`QwenTTSProvider.health()` resolves package/config/cache identity without loading multi-gigabyte model weights. This is important because an exact PR20 cache hit should not initialize CUDA merely to discover that synthesis is unnecessary.
 
-The actual `Qwen3TTSModel.from_pretrained(...)` import/model load happens only on the first cache miss that requires synthesis.
+The pinned repository snapshot and actual `Qwen3TTSModel.from_pretrained(...)` model load happen only on the first cache miss that requires synthesis.
 
 ### Output normalization
 
@@ -195,8 +213,11 @@ Provider tests inject fake Qwen runtimes and verify:
 
 - lazy model construction;
 - mode/model validation;
+- immutable revision validation and revision-sensitive cache identity;
+- complete repository snapshot resolution at the exact commit;
 - language mapping;
 - custom voice, clone, and design call shapes;
+- fail-closed 0.6B CustomVoice instruction handling;
 - reference-audio digest verification;
 - generation-kwarg forwarding;
 - one-waveform/finite-sample boundaries;
