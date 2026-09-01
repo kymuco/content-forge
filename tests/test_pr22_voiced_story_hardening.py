@@ -17,6 +17,8 @@ from content_forge.application import (
     SceneDialogue,
     SynthesizedDialogueLine,
     TTSSynthesisError,
+    VoicedStoryConflictError,
+    VoicedStoryTimingPolicy,
     VoicedStoryWorkflow,
     VoiceCastDefinition,
     scene_dialogue_digest,
@@ -345,3 +347,61 @@ def test_pr22_successful_regeneration_refreshes_audio_timing_and_core_track(
     assert scene.audio_tracks[0].duration_seconds == 0.5
     assert library.database.get_asset(initial.asset_id) is not None
     assert workflow.manifest(project.project_id) == refreshed
+
+
+def test_pr22_implicit_refresh_preserves_materialized_custom_timing_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library, workflow, provider, project, _, _ = _fixture(tmp_path, monkeypatch)
+    policy = VoicedStoryTimingPolicy(
+        between_line_pause_seconds=0.7,
+        scene_tail_seconds=1.1,
+    )
+    materialized = workflow.materialize(project.project_id, policy=policy)
+    assert materialized is not None
+    assert materialized.timing_policy == policy
+    assert materialized.scenes[0].duration_seconds == 2.1
+
+    preview = workflow.preview(project.project_id)
+    assert preview.timing_policy == policy
+    assert preview.scenes[0].duration_seconds == 2.1
+
+    before_repeat = library.load_project(project.project_id)
+    assert before_repeat is not None
+    repeated = workflow.materialize(project.project_id)
+    after_repeat = library.load_project(project.project_id)
+    assert after_repeat is not None
+    assert repeated == materialized
+    assert after_repeat.updated_at == before_repeat.updated_at
+
+    regenerated, refreshed = workflow.regenerate_line(
+        project.project_id,
+        project.scenes[0].scene_id,
+        "dlg_ocr_0000",
+    )
+    assert provider.calls == 1
+    assert regenerated.duration_seconds == 0.5
+    assert refreshed is not None
+    assert refreshed.timing_policy == policy
+    assert refreshed.scenes[0].duration_seconds == 1.6
+
+
+def test_pr22_dematerialize_refuses_to_overwrite_owned_state_after_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library, workflow, _, project, _, _ = _fixture(tmp_path, monkeypatch)
+    assert workflow.materialize(project.project_id) is not None
+    stored = library.load_project(project.project_id)
+    assert stored is not None
+
+    drifted_scene = stored.scenes[0].validated_copy(update={"duration_seconds": 1.7})
+    drifted = stored.validated_copy(update={"scenes": (drifted_scene,)})
+    library.save_project(drifted)
+
+    with pytest.raises(VoicedStoryConflictError, match="owned materialization drift"):
+        workflow.dematerialize(project.project_id)
+
+    after = library.load_project(project.project_id)
+    assert after == drifted
