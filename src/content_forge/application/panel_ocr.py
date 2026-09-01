@@ -465,6 +465,13 @@ class PanelOCRWorkflow:
             raise PanelOCRNotFoundError(f"unknown review task: {review_task_id}")
         if task.task_type != _OCR_REVIEW_TASK:
             raise PanelOCRValidationError("review task is not an OCR correction task")
+        if (
+            task.attention is not AttentionMode.REVIEW
+            or task.priority is not ReviewPriority.HIGH
+            or not task.blocking
+            or task.accepted_value is not None
+        ):
+            raise PanelOCRValidationError("OCR correction task authority is malformed")
         if task.status is not ReviewStatus.OPEN or task.resolved_at is not None:
             raise PanelOCRConflictError("OCR correction task is already closed")
         if project.state is not ProjectState.NEEDS_REVIEW:
