@@ -142,9 +142,9 @@ class PublishingService:
             ) from exc
 
     def reconcile_interrupted(self) -> int:
-        """Convert abandoned running attempts into retry-blocking unknown outcomes."""
+        """Recover orphan preflight/running attempts without risking duplicate publishing."""
 
-        return self.library.publishing.reconcile_running_as_unknown()
+        return self.library.publishing.reconcile_interrupted()
 
 
 __all__ = [
