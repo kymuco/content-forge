@@ -52,15 +52,15 @@ def _evidence(request_sha256: str = "a" * 64) -> OCRInvocationEvidence:
 
 
 def test_high_confidence_panel_ocr_needs_no_review_task() -> None:
-    asset_id = "cf_asset_01KZZZZZZZZZZZZZZZZZZZZZZZ"
+    asset_id = "cf_asset_" + "1" * 32
     scene = Scene(
-        scene_id="cf_scene_01KZZZZZZZZZZZZZZZZZZZZZZZ",
+        scene_id="cf_scene_" + "2" * 32,
         order=0,
         duration_seconds=1.0,
         media=AssetRef(asset_id=asset_id),
     )
     project = Project(
-        project_id="cf_project_01KZZZZZZZZZZZZZZZZZZZZZZZ",
+        project_id="cf_project_" + "3" * 32,
         content_kind="panel_sequence",
         source_refs=(AssetRef(asset_id=asset_id),),
         scenes=(scene,),
