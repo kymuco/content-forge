@@ -26,7 +26,7 @@ from content_forge.providers import (
     publish_idempotency_key,
     semantic_publish_request_digest,
 )
-from content_forge.storage import LocalLibrary
+from content_forge.storage import LocalLibrary, StorageConflictError
 
 
 class _ArtifactLoader:
@@ -214,7 +214,7 @@ def test_pr27_remote_exception_becomes_unknown_without_secret_persistence(tmp_pa
     assert attempt.error_message == "remote publish execution began but no authenticated outcome was recorded"
     assert "SUPER_SECRET" not in attempt.model_dump_json()
 
-    with pytest.raises(Exception, match="unresolved remote outcome"):
+    with pytest.raises(StorageConflictError, match="unresolved remote outcome"):
         library.publishing.prepare_attempt(approved)
 
 
@@ -239,6 +239,35 @@ def test_pr27_result_mismatch_becomes_unknown_instead_of_retryable_failure(tmp_p
         service.publish(approved)
     attempt = library.publishing.attempts(approved.approval.request_sha256)[0]
     assert attempt.state == "outcome_unknown"
+
+
+def test_pr27_keyboard_interrupt_during_preflight_becomes_retryable_after_restart(tmp_path) -> None:
+    library, artifact, approved, _ = _prepare(tmp_path)
+
+    class Provider:
+        def health(self):
+            raise KeyboardInterrupt()
+
+        def publish(self, request, *, media_path: Path, idempotency_key: str):
+            raise AssertionError("publish must not be called")
+
+    service = PublishingService(library, Provider(), render_orchestrator=_ArtifactLoader(artifact))
+    with pytest.raises(KeyboardInterrupt):
+        service.publish(approved)
+
+    prepared = library.publishing.attempts(approved.approval.request_sha256)[0]
+    assert prepared.state == "prepared"
+    assert service.reconcile_interrupted() == 1
+
+    recovered = library.publishing.get_attempt(prepared.attempt_id)
+    assert recovered is not None
+    assert recovered.state == "failed"
+    assert recovered.error_code == "runtime_interrupted_preflight"
+    assert recovered.error_message == "runtime ended before remote publish execution began"
+
+    retry = library.publishing.prepare_attempt(approved)
+    assert retry.attempt_number == 2
+    assert retry.state == "prepared"
 
 
 def test_pr27_keyboard_interrupt_leaves_running_until_restart_reconciliation(tmp_path) -> None:
