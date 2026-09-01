@@ -289,7 +289,6 @@ def test_multi_panel_ocr_shares_one_resume_checkpoint_until_last_correction(
     )
     assert after_second.state is ProjectState.READY
     assert "pr18_ocr_resume_state" not in after_second.metadata
-    assert workflow.extraction(project.project_id, scenes[0].scene_id).effective_text if False else True
     assert workflow.extraction(project.project_id, scenes[0].scene_id).regions[0].effective_text == "Accepted first"
     assert workflow.extraction(project.project_id, scenes[1].scene_id).regions[0].effective_text == "Accepted second"
 
