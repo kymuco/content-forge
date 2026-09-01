@@ -204,6 +204,10 @@ def _phrase_weight(text: str) -> int:
 
 def _timed_cues(text: str, *, line_start_us: int, duration_us: int) -> tuple[TimedTextCue, ...]:
     phrases = _phrase_chunks(text)
+    if duration_us < len(phrases):
+        raise VoicedStoryValidationError(
+            "audio duration is too short for timed-text cue resolution"
+        )
     weights = tuple(_phrase_weight(phrase) for phrase in phrases)
     total_weight = sum(weights)
     cues: list[TimedTextCue] = []
@@ -227,6 +231,15 @@ def _timed_cues(text: str, *, line_start_us: int, duration_us: int) -> tuple[Tim
         )
         previous_end_us = cue_end_us
     return tuple(cues)
+
+
+def _scene_durations_match(project: Project, manifest: ProjectVoicedStoryManifest) -> bool:
+    expected = {scene.scene_id: scene.duration_seconds for scene in manifest.scenes}
+    actual = {scene.scene_id: scene.duration_seconds for scene in project.scenes}
+    return all(
+        scene_id in actual and abs(actual[scene_id] - duration) <= 1e-6
+        for scene_id, duration in expected.items()
+    )
 
 
 class VoicedStoryWorkflow:
@@ -425,7 +438,7 @@ class VoicedStoryWorkflow:
         if stored is None:
             raise VoicedStoryNotFoundError("project has no materialized PR22 voiced story")
         expected = self.derive(project, policy=stored.timing_policy)
-        if stored != expected:
+        if stored != expected or not _scene_durations_match(project, stored):
             raise VoicedStoryConflictError(
                 "materialized PR22 voiced story no longer matches current upstream authority"
             )
@@ -444,12 +457,32 @@ class VoicedStoryWorkflow:
             )
         derived = self.derive(project, policy=policy)
         current = voiced_story_manifest(project)
-        if current == derived:
+        if current == derived and _scene_durations_match(project, derived):
             return current
+
+        duration_by_scene = {scene.scene_id: scene.duration_seconds for scene in derived.scenes}
+        known_scene_ids = {scene.scene_id for scene in project.scenes}
+        missing = set(duration_by_scene) - known_scene_ids
+        if missing:
+            raise VoicedStoryConflictError(
+                "voiced story dialogue references a scene missing from the core Project timeline"
+            )
+        scenes = tuple(
+            scene.validated_copy(
+                update={"duration_seconds": duration_by_scene[scene.scene_id]}
+            )
+            if scene.scene_id in duration_by_scene
+            else scene
+            for scene in project.scenes
+        )
         metadata = _metadata(project)
         metadata[_VOICED_STORY_METADATA_KEY] = derived.model_dump(mode="json")
         updated = project.validated_copy(
-            update={"metadata": metadata, "updated_at": datetime.now(timezone.utc)}
+            update={
+                "scenes": scenes,
+                "metadata": metadata,
+                "updated_at": datetime.now(timezone.utc),
+            }
         )
         self._cas_project(expected_json, updated)
         return derived
