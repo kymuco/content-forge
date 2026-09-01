@@ -36,6 +36,11 @@ from content_forge.storage import LocalLibrary
 _PANEL_OCR_VERSION = "pr18_panel_ocr_v1"
 _PANEL_OCR_METADATA_KEY = "pr18_panel_ocr"
 _OCR_REVIEW_TASK = "ocr_text_correction"
+_MAX_PANEL_REGIONS = 2048
+_MAX_PANEL_RAW_TEXT_CHARS = 1_000_000
+_MAX_REVIEW_REGIONS = 256
+_MAX_REVIEW_RAW_TEXT_CHARS = 250_000
+_MAX_CORRECTION_TEXT_CHARS = 250_000
 
 
 class PanelOCRError(RuntimeError):
@@ -78,7 +83,7 @@ class PanelTextExtraction(FrozenModel):
     width: int = Field(ge=1)
     height: int = Field(ge=1)
     review_confidence_threshold: float = Field(ge=0.0, le=1.0)
-    regions: tuple[PanelTextRegion, ...] = Field(default=(), max_length=10000)
+    regions: tuple[PanelTextRegion, ...] = Field(default=(), max_length=_MAX_PANEL_REGIONS)
     evidence: OCRInvocationEvidence
 
     @model_validator(mode="after")
@@ -89,6 +94,8 @@ class PanelTextExtraction(FrozenModel):
         ids = tuple(region.region_id for region in self.regions)
         if len(set(ids)) != len(ids):
             raise ValueError("panel OCR region IDs must be unique")
+        if sum(len(region.raw_text) for region in self.regions) > _MAX_PANEL_RAW_TEXT_CHARS:
+            raise ValueError("panel OCR raw text exceeds manifest budget")
         return self
 
     @property
@@ -138,7 +145,11 @@ def _review_task_for(extraction: PanelTextExtraction) -> ReviewTask | None:
     uncertain = extraction.uncertain_region_ids
     if not uncertain:
         return None
+    if len(uncertain) > _MAX_REVIEW_REGIONS:
+        raise PanelOCRValidationError("uncertain OCR region count exceeds review-task budget")
     by_id = {region.region_id: region for region in extraction.regions}
+    if sum(len(by_id[region_id].raw_text) for region_id in uncertain) > _MAX_REVIEW_RAW_TEXT_CHARS:
+        raise PanelOCRValidationError("uncertain OCR raw text exceeds review-task budget")
     payload_regions = [
         {
             "region_id": region_id,
@@ -177,6 +188,10 @@ def prepare_panel_ocr(
         raise PanelOCRNotFoundError(f"unknown project scene: {scene_id}")
     if scene.media is None:
         raise PanelOCRValidationError("panel OCR scene has no media asset")
+    if len(result.regions) > _MAX_PANEL_REGIONS:
+        raise PanelOCRValidationError("OCR region count exceeds panel manifest budget")
+    if sum(len(region.raw_text) for region in result.regions) > _MAX_PANEL_RAW_TEXT_CHARS:
+        raise PanelOCRValidationError("OCR raw text exceeds panel manifest budget")
 
     extraction = PanelTextExtraction(
         project_id=project.project_id,
@@ -299,8 +314,6 @@ class PanelOCRWorkflow:
                 raise PanelOCRConflictError(
                     "retained OCR extraction uses different semantic request hints; explicit re-OCR is required"
                 )
-            # PR18 v1 has no implicit re-OCR. Repeating the exact operation is an
-            # idempotent read of the retained raw/corrected snapshot.
             return project
 
         result = self.provider.extract(request)
@@ -378,12 +391,16 @@ class PanelOCRWorkflow:
                 f"OCR corrections must cover exactly uncertain regions; missing={missing}, extra={extra}"
             )
         normalized: dict[str, str] = {}
+        correction_chars = 0
         for region_id, text in corrections.items():
             if not isinstance(text, str) or not text.strip():
                 raise PanelOCRValidationError("OCR corrected text must be non-empty")
             cleaned = text.strip()
             if len(cleaned) > 30000:
-                raise PanelOCRValidationError("OCR corrected text exceeds limit")
+                raise PanelOCRValidationError("OCR corrected text exceeds per-region limit")
+            correction_chars += len(cleaned)
+            if correction_chars > _MAX_CORRECTION_TEXT_CHARS:
+                raise PanelOCRValidationError("OCR corrections exceed accepted-text budget")
             normalized[region_id] = cleaned
 
         regions = tuple(
