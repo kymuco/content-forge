@@ -120,11 +120,17 @@ class _VoiceCastRepository:
             ).fetchall()
         return tuple(self._decode(str(row["manifest_json"])) for row in rows)
 
-    def put(self, definition: VoiceCastDefinition) -> VoiceCastRevision:
+    def put(
+        self,
+        definition: VoiceCastDefinition,
+        *,
+        reference_audio_sha256: str | None,
+    ) -> VoiceCastRevision:
         digest = cast_definition_digest(
             cast_id=definition.cast_id,
             display_name=definition.display_name,
             settings=definition.settings,
+            reference_audio_sha256=reference_audio_sha256,
         )
         with self.database.transaction() as connection:
             row = connection.execute(
@@ -143,6 +149,7 @@ class _VoiceCastRepository:
                 revision=next_revision,
                 display_name=definition.display_name,
                 settings=definition.settings,
+                reference_audio_sha256=reference_audio_sha256,
                 definition_sha256=digest,
                 created_at=datetime.now(timezone.utc),
             )
@@ -173,10 +180,19 @@ class VoiceCastRegistry:
         self.library = library
         self.repository = _VoiceCastRepository(library).initialize()
 
-    def _validate_reference(self, settings) -> None:
+    def _validate_reference(
+        self,
+        settings,
+        *,
+        expected_sha256: str | None = None,
+    ) -> str | None:
         reference_asset_id = settings.reference_asset_id
         if reference_asset_id is None:
-            return
+            if expected_sha256 is not None:
+                raise VoiceCastConflictError(
+                    "voice cast retained a reference digest without a reference asset"
+                )
+            return None
         asset = self.library.database.get_asset(reference_asset_id)
         if asset is None:
             raise VoiceCastNotFoundError(
@@ -184,23 +200,34 @@ class VoiceCastRegistry:
             )
         if asset.media_type is not MediaType.AUDIO:
             raise VoiceCastValidationError("voice cast reference asset must be audio")
+        if expected_sha256 is not None and asset.sha256 != expected_sha256:
+            raise VoiceCastConflictError(
+                "voice cast reference asset no longer matches its pinned content digest"
+            )
         try:
             verified = self.library.assets.verify(asset)
         except (FileNotFoundError, OSError) as exc:
             raise VoiceCastConflictError("voice cast reference audio bytes are unavailable") from exc
         if not verified:
             raise VoiceCastConflictError("voice cast reference audio failed content verification")
+        return asset.sha256
 
     def put(self, definition: VoiceCastDefinition) -> VoiceCastRevision:
-        self._validate_reference(definition.settings)
-        return self.repository.put(definition)
+        reference_sha256 = self._validate_reference(definition.settings)
+        return self.repository.put(
+            definition,
+            reference_audio_sha256=reference_sha256,
+        )
 
     def get(self, cast_id: str, revision: int | None = None) -> VoiceCastRevision:
         item = self.repository.get(cast_id, revision)
         if item is None:
             suffix = "latest" if revision is None else str(revision)
             raise VoiceCastNotFoundError(f"unknown voice cast revision: {cast_id}@{suffix}")
-        self._validate_reference(item.settings)
+        self._validate_reference(
+            item.settings,
+            expected_sha256=item.reference_audio_sha256,
+        )
         return item
 
     def list_latest(self, *, limit: int = MAX_CAST_ENTRIES) -> tuple[VoiceCastRevision, ...]:
@@ -208,7 +235,10 @@ class VoiceCastRegistry:
             raise VoiceCastValidationError("voice cast list limit is outside allowed range")
         items = self.repository.list_latest(limit=limit)
         for item in items:
-            self._validate_reference(item.settings)
+            self._validate_reference(
+                item.settings,
+                expected_sha256=item.reference_audio_sha256,
+            )
         return items
 
 
