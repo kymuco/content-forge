@@ -13,7 +13,7 @@ from content_forge.core import Project
 from .dialogue import DialogueError
 from .review import ReviewNotReadyError
 from .review_seventh_hardening import ReviewService as _BaseReviewService
-from .voiced_scene import VoicedSceneError, voiced_scene_manifest
+from .voiced_scene import VoicedSceneError
 from .voiced_scene_hardening import VoicedSceneWorkflow
 from .voiced_story import VoicedStoryError, voiced_story_manifest
 
@@ -32,24 +32,19 @@ def _require_pr23_render_authority(self: _BaseReviewService, project: Project) -
         return
 
     try:
-        stored = voiced_scene_manifest(project)
-        if stored is None:
-            raise ReviewNotReadyError(
-                "materialized PR22 voiced story requires PR23 presentation before render"
-            )
-        workflow = VoicedSceneWorkflow(self.library)
         # Validate from the exact Project object supplied by PR10. Do not call
         # workflow.manifest(project_id), which would take a second database snapshot and
         # introduce a TOCTOU gap between review claim validation and compilation.
-        base = workflow._base_project(project, stored)
-        expected = workflow.derive(base, preset=stored.plan.preset)
-        if expected != stored.plan:
+        VoicedSceneWorkflow(self.library).validate_snapshot(project)
+    except VoicedSceneError as exc:
+        if "no materialized PR23" in str(exc):
             raise ReviewNotReadyError(
-                "materialized PR23 presentation is stale for current voiced project"
-            )
-    except ReviewNotReadyError:
-        raise
-    except (VoicedSceneError, DialogueError, VoicedStoryError) as exc:
+                "materialized PR22 voiced story requires PR23 presentation before render"
+            ) from exc
+        raise ReviewNotReadyError(
+            f"materialized PR23 presentation authority is invalid: {exc}"
+        ) from exc
+    except (DialogueError, VoicedStoryError) as exc:
         raise ReviewNotReadyError(
             f"materialized PR23 presentation authority is invalid: {exc}"
         ) from exc
