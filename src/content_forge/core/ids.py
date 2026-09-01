@@ -14,7 +14,7 @@ from uuid import uuid4
 from pydantic import StringConstraints
 
 ENTITY_ID_PATTERN = re.compile(
-    r"^cf_(asset|source|project|variant|scene|overlay|audio|review|suggestion|job)_[0-9a-f]{32}$"
+    r"^cf_(asset|source|project|variant|scene|overlay|audio|review|suggestion|job|publish)_[0-9a-f]{32}$"
 )
 REGISTRY_KEY_REGEX = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
 
@@ -40,6 +40,7 @@ class EntityKind(StrEnum):
     REVIEW = "review"
     SUGGESTION = "suggestion"
     JOB = "job"
+    PUBLISH = "publish"
 
 
 def new_entity_id(kind: EntityKind) -> str:
