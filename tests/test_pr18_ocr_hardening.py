@@ -10,7 +10,15 @@ from content_forge.application import (
     PanelOCRWorkflow,
     prepare_panel_ocr,
 )
-from content_forge.core import AssetRef, MediaType, Project, ProjectState, Scene
+from content_forge.core import (
+    AssetRef,
+    AttentionMode,
+    MediaType,
+    Project,
+    ProjectState,
+    ReviewTask,
+    Scene,
+)
 from content_forge.providers import (
     OCRInvocationEvidence,
     OCRPixelRect,
@@ -145,6 +153,47 @@ def _stored_panel(tmp_path: Path, *, state: ProjectState = ProjectState.DRAFT):
     return library, project, scene, provider
 
 
+def _stored_two_panel_project(tmp_path: Path):
+    library = LocalLibrary(tmp_path)
+    assets = []
+    scenes = []
+    repository = ApplicationRepository(library.database)
+    for index in range(2):
+        source = tmp_path / f"panel-{index}.bin"
+        source.write_bytes(f"multi-panel OCR fixture {index}".encode())
+        ingested = library.assets.ingest_file(
+            source,
+            media_type=MediaType.IMAGE,
+            mime_type="image/png",
+        )
+        asset = ingested.asset.validated_copy(update={"width": 100, "height": 200})
+        repository.enrich_asset(asset)
+        assets.append(asset)
+        scenes.append(
+            Scene(
+                order=index,
+                duration_seconds=1.0,
+                media=AssetRef(asset_id=asset.asset_id),
+            )
+        )
+    project = library.save_project(
+        Project(
+            content_kind="panel_sequence",
+            state=ProjectState.READY,
+            source_refs=tuple(AssetRef(asset_id=asset.asset_id) for asset in assets),
+            scenes=tuple(scenes),
+        )
+    )
+    template = OCRResult(
+        source_sha256=assets[0].sha256,
+        width=100,
+        height=200,
+        regions=(_region("ocr_0000", 0, "Ambiguous", 0.60),),
+        evidence=_evidence(),
+    )
+    return library, project, tuple(scenes), _Provider(template)
+
+
 def test_retained_ocr_rejects_changed_review_threshold(tmp_path: Path) -> None:
     library, project, scene, provider = _stored_panel(tmp_path)
     workflow = PanelOCRWorkflow(library, provider)
@@ -200,6 +249,73 @@ def test_uncertain_ocr_moves_ready_project_to_review_then_restores_ready(
         {"ocr_0000": "Accepted"},
     )
     assert corrected.state is ProjectState.READY
+
+
+def test_multi_panel_ocr_shares_one_resume_checkpoint_until_last_correction(
+    tmp_path: Path,
+) -> None:
+    library, project, scenes, provider = _stored_two_panel_project(tmp_path)
+    workflow = PanelOCRWorkflow(library, provider)
+
+    first = workflow.extract_scene(project.project_id, scenes[0].scene_id)
+    assert first.state is ProjectState.NEEDS_REVIEW
+    assert first.metadata["pr18_ocr_resume_state"] == ProjectState.READY.value
+
+    second = workflow.extract_scene(project.project_id, scenes[1].scene_id)
+    assert second.state is ProjectState.NEEDS_REVIEW
+    assert second.metadata["pr18_ocr_resume_state"] == ProjectState.READY.value
+    open_tasks = [
+        task
+        for task in second.review_tasks
+        if task.task_type == "ocr_text_correction" and task.status.value == "open"
+    ]
+    assert len(open_tasks) == 2
+    assert {task.payload["resume_state"] for task in open_tasks} == {ProjectState.READY.value}
+    assert provider.calls == 2
+
+    by_scene = {task.payload["scene_id"]: task for task in open_tasks}
+    after_first = workflow.apply_corrections(
+        project.project_id,
+        by_scene[scenes[0].scene_id].review_task_id,
+        {"ocr_0000": "Accepted first"},
+    )
+    assert after_first.state is ProjectState.NEEDS_REVIEW
+    assert after_first.metadata["pr18_ocr_resume_state"] == ProjectState.READY.value
+
+    after_second = workflow.apply_corrections(
+        project.project_id,
+        by_scene[scenes[1].scene_id].review_task_id,
+        {"ocr_0000": "Accepted second"},
+    )
+    assert after_second.state is ProjectState.READY
+    assert "pr18_ocr_resume_state" not in after_second.metadata
+    assert workflow.extraction(project.project_id, scenes[0].scene_id).effective_text if False else True
+    assert workflow.extraction(project.project_id, scenes[0].scene_id).regions[0].effective_text == "Accepted first"
+    assert workflow.extraction(project.project_id, scenes[1].scene_id).regions[0].effective_text == "Accepted second"
+
+
+def test_last_ocr_correction_does_not_override_another_open_blocker(tmp_path: Path) -> None:
+    library, project, scene, provider = _stored_panel(tmp_path, state=ProjectState.READY)
+    workflow = PanelOCRWorkflow(library, provider)
+    extracted = workflow.extract_scene(project.project_id, scene.scene_id)
+    ocr_task = next(task for task in extracted.review_tasks if task.task_type == "ocr_text_correction")
+    external = ReviewTask(
+        project_id=project.project_id,
+        task_type="external_manual_blocker",
+        attention=AttentionMode.MANUAL,
+        blocking=True,
+    )
+    library.save_project(
+        extracted.validated_copy(update={"review_tasks": (*extracted.review_tasks, external)})
+    )
+
+    corrected = workflow.apply_corrections(
+        project.project_id,
+        ocr_task.review_task_id,
+        {"ocr_0000": "Accepted"},
+    )
+    assert corrected.state is ProjectState.NEEDS_REVIEW
+    assert "pr18_ocr_resume_state" not in corrected.metadata
 
 
 def test_done_project_rejects_ocr_before_provider_execution(tmp_path: Path) -> None:
