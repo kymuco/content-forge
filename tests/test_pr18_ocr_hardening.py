@@ -10,7 +10,7 @@ from content_forge.application import (
     PanelOCRWorkflow,
     prepare_panel_ocr,
 )
-from content_forge.core import AssetRef, MediaType, Project, Scene
+from content_forge.core import AssetRef, MediaType, Project, ProjectState, Scene
 from content_forge.providers import (
     OCRInvocationEvidence,
     OCRPixelRect,
@@ -110,7 +110,7 @@ class _Provider:
         )
 
 
-def _stored_panel(tmp_path: Path):
+def _stored_panel(tmp_path: Path, *, state: ProjectState = ProjectState.DRAFT):
     library = LocalLibrary(tmp_path)
     source = tmp_path / "panel.bin"
     source.write_bytes(b"retained OCR policy fixture")
@@ -129,6 +129,7 @@ def _stored_panel(tmp_path: Path):
     project = library.save_project(
         Project(
             content_kind="panel_sequence",
+            state=state,
             source_refs=(AssetRef(asset_id=asset.asset_id),),
             scenes=(scene,),
         )
@@ -180,3 +181,31 @@ def test_retained_ocr_rejects_changed_semantic_language_hints(tmp_path: Path) ->
             language_hints=("ja",),
         )
     assert provider.calls == 1
+
+
+def test_uncertain_ocr_moves_ready_project_to_review_then_restores_ready(
+    tmp_path: Path,
+) -> None:
+    library, project, scene, provider = _stored_panel(tmp_path, state=ProjectState.READY)
+    workflow = PanelOCRWorkflow(library, provider)
+
+    extracted = workflow.extract_scene(project.project_id, scene.scene_id)
+    assert extracted.state is ProjectState.NEEDS_REVIEW
+    task = next(task for task in extracted.review_tasks if task.task_type == "ocr_text_correction")
+    assert task.payload["resume_state"] == ProjectState.READY.value
+
+    corrected = workflow.apply_corrections(
+        project.project_id,
+        task.review_task_id,
+        {"ocr_0000": "Accepted"},
+    )
+    assert corrected.state is ProjectState.READY
+
+
+def test_done_project_rejects_ocr_before_provider_execution(tmp_path: Path) -> None:
+    library, project, scene, provider = _stored_panel(tmp_path, state=ProjectState.DONE)
+    workflow = PanelOCRWorkflow(library, provider)
+
+    with pytest.raises(PanelOCRConflictError, match="state done"):
+        workflow.extract_scene(project.project_id, scene.scene_id)
+    assert provider.calls == 0
