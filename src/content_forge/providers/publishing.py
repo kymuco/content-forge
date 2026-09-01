@@ -6,14 +6,16 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
 from content_forge.core import EntityKind, RegistryKey, require_entity_id
 from content_forge.core.models import FrozenModel, SHA256
-from content_forge.orchestration import RenderArtifactManifest
+
+if TYPE_CHECKING:
+    from content_forge.orchestration.models import RenderArtifactManifest
 
 _PUBLISH_CONTRACT_VERSION = "pr27_publish_contract_v1"
 PublishVisibility = Literal["private", "unlisted", "public"]
