@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import math
+import struct
+import wave
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal
@@ -174,16 +176,27 @@ def _finite_samples(waveform: object) -> tuple[float, ...]:
     return samples
 
 
+def _pcm16_sample(value: float) -> int:
+    if value <= -1.0:
+        return -32768
+    if value >= 1.0:
+        return 32767
+    return int(round(value * 32767.0))
+
+
 def _write_pcm16_wav(path: Path, samples: tuple[float, ...], sample_rate: int) -> None:
-    try:
-        import soundfile as sf
-    except Exception as exc:  # pragma: no cover - included by the optional Qwen runtime
-        raise TTSUnavailableError("soundfile is unavailable in the Qwen3-TTS runtime") from exc
     path.parent.mkdir(parents=True, exist_ok=True)
+    frames = bytearray()
+    for sample in samples:
+        frames.extend(struct.pack("<h", _pcm16_sample(sample)))
     try:
-        sf.write(str(path), samples, sample_rate, format="WAV", subtype="PCM_16")
-    except Exception as exc:
-        raise TTSExecutionError("failed to encode Qwen3-TTS waveform as PCM WAV") from exc
+        with wave.open(str(path), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(bytes(frames))
+    except (wave.Error, OSError) as exc:
+        raise TTSExecutionError("failed to encode Qwen3-TTS waveform as PCM16 WAV") from exc
 
 
 def _sha256_file(path: Path) -> str:
@@ -221,9 +234,10 @@ class QwenTTSProvider:
         return tts_config_digest(self.config.model_dump(mode="json"))
 
     def health(self) -> TTSProviderHealth:
+        """Report package/config identity without loading multi-gigabyte model weights."""
+
         try:
             version = self._provider_version()
-            self._get_runtime()
         except TTSUnavailableError as exc:
             return TTSProviderHealth(
                 provider_id=_PROVIDER_ID,
@@ -232,15 +246,6 @@ class QwenTTSProvider:
                 config_sha256=self._config_sha256(),
                 available=False,
                 reason=str(exc),
-            )
-        except Exception as exc:
-            return TTSProviderHealth(
-                provider_id=_PROVIDER_ID,
-                provider_version=self._provider_version_override or "unknown",
-                model_id=self.config.model_id,
-                config_sha256=self._config_sha256(),
-                available=False,
-                reason=f"Qwen3-TTS health check failed: {type(exc).__name__}",
             )
         return TTSProviderHealth(
             provider_id=_PROVIDER_ID,
@@ -256,10 +261,7 @@ class QwenTTSProvider:
         if self.config.mode == "voice_clone":
             if request.reference is None:
                 raise TTSResponseError("Qwen3-TTS voice_clone requires reference audio")
-            if (
-                not request.reference.x_vector_only_mode
-                and request.reference.text is None
-            ):
+            if not request.reference.x_vector_only_mode and request.reference.text is None:
                 raise TTSResponseError(
                     "Qwen3-TTS voice_clone requires reference text unless x_vector_only_mode is enabled"
                 )
