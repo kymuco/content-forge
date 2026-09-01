@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from content_forge.application import (
@@ -31,6 +31,7 @@ from content_forge.application import (
     VoicedStoryWorkflow,
 )
 from content_forge.storage import LocalLibrary
+from content_forge.web import static_path
 
 from .app import _transport_is_secure
 
@@ -162,6 +163,17 @@ def install_voiced_story_routes(
             return auth.authenticate(token)
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    @app.get("/app/voiced-story.js", include_in_schema=False)
+    def voiced_story_script() -> FileResponse:
+        response = FileResponse(
+            static_path("voiced-story.js"),
+            media_type="text/javascript; charset=utf-8",
+        )
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.get("/api/v1/voiced-story/projects/{project_id}/preview")
     def preview_story(
