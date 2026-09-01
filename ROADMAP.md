@@ -4,9 +4,10 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR16: **complete** in the intended post-merge repository state.
-- Next step: **PR17 — Batch preparation, render queue, QC, and reproducibility**.
-- Current milestone: **Milestone 4 — Optional intelligence and variants**.
+- PR1–PR17: **complete** in the intended post-merge repository state.
+- Current step: **PR18 — OCR provider and panel text extraction workflow**.
+- Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
+- The intended **v0.1 batch-production boundary is complete through PR17**.
 
 ## Milestone 0 — Foundation
 
@@ -288,22 +289,24 @@ Exit condition: one source project can produce multiple language variants withou
 
 ### PR17 — Batch preparation, render queue, QC, and reproducibility
 
-Status: **next**
+Status: **complete**
 
 Deliverables:
 
-- persistent SQLite render/job queue building on the PR7 render-attempt contract;
-- crash-safe resume;
+- persistent batch coordination over the existing PR7 SQLite render/job contract;
+- crash-safe frozen-plan interruption recovery;
 - batch preview/final render;
-- source-hash, template-version, renderer-version, accepted-text, and provider-parameter manifest;
+- source-hash, template-version, renderer-version, accepted-text, and provider-parameter manifests;
 - QC for duration, dimensions, missing audio/assets, overflow, safe zones, black frames where practical, and render failures;
-- export sidecar metadata.
+- authenticated export/reproducibility sidecars.
 
 Exit condition: v0.1 can reliably process a batch of projects end-to-end.
 
 ### v0.1 release boundary
 
-v0.1 is complete when the following flow is boring and reliable:
+Status: **implemented through PR17**
+
+The following production flow now has a durable implementation boundary:
 
 ```text
 Phone discovery
@@ -313,18 +316,20 @@ Phone discovery
 -> select or accept template
 -> review small decisions on phone
 -> fast preview
--> final NVENC render
--> QC
--> MP4 + metadata export
+-> final render
+-> batch/QC
+-> MP4 + reproducibility metadata export
 ```
 
-v0.1 intentionally excludes automatic publishing, broad web scraping, full OCR automation, and voiced-story production.
+v0.1 intentionally excludes automatic publishing, broad web scraping, and voiced-story production. OCR/voiced-panel work begins after this boundary rather than being required by it.
 
 ---
 
 ## Milestone 5 — Voiced panels and persistent cast
 
 ### PR18 — OCR provider and panel text extraction workflow
+
+Status: **in progress**
 
 Deliverables:
 
@@ -334,6 +339,8 @@ Deliverables:
 - review tasks for uncertain text;
 - original OCR output retained alongside corrected text;
 - no automatic speaker guessing required for release.
+
+Exit condition: a verified panel image can produce retained raw text/geometry/confidence/provider evidence and bounded human correction work without speaker attribution or a second review authority.
 
 ### PR19 — Dialogue scene model and speaker assignment
 

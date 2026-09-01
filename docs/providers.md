@@ -6,15 +6,15 @@ Providers isolate capabilities that are useful but should remain replaceable, op
 
 Core project state, timelines, rendering, and storage must not depend directly on a particular LLM, OCR package, TTS model, source website, or publishing API.
 
-The initial provider families are:
+The provider families are:
 
 ```text
-LLMProvider
-OCRProvider (later)
-TTSProvider (later)
-SourceProvider (later)
-PublishingProvider (later)
-AnalyticsProvider (later)
+LLMProvider       # implemented in PR15
+OCRProvider       # implemented in PR18
+TTSProvider       # later
+SourceProvider    # later
+PublishingProvider # later
+AnalyticsProvider # later
 ```
 
 ## General provider rules
@@ -22,20 +22,19 @@ AnalyticsProvider (later)
 Every provider integration should follow these rules where applicable:
 
 1. **Optionality.** Disabling the provider should degrade a feature, not make unrelated rendering/storage fail.
-2. **Attribution.** Generated suggestions/artifacts should retain provider/model/config metadata when useful for reproduction.
-3. **Caching.** Repeatable expensive calls should be cached by semantic input.
-4. **No silent canonical overwrite.** Suggested values never replace accepted human values without an explicit workflow rule.
-5. **Structured failures.** Provider errors become task/job failures with retry/fallback behavior, not corrupted project files.
-6. **Secrets stay local.** Cookies, tokens, credentials, and provider session data are runtime configuration and never repository content.
+2. **Attribution.** Generated suggestions/artifacts retain provider/model/config metadata when useful for reproduction.
+3. **Semantic identity.** Repeatable expensive calls are identified from semantic input rather than machine-local paths/session details.
+4. **No silent canonical overwrite.** Suggested or extracted values never replace accepted human values without an explicit workflow rule.
+5. **Structured failures.** Provider errors become bounded workflow failures, not corrupted project files.
+6. **Secrets stay local.** Cookies, tokens, credentials, model weights, and provider session data are runtime configuration and never repository content.
 7. **Narrow interfaces.** Providers expose capabilities the application needs, not their entire underlying SDK/API.
+8. **Evidence before mutation.** Provider output is validated before durable project state is updated.
 
 ## `LLMProvider`
 
-The first real implementation is expected to use `chatgpt-web-adapter`.
+PR15 implements the task-oriented LLM boundary and the first adapter through `chatgpt-web-adapter`.
 
-The interface should be task-oriented rather than exposing arbitrary provider internals throughout the codebase.
-
-Conceptual capabilities:
+The public capabilities are:
 
 ```python
 class LLMProvider(Protocol):
@@ -46,7 +45,7 @@ class LLMProvider(Protocol):
     def classify(self, request: ClassificationRequest) -> ClassificationResult: ...
 ```
 
-The exact Python contracts will be frozen in implementation PRs.
+Generated values remain proposals. Existing `ReviewSuggestion` / `ReviewTask` authority decides when a proposal becomes accepted canonical state.
 
 ### Appropriate uses
 
@@ -75,11 +74,11 @@ Output is several candidate hooks, not an automatically accepted headline by def
 
 #### OCR cleanup
 
-Later OCR providers return raw extracted text. The LLM can propose normalized punctuation/spelling while preserving raw OCR and requiring review when ambiguity matters.
+PR18 retains raw OCR separately. An LLM may later propose normalized punctuation/spelling through the PR15 text-cleanup contract, but that proposal must never erase raw OCR or bypass OCR correction authority.
 
 #### Translation/localization
 
-Translate accepted hooks/subtitles/metadata into project variants. The translation should be stored as variant data with provenance, not regenerated every render.
+Translate accepted hooks/subtitles/metadata into project variants. Translation is stored as variant data with provenance rather than regenerated during every render.
 
 #### Classification/tag suggestions
 
@@ -90,7 +89,7 @@ The LLM can suggest:
 - game/character/topic tags;
 - moment type.
 
-These are convenience features. Asset identity and project validity do not depend on them.
+These remain convenience features. Asset identity and project validity do not depend on them.
 
 ### Inappropriate uses
 
@@ -106,53 +105,92 @@ Do not use the LLM to:
 
 ## `chatgpt-web-adapter` integration
 
-The implementation should be wrapped in a provider module so Content Forge depends on its own stable request/result models.
-
-Conceptually:
+Content Forge depends on its own stable request/result models and wraps the external adapter:
 
 ```text
 Content Forge task request
 -> LLMProvider adapter
 -> chatgpt-web-adapter
 -> model response
--> parser/validation
--> Content Forge suggestion result
+-> strict parser/schema/allowlist validation
+-> Content Forge proposal result
 ```
 
-The adapter should handle:
+The adapter is optional. Manual fields and deterministic workflows remain usable without a ChatGPT session.
 
-- timeout/cancellation;
-- malformed response parsing;
-- unavailable session;
-- provider-specific errors;
-- request logging without leaking secrets;
-- bounded retries where safe.
+## `OCRProvider`
 
-If the adapter is unavailable, manual fields and deterministic workflows remain usable.
+PR18 freezes the first OCR provider contract:
 
-## `OCRProvider` (later)
+```python
+class OCRProvider(Protocol):
+    def health(self) -> OCRProviderHealth: ...
+    def extract(self, request: OCRRequest) -> OCRResult: ...
+```
 
-Conceptual result:
+The normalized result contains:
 
 ```text
 regions[]:
+  region_id
+  provider_index
   bbox
+  polygon
   raw_text
   confidence
   language (optional)
+
+evidence:
+  provider/version
+  model
+  engine
+  semantic request digest
+  provider config digest
 ```
 
-The provider should not be required to solve speaker attribution. OCR extracts text/regions; dialogue workflow decides reading order/speakers with human review as needed.
+OCR does **not** solve speaker attribution or dialogue order. Provider ordering is retained as evidence only; PR19 owns reading flow/speaker assignment with explicit human authority where needed.
 
-Candidate implementations can be benchmarked later rather than selected in the architecture phase.
+### Source/integrity boundary
 
-Requirements:
+The panel workflow verifies content-addressed source bytes before OCR execution, passes source SHA-256 and authoritative dimensions into the request, and requires returned source identity plus request evidence to match before persisting anything.
 
-- local execution preferred;
-- preserve raw result;
-- confidence available where provider supports it;
-- cache by source hash + provider/model/config;
-- correction stored separately from raw OCR.
+Source geometry is pixel-based and fail closed: malformed/non-finite geometry, boxes outside source dimensions, and inconsistent recognition arrays are rejected.
+
+### First local adapter: PaddleOCR
+
+The first implementation is a lazy `PaddleOCRProvider` targeting PaddleOCR 3.x (currently the 3.7 generation).
+
+The adapter consumes structured pipeline fields:
+
+```text
+rec_texts
+rec_scores
+rec_polys
+rec_boxes
+```
+
+NumPy-backed values are normalized to ordinary sequences and then validated into Content Forge models.
+
+Document orientation classification/unwarping are disabled for the first contract so retained coordinates stay in the original source-image coordinate system. Text-line orientation is also disabled by default. The provider records the selected PaddleOCR model/version/engine/config as evidence.
+
+PaddleOCR and its inference engine are **not** base Content Forge dependencies. A production machine installs its chosen compatible local OCR runtime separately; base rendering/storage/batch behavior remains identical without it.
+
+### Durable OCR result and correction
+
+PR18 stores a versioned per-scene extraction snapshot under project metadata. Raw text remains immutable evidence and human correction is stored separately:
+
+```text
+raw_text
+corrected_text | None
+```
+
+Only regions below the explicit confidence threshold are automatically surfaced as `ocr_text_correction` review work. The retained extraction is idempotent for the same semantic OCR request; different language hints or review policy fail closed instead of silently rerunning/replacing OCR.
+
+Panel-level and review-task budgets bound the amount of provider text/geometry that may enter a project manifest.
+
+PR18's retained project snapshot is the first cache/reuse boundary: reopening or retrying the same scene does not call OCR again. A future cross-project OCR cache can reuse the same semantic request/config evidence without changing this authority model.
+
+See [`pr18-ocr-panel-text.md`](pr18-ocr-panel-text.md) for the complete contract.
 
 ## `TTSProvider` (later)
 
@@ -221,7 +259,7 @@ Characters map to cast entries. This keeps narrative identity stable even if the
 
 ## `SourceProvider` (later)
 
-Content Forge v0.1 should accept uploads and URL records without becoming a scraping framework.
+Content Forge v0.1 accepts uploads and URL records without becoming a scraping framework.
 
 A future source provider may support a specific service/API where technically and contractually appropriate.
 
@@ -280,27 +318,29 @@ providers:
     kind: chatgpt_web_adapter
     enabled: true
 
+  ocr:
+    kind: paddleocr_local
+    enabled: false
+
   tts:
     kind: qwen_local
     enabled: false
-
-  ocr:
-    kind: ...
-    enabled: false
 ```
 
-Secrets/session details must live outside committed config files, ideally through OS/user-local configuration.
+Secrets/session details and local model/runtime configuration live outside committed config files.
 
 ## Testing
 
-Core and workflow tests should use fake providers implementing the same protocols.
+Core and workflow tests use fake/injected providers implementing the same protocols.
 
 This allows CI to test:
 
-- suggestion acceptance/rejection;
-- provider failure fallback;
-- cache behavior;
+- proposal acceptance/rejection;
+- strict provider-output parsing;
+- source/request evidence validation;
+- raw OCR versus corrected-text retention;
+- confidence/review boundaries;
 - deterministic project state;
-- dialogue timing with synthetic audio
+- future dialogue timing with synthetic audio
 
-without needing a live ChatGPT session, GPU TTS model, or external service.
+without needing a live ChatGPT session, downloaded OCR model weights, GPU TTS model, or external service.

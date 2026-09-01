@@ -10,6 +10,18 @@ from .models import (
     PairingChallenge,
     PreparationState,
 )
+from .panel_ocr import (
+    PanelOCRConflictError,
+    PanelOCRError,
+    PanelOCRNotFoundError,
+    PanelOCRPreparation,
+    PanelOCRValidationError,
+    PanelOCRWorkflow,
+    PanelTextExtraction,
+    PanelTextRegion,
+    panel_extraction_digest,
+    prepare_panel_ocr,
+)
 from .repository import ApplicationRepository
 from .review import (
     ReviewConflictError,
@@ -36,6 +48,14 @@ __all__ = [
     "IntakeState",
     "IssuedSession",
     "PairingChallenge",
+    "PanelOCRConflictError",
+    "PanelOCRError",
+    "PanelOCRNotFoundError",
+    "PanelOCRPreparation",
+    "PanelOCRValidationError",
+    "PanelOCRWorkflow",
+    "PanelTextExtraction",
+    "PanelTextRegion",
     "PreparationState",
     "ReviewConflictError",
     "ReviewError",
@@ -45,4 +65,6 @@ __all__ = [
     "ReviewService",
     "ReviewValidationError",
     "UploadTooLargeError",
+    "panel_extraction_digest",
+    "prepare_panel_ocr",
 ]
