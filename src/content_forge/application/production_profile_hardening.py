@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from content_forge.core import Project, ProjectState
+from content_forge.storage import LocalLibrary
+from content_forge.templates import RegistryBundle
 
 from . import production_profile as _base
 
@@ -13,8 +15,43 @@ _PROFILE_MUTABLE_STATES = frozenset(
 )
 
 
+class ProductionProfileRegistry(_base.ProductionProfileRegistry):
+    """Final registry surface with validated latest-revision listing."""
+
+    def list_latest(self, *, limit: int = 256) -> tuple[_base.ProductionProfileRevision, ...]:
+        if limit < 1 or limit > 256:
+            raise _base.ProductionProfileValidationError(
+                "production profile list limit is outside allowed range"
+            )
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT current.manifest_json
+                FROM production_profile_revisions AS current
+                WHERE current.revision = (
+                    SELECT MAX(candidate.revision)
+                    FROM production_profile_revisions AS candidate
+                    WHERE candidate.profile_id = current.profile_id
+                )
+                ORDER BY current.profile_id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        items = tuple(
+            self.repository._decode(str(row["manifest_json"])) for row in rows
+        )
+        for item in items:
+            self._validate_definition(item.definition)
+        return items
+
+
 class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
     """Final PR25 workflow with reversible ownership of filled defaults."""
+
+    def __init__(self, library: LocalLibrary, registries: RegistryBundle) -> None:
+        self.library = library
+        self.registry = ProductionProfileRegistry(library, registries)
 
     def _validate_snapshot_revision(
         self,
@@ -133,4 +170,4 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         return self._cas_project(expected_json, updated)
 
 
-__all__ = ["ProductionProfileWorkflow"]
+__all__ = ["ProductionProfileRegistry", "ProductionProfileWorkflow"]
