@@ -135,6 +135,36 @@
       <div id="voiced-scene-scenes" class="review-list" aria-live="polite"></div>
       <p id="voiced-scene-status" class="status"></p>
     </section>
+    <section id="production-profile-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">PRODUCTION PROFILES</p><h2>Project / series / channel defaults</h2></div>
+        <span id="production-profile-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Profiles are immutable revisioned defaults, not hidden live configuration. Binding records an exact snapshot on the Project; rebind and unbind only replace values previously owned by PR25.</p>
+      <div id="production-profile-registry" class="review-list" aria-live="polite"></div>
+      <form id="production-profile-create-form" class="stack compact">
+        <strong>Create or revise a profile</strong>
+        <label>Profile ID<input id="production-profile-id" maxlength="128" placeholder="main_channel" required></label>
+        <label>Display name<input id="production-profile-name" maxlength="512" placeholder="Main channel" required></label>
+        <label>Scope<select id="production-profile-scope"><option value="project">Project</option><option value="series">Series</option><option value="channel" selected>Channel</option></select></label>
+        <label>Default template<select id="production-profile-template"><option value="">No template default</option><option value="hook_overlay@1.0">Hook overlay</option><option value="content_frame@1.0">Content frame</option><option value="panel_sequence@1.0">Panel sequence</option></select></label>
+        <label>Default languages<input id="production-profile-languages" maxlength="512" placeholder="en, ja"></label>
+        <button class="secondary" type="submit">Save profile revision</button>
+      </form>
+      <div class="stack compact">
+        <strong>Bind a Project snapshot</strong>
+        <label>Project ID<input id="production-profile-project" list="production-profile-project-options" placeholder="Choose a recent project or paste its ID"></label>
+        <datalist id="production-profile-project-options"></datalist>
+        <label>Profile revision<select id="production-profile-select"><option value="">Choose production profile…</option></select></label>
+        <div class="row">
+          <button id="production-profile-load-project" class="secondary" type="button">Load project profile</button>
+          <button id="production-profile-bind" class="primary" type="button">Bind / rebind</button>
+          <button id="production-profile-unbind" class="ghost" type="button" disabled>Unbind</button>
+        </div>
+      </div>
+      <div id="production-profile-project-view" class="review-list" aria-live="polite"></div>
+      <p id="production-profile-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -150,5 +180,6 @@
   <script src="voice-cast.js"></script>
   <script src="voiced-story.js"></script>
   <script src="voiced-scene.js"></script>
+  <script src="production-profiles.js"></script>
 </body>
 </html>
