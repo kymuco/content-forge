@@ -4,8 +4,8 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR19: **complete** in the intended post-merge repository state.
-- Current step: **PR20 — TTS provider and Qwen TTS integration**.
+- PR1–PR20: **complete** in the intended post-merge repository state.
+- Current step: **PR21 — Voice Cast registry**.
 - Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
 - The intended **v0.1 batch-production boundary is complete through PR17**.
 
@@ -359,7 +359,7 @@ Exit condition: verified PR18 regions can be turned into a durable scene dialogu
 
 ### PR20 — TTS provider and Qwen TTS integration
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
@@ -370,7 +370,11 @@ Deliverables:
 - duration extraction;
 - deterministic cache invalidation.
 
+Exit condition: accepted PR19 dialogue lines can synthesize independently verified, content-addressed audio through a replaceable TTS boundary with semantic request identity, immutable provider/model evidence, exact cache invalidation, and no dependence on persistent PR21 cast identity.
+
 ### PR21 — Voice Cast registry
+
+Status: **in progress**
 
 Deliverables:
 
