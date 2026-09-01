@@ -157,3 +157,35 @@ def test_pr25_profile_transport_auth_precedes_json_validation(tmp_path: Path) ->
         assert oversized.status_code == 413
     finally:
         app.state.runtime_lease.close()
+
+
+def test_pr25_project_profile_routes_reject_malformed_project_ids_as_422(tmp_path: Path) -> None:
+    app = create_app(root=tmp_path)
+    client = TestClient(app)
+    try:
+        headers = _paired_headers(client)
+        malformed = "not-a-project-id"
+
+        loaded = client.get(
+            f"/api/v1/production-profiles/projects/{malformed}",
+            headers=headers,
+        )
+        assert loaded.status_code == 422
+        assert loaded.json()["detail"] == "invalid project ID"
+
+        rebound = client.put(
+            f"/api/v1/production-profiles/projects/{malformed}",
+            headers=headers,
+            json={"profile_id": "channel_a", "revision": 1},
+        )
+        assert rebound.status_code == 422
+        assert rebound.json()["detail"] == "invalid project ID"
+
+        removed = client.delete(
+            f"/api/v1/production-profiles/projects/{malformed}",
+            headers=headers,
+        )
+        assert removed.status_code == 422
+        assert removed.json()["detail"] == "invalid project ID"
+    finally:
+        app.state.runtime_lease.close()
