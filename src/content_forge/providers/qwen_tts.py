@@ -47,10 +47,13 @@ _LANGUAGE_NAMES = {
 
 
 class QwenTTSConfig(FrozenModel):
-    """Portable Qwen3-TTS model intent; weights/device remain local runtime concerns."""
+    """Portable Qwen3-TTS model intent pinned to one immutable Hub snapshot."""
 
     model_id: str = Field(default=_DEFAULT_MODEL_ID, min_length=1, max_length=512)
-    revision: str = Field(default=_DEFAULT_MODEL_REVISION, min_length=1, max_length=256)
+    revision: str = Field(
+        default=_DEFAULT_MODEL_REVISION,
+        pattern=r"^[0-9a-fA-F]{40}$",
+    )
     mode: Literal["custom_voice", "voice_clone", "voice_design"] = "custom_voice"
     device_map: str = Field(default="auto", min_length=1, max_length=128)
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -94,6 +97,28 @@ def _installed_version() -> str:
     return version
 
 
+def _resolve_model_snapshot(config: QwenTTSConfig) -> Path:
+    """Resolve the whole Hub repository at one immutable commit before Qwen loads it.
+
+    Qwen3TTSModel forwards Hugging Face kwargs to AutoModel but its current processor
+    load does not forward ``revision``. Resolving the complete repository first ensures
+    model, processor, tokenizer/config, and generation files all come from one snapshot.
+    """
+
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:  # pragma: no cover - optional environment-specific dependency
+        raise TTSUnavailableError("huggingface_hub import failed for Qwen3-TTS") from exc
+    try:
+        resolved = snapshot_download(repo_id=config.model_id, revision=config.revision)
+    except Exception as exc:  # pragma: no cover - network/cache environment is local
+        raise TTSUnavailableError("Qwen3-TTS pinned model snapshot resolution failed") from exc
+    path = Path(resolved)
+    if not path.is_dir():
+        raise TTSUnavailableError("Qwen3-TTS pinned model snapshot is not a directory")
+    return path
+
+
 def _default_runtime_factory(config: QwenTTSConfig):
     _installed_version()
     try:
@@ -102,20 +127,20 @@ def _default_runtime_factory(config: QwenTTSConfig):
     except Exception as exc:  # pragma: no cover - optional environment-specific dependency
         raise TTSUnavailableError("Qwen3-TTS import failed") from exc
 
+    snapshot = _resolve_model_snapshot(config)
     dtype = {
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
         "float32": torch.float32,
     }[config.dtype]
     kwargs: dict[str, object] = {
-        "revision": config.revision,
         "device_map": config.device_map,
         "dtype": dtype,
     }
     if config.attn_implementation is not None:
         kwargs["attn_implementation"] = config.attn_implementation
     try:
-        return Qwen3TTSModel.from_pretrained(config.model_id, **kwargs)
+        return Qwen3TTSModel.from_pretrained(str(snapshot), **kwargs)
     except Exception as exc:  # pragma: no cover - weights/GPU availability is local
         raise TTSUnavailableError("Qwen3-TTS model initialization failed") from exc
 
