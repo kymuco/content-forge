@@ -243,15 +243,14 @@ class PaddleOCRProvider:
         for provider_index, raw in enumerate(texts):
             if not isinstance(raw, str):
                 raise OCRResponseError("PaddleOCR recognized text must be a string")
-            raw_text = raw.strip()
-            if not raw_text:
+            if not raw.strip():
                 continue
             polygon = _points(polygons[provider_index])
             box_value = None if boxes is None else boxes[provider_index]
             region = OCRRegion(
                 region_id=f"ocr_{len(regions):04d}",
                 provider_index=provider_index,
-                raw_text=raw_text,
+                raw_text=raw,
                 confidence=_finite_score(scores[provider_index]),
                 polygon=polygon,
                 bbox=_bbox(box_value, polygon),
