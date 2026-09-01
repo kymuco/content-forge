@@ -17,6 +17,9 @@ from content_forge.providers import (
     tts_cache_key,
 )
 
+_TEST_REVISION = "1" * 40
+_OTHER_REVISION = "2" * 40
+
 
 class _CustomRuntime:
     def __init__(self) -> None:
@@ -103,6 +106,7 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
     )
     health = provider.health()
     assert health.available is True
+    assert health.model_revision == "85e237c12c027371202489a0ec509ded67b5e4b5"
     assert factory_calls == 0
 
     request = TTSRequest(
@@ -126,6 +130,7 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
         }
     ]
     assert result.evidence.request_sha256 == semantic_tts_request_digest(request)
+    assert result.evidence.model_revision == health.model_revision
     assert result.audio_sha256 == _sha(request.output_path)
     assert result.sample_count == 5
     with wave.open(str(request.output_path), "rb") as handle:
@@ -138,6 +143,14 @@ def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> 
         request.validated_copy(update={"voice_id": "Aiden"}),
         health,
     )
+    different_revision = QwenTTSProvider(
+        QwenTTSConfig(revision=_OTHER_REVISION),
+        runtime_factory=lambda _config: runtime,
+        provider_version="0.1.1",
+    ).health()
+    assert different_revision.model_id == health.model_id
+    assert different_revision.model_revision != health.model_revision
+    assert tts_cache_key(request, different_revision) != tts_cache_key(request, health)
 
 
 def test_qwen_voice_clone_verifies_reference_and_maps_arguments(tmp_path: Path) -> None:
@@ -147,6 +160,7 @@ def test_qwen_voice_clone_verifies_reference_and_maps_arguments(tmp_path: Path) 
     provider = QwenTTSProvider(
         QwenTTSConfig(
             model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            revision=_TEST_REVISION,
             mode="voice_clone",
         ),
         runtime_factory=lambda _config: runtime,
@@ -163,7 +177,8 @@ def test_qwen_voice_clone_verifies_reference_and_maps_arguments(tmp_path: Path) 
             text="Reference transcript",
         ),
     )
-    provider.synthesize(request)
+    result = provider.synthesize(request)
+    assert result.evidence.model_revision == _TEST_REVISION
     assert runtime.calls == [
         {
             "text": "New sentence",
@@ -184,6 +199,7 @@ def test_qwen_voice_design_requires_instruction_and_auto_language(tmp_path: Path
     provider = QwenTTSProvider(
         QwenTTSConfig(
             model_id="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            revision=_TEST_REVISION,
             mode="voice_design",
         ),
         runtime_factory=lambda _config: runtime,
@@ -195,7 +211,8 @@ def test_qwen_voice_design_requires_instruction_and_auto_language(tmp_path: Path
         voice_id="design-a",
         instruction="A warm restrained narrator",
     )
-    provider.synthesize(request)
+    result = provider.synthesize(request)
+    assert result.evidence.model_revision == _TEST_REVISION
     assert runtime.calls == [
         {
             "text": "Designed voice",
@@ -212,11 +229,18 @@ def test_qwen_voice_design_requires_instruction_and_auto_language(tmp_path: Path
         )
 
 
-def test_qwen_rejects_mode_mismatch_unsupported_language_and_multiwave(tmp_path: Path) -> None:
+def test_qwen_rejects_mode_mismatch_unpinned_model_unsupported_language_and_multiwave(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ValueError, match="does not match mode"):
         QwenTTSConfig(
             model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
             mode="custom_voice",
+        )
+    with pytest.raises(ValueError, match="explicit model revision"):
+        QwenTTSConfig(
+            model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            mode="voice_clone",
         )
 
     runtime = _CustomRuntime()
