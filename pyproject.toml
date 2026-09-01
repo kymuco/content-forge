@@ -29,6 +29,7 @@ llm = [
 ]
 tts = [
   "qwen-tts>=0.1.1,<0.2",
+  "huggingface-hub>=0.34,<1",
 ]
 
 [project.scripts]
