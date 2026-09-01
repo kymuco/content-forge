@@ -42,8 +42,14 @@ def validate_publish_result(
         raise PublishingResponseError("publish result output digest does not match approved artifact")
     if result.evidence.destination_id != target.destination_id:
         raise PublishingResponseError("publish result destination does not match approved target")
-    if result.disposition == "scheduled" and request.request.metadata.scheduled_for is None:
-        raise PublishingResponseError("provider returned scheduled result for an unscheduled request")
+
+    expected_disposition = (
+        "scheduled" if request.request.metadata.scheduled_for is not None else "published"
+    )
+    if result.disposition != expected_disposition:
+        raise PublishingResponseError(
+            f"publish result disposition must be {expected_disposition} for the approved request"
+        )
     return result
 
 
