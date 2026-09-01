@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from content_forge.providers.publishing import PublishingProviderHealth
 
 from .publishing import PublishingRepository as _BasePublishingRepository
@@ -17,23 +15,14 @@ class PublishingRepository(_BasePublishingRepository):
         return super().mark_running(attempt_id, safe_health)
 
     def reconcile_interrupted(self) -> int:
-        """Recover orphan attempts according to whether remote execution may have begun."""
+        """Retire only attempts whose remote execution may already have begun.
 
-        now = datetime.now(timezone.utc).isoformat()
-        with self.database.transaction() as connection:
-            prepared = connection.execute(
-                """
-                UPDATE publish_attempts
-                SET state = 'failed',
-                    error_code = 'runtime_interrupted_preflight',
-                    error_message = 'runtime ended before remote publish execution began',
-                    finished_at = ?
-                WHERE state = 'prepared'
-                """,
-                (now,),
-            ).rowcount
-        running = super().reconcile_running_as_unknown()
-        return int(prepared) + int(running)
+        `prepared` is a durable approved state and remains safely resumable across
+        restarts. Only `running` crosses the remote-side-effect boundary, so only it is
+        conservatively converted to retry-blocking `outcome_unknown`.
+        """
+
+        return super().reconcile_running_as_unknown()
 
 
 __all__ = ["PublishingRepository"]
