@@ -9,8 +9,9 @@ const OLDEST_LEGACY_CACHE_NAME = `${CACHE_PREFIX}v8`;
 const LEGACY_CACHE_NAME = `${CACHE_PREFIX}v9`;
 const PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v10`;
 const LAST_CACHE_NAME = `${CACHE_PREFIX}v11`;
-const IMMEDIATE_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v12`;
-const CACHE_NAME = `${CACHE_PREFIX}v13`;
+const EARLIER_CACHE_NAME = `${CACHE_PREFIX}v12`;
+const IMMEDIATE_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v13`;
+const CACHE_NAME = `${CACHE_PREFIX}v14`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -43,6 +44,7 @@ const SHELL_ASSETS = [
   appUrl("voiced-story.js"),
   appUrl("voiced-scene.js"),
   appUrl("production-profiles.js"),
+  appUrl("production-library.js"),
   appUrl("manifest.webmanifest"),
   appUrl("icons/icon-192.png"),
   appUrl("icons/icon-512.png"),
@@ -66,6 +68,7 @@ self.addEventListener("activate", (event) => {
             || key === LEGACY_CACHE_NAME
             || key === PREVIOUS_CACHE_NAME
             || key === LAST_CACHE_NAME
+            || key === EARLIER_CACHE_NAME
             || key === IMMEDIATE_PREVIOUS_CACHE_NAME
             || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           ))
