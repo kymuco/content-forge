@@ -13,7 +13,7 @@ from content_forge.application.voiced_story_review import (
     VoicedStoryAwareReviewService,
     validate_materialized_voiced_story,
 )
-from content_forge.core import Project
+from content_forge.core import Overlay, Project, Scene
 from content_forge.storage import LocalLibrary
 
 
@@ -53,6 +53,29 @@ def test_pr22_render_guard_is_noop_without_materialization(tmp_path) -> None:
     project = Project(content_kind="panel_sequence")
 
     assert validate_materialized_voiced_story(workflow, project) is None
+
+
+def test_pr22_render_guard_rejects_orphaned_owned_scene_state(tmp_path) -> None:
+    library = LocalLibrary(tmp_path / "runtime")
+    workflow = VoicedStoryWorkflow(library)
+    scene = Scene(
+        order=0,
+        duration_seconds=1.0,
+        overlays=(
+            Overlay(
+                component_type="timed_text",
+                text="orphaned",
+                properties={"pr22_owner": "pr22_timed_text_v1"},
+            ),
+        ),
+    )
+    project = Project(content_kind="panel_sequence", scenes=(scene,))
+
+    with pytest.raises(
+        VoicedStoryConflictError,
+        match="PR22-owned scene state exists without a materialization manifest",
+    ):
+        validate_materialized_voiced_story(workflow, project)
 
 
 def test_pr22_render_guard_rejects_malformed_materialization(tmp_path) -> None:
