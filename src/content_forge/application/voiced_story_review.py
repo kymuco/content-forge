@@ -14,6 +14,8 @@ from .voiced_story import (
     VoicedStoryConflictError,
     VoicedStoryError,
     VoicedStoryWorkflow,
+    _is_pr22_timed_text,
+    _is_pr22_voice_audio,
     _scene_materialization_matches,
     voiced_story_manifest,
 )
@@ -27,6 +29,15 @@ def validate_materialized_voiced_story(
 
     stored = voiced_story_manifest(project)
     if stored is None:
+        orphaned = any(
+            any(_is_pr22_timed_text(overlay) for overlay in scene.overlays)
+            or any(_is_pr22_voice_audio(track) for track in scene.audio_tracks)
+            for scene in project.scenes
+        )
+        if orphaned:
+            raise VoicedStoryConflictError(
+                "PR22-owned scene state exists without a materialization manifest"
+            )
         return None
     expected = workflow.derive(project, policy=stored.timing_policy)
     if stored != expected or not _scene_materialization_matches(project, stored):
