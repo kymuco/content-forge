@@ -56,15 +56,22 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
     def _validate_snapshot_revision(
         self,
         manifest: _base.ProjectProductionProfileManifest,
+        *,
+        validate_external: bool,
     ) -> None:
-        current = self.registry.get(
+        # Read the immutable revision record directly first. Safe removal must remain
+        # possible even when an old optional cast/music/watermark dependency disappeared;
+        # those external references are required only when the profile is still being used.
+        current = self.registry.repository.get(
             manifest.revision.profile_id,
             manifest.revision.revision,
         )
-        if current != manifest.revision:
+        if current is None or current != manifest.revision:
             raise _base.ProductionProfileConflictError(
                 "project production profile snapshot no longer matches registry revision"
             )
+        if validate_external:
+            self.registry._validate_definition(current.definition)
 
     def _base_project(
         self,
@@ -74,7 +81,7 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         if manifest is None:
             return project
         self._validate_materialized(project, manifest)
-        self._validate_snapshot_revision(manifest)
+        self._validate_snapshot_revision(manifest, validate_external=False)
         metadata = project.model_dump(mode="json")["metadata"]
         if not isinstance(metadata, dict):  # pragma: no cover - Project contract
             raise _base.ProductionProfileValidationError("project metadata is malformed")
@@ -105,7 +112,7 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         manifest = _base.production_profile_manifest(project)
         if manifest is not None:
             self._validate_materialized(project, manifest)
-            self._validate_snapshot_revision(manifest)
+            self._validate_snapshot_revision(manifest, validate_external=True)
         return manifest
 
     def bind(
@@ -124,7 +131,7 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         target = self.registry.get(profile_id, revision)
         if existing is not None and self._same_revision(existing, target):
             self._validate_materialized(project, existing)
-            self._validate_snapshot_revision(existing)
+            self._validate_snapshot_revision(existing, validate_external=True)
             return existing
 
         base = self._base_project(project, existing)
