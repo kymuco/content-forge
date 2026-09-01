@@ -10,13 +10,11 @@ from __future__ import annotations
 
 from content_forge.core import Project
 
+from .dialogue import DialogueError
 from .review import ReviewNotReadyError
 from .review_seventh_hardening import ReviewService as _BaseReviewService
-from .voiced_scene import (
-    VoicedSceneError,
-    VoicedSceneWorkflow,
-    voiced_scene_manifest,
-)
+from .voiced_scene import VoicedSceneError, voiced_scene_manifest
+from .voiced_scene_hardening import VoicedSceneWorkflow
 from .voiced_story import VoicedStoryError, voiced_story_manifest
 
 
@@ -51,7 +49,7 @@ class ReviewService(_BaseReviewService):
                 )
         except ReviewNotReadyError:
             raise
-        except VoicedSceneError as exc:
+        except (VoicedSceneError, DialogueError, VoicedStoryError) as exc:
             raise ReviewNotReadyError(
                 f"materialized PR23 presentation authority is invalid: {exc}"
             ) from exc
