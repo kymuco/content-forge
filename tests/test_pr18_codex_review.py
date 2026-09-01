@@ -6,6 +6,7 @@ import pytest
 
 from content_forge.application import (
     ApplicationRepository,
+    PanelOCRConflictError,
     PanelOCRValidationError,
     PanelOCRWorkflow,
 )
@@ -125,6 +126,37 @@ def test_ocr_correction_rejects_tampered_review_authority(
     )
 
     with pytest.raises(PanelOCRValidationError, match="authority is malformed"):
+        workflow.apply_corrections(
+            project.project_id,
+            task.review_task_id,
+            {"ocr_0000": "accepted"},
+        )
+    assert workflow.extraction(project.project_id, current.scenes[0].scene_id).regions[0].corrected_text is None
+
+
+def test_ocr_correction_rejects_tampered_review_payload(tmp_path: Path) -> None:
+    library, project, workflow, task = _review_fixture(tmp_path)
+    current = library.load_project(project.project_id)
+    assert current is not None
+    payload = task.model_dump(mode="json")["payload"]
+    assert isinstance(payload, dict)
+    regions = payload["regions"]
+    assert isinstance(regions, list)
+    assert isinstance(regions[0], dict)
+    regions[0]["raw_text"] = "misleading reviewer text"
+    tampered = task.validated_copy(update={"payload": payload})
+    library.save_project(
+        current.validated_copy(
+            update={
+                "review_tasks": tuple(
+                    tampered if item.review_task_id == task.review_task_id else item
+                    for item in current.review_tasks
+                )
+            }
+        )
+    )
+
+    with pytest.raises(PanelOCRConflictError, match="payload no longer matches"):
         workflow.apply_corrections(
             project.project_id,
             task.review_task_id,
