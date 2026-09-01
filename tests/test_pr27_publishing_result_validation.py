@@ -16,6 +16,7 @@ from content_forge.providers.publishing import (
     PublishingResponseError,
     approve_publish_request,
     publish_artifact_ref,
+    publish_idempotency_key,
     semantic_publish_request_digest,
 )
 from content_forge.providers.publishing_validation import validate_publish_result
@@ -64,6 +65,7 @@ def _result(approved, **evidence_updates) -> PublishResult:
         provider_id="fixture",
         provider_version="1",
         request_sha256=semantic_publish_request_digest(approved.request),
+        idempotency_key=publish_idempotency_key(approved.request),
         output_sha256=approved.request.artifact.output_sha256,
         destination_id=approved.request.target.destination_id,
     ).model_copy(update=evidence_updates)
@@ -88,6 +90,7 @@ def test_pr27_validate_publish_result_accepts_exact_evidence() -> None:
         ("provider_id", "other", "provider identity"),
         ("provider_version", "2", "provider version"),
         ("request_sha256", "a" * 64, "request digest"),
+        ("idempotency_key", f"cfp-{'d' * 64}", "idempotency key"),
         ("output_sha256", "b" * 64, "output digest"),
         ("destination_id", "other-channel", "destination"),
     ],
