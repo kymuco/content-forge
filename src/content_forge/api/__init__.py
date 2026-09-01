@@ -63,6 +63,7 @@ def create_app(
             app,
             auth=app.state.auth,
             library=app.state.library,
+            tts_provider=tts_provider,
         )
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old
