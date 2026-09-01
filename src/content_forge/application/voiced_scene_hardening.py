@@ -1,19 +1,49 @@
-"""Adversarial hardening for PR23 retained presentation ownership.
+"""Adversarial hardening for PR23 retained presentation ownership and review lifecycle.
 
 The base PR23 workflow retains pre-presentation track/motion state so materialization is
 reversible. This layer binds that retained state back to the exact derived plan before it
-may ever be trusted for restoration. Corrupt or fabricated metadata therefore cannot use
-PR23 dematerialization as an arbitrary Project mutation primitive.
+may ever be trusted for restoration. It also atomically invalidates an older PR10 preview
+identity whenever PR23 changes render semantics, so final rendering can never be wedged
+behind a stale already-resolved preview task.
 """
 
 from __future__ import annotations
 
-from content_forge.core import AudioTrack, MotionSpec, Project
+from content_forge.core import (
+    AttentionMode,
+    AudioTrack,
+    MotionSpec,
+    Project,
+    ProjectState,
+    ReviewPriority,
+    ReviewStatus,
+)
 
 from . import voiced_scene as _base
 
+# PR23 can be iterated or removed after it has deliberately reopened PR10 preview review.
+# Upstream PR22 authority is still immutable here; only PR23-owned presentation changes.
+_base._EDITABLE_STATES = frozenset(
+    {
+        ProjectState.DRAFT,
+        ProjectState.PREPARED,
+        ProjectState.NEEDS_REVIEW,
+        ProjectState.READY,
+    }
+)
+
 _RESERVED_TRACK_PROPERTY_KEYS = frozenset(
     {"pr23_owner", "pr23_preset_id", "pr23_preset_version"}
+)
+_PREVIEW_TASK_TYPE = "preview_approval"
+_RENDER_IDENTITY_KEYS = (
+    "approved_preview_job_id",
+    "approved_preview_plan_digest",
+    "approved_preview_revision_digest",
+    "active_final_plan_digest",
+    "final_render_job_id",
+    "final_render_plan_digest",
+    "final_output_sha256",
 )
 
 
@@ -46,7 +76,7 @@ def _reserved_motion_namespace_is_clean(motion: MotionSpec | None) -> bool:
 
 
 class VoicedSceneWorkflow(_base.VoicedSceneWorkflow):
-    """Bind retained reversible state exactly to the current PR23 presentation plan."""
+    """Bind reversible state to the plan and keep PR10 preview authority current."""
 
     @staticmethod
     def _validate_retained_ownership(
@@ -117,6 +147,62 @@ class VoicedSceneWorkflow(_base.VoicedSceneWorkflow):
                     "PR23 retained camera materialization does not match the exact planned motion"
                 )
 
+    @staticmethod
+    def _invalidate_pr10_render_identity(project: Project) -> Project:
+        """Reopen the exact PR10 preview task when PR23 changes render semantics."""
+
+        if not bool(project.metadata.get("pr10_review_initialized")):
+            return project
+
+        preview_tasks = tuple(
+            task for task in project.review_tasks if task.task_type == _PREVIEW_TASK_TYPE
+        )
+        if len(preview_tasks) != 1:
+            if bool(project.metadata.get("review_renderable")) or any(
+                key in project.metadata for key in _RENDER_IDENTITY_KEYS
+            ):
+                raise _base.VoicedSceneConflictError(
+                    "PR10 preview authority is malformed while PR23 changes presentation"
+                )
+            return project
+
+        preview = preview_tasks[0]
+        if (
+            preview.attention is not AttentionMode.REVIEW
+            or preview.priority is not ReviewPriority.BLOCKING
+            or preview.blocking is not True
+        ):
+            raise _base.VoicedSceneConflictError(
+                "PR10 preview authority collides with reserved presentation lifecycle"
+            )
+
+        reopened = preview.validated_copy(
+            update={
+                "status": ReviewStatus.OPEN,
+                "accepted_value": None,
+                "resolved_at": None,
+                "payload": {"status": "not_rendered"},
+            }
+        )
+        tasks = tuple(
+            reopened if task.review_task_id == preview.review_task_id else task
+            for task in project.review_tasks
+        )
+        metadata = dict(project.metadata)
+        for key in _RENDER_IDENTITY_KEYS:
+            metadata.pop(key, None)
+
+        state = project.state
+        if state in {ProjectState.READY, ProjectState.NEEDS_REVIEW}:
+            state = ProjectState.NEEDS_REVIEW
+        return project.validated_copy(
+            update={
+                "state": state,
+                "review_tasks": tasks,
+                "metadata": metadata,
+            }
+        )
+
     def _base_project(
         self,
         project: Project,
@@ -125,6 +211,15 @@ class VoicedSceneWorkflow(_base.VoicedSceneWorkflow):
         if manifest is not None:
             self._validate_retained_ownership(manifest)
         return super()._base_project(project, manifest)
+
+    def _cas_project(self, expected_json: str, updated: Project) -> Project:
+        # Presentation mutation and preview invalidation are one CAS. There is never an
+        # intermediate persisted READY snapshot whose approved preview describes the old
+        # camera/mix state while PR23 already describes the new render semantics.
+        return super()._cas_project(
+            expected_json,
+            self._invalidate_pr10_render_identity(updated),
+        )
 
 
 __all__ = ["VoicedSceneWorkflow"]
