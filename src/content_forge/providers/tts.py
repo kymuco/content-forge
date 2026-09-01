@@ -37,6 +37,7 @@ class TTSProviderHealth(FrozenModel):
     provider_id: str = Field(min_length=1, max_length=128)
     provider_version: str = Field(min_length=1, max_length=128)
     model_id: str = Field(min_length=1, max_length=512)
+    model_revision: str | None = Field(default=None, min_length=1, max_length=256)
     config_sha256: SHA256
     available: bool
     reason: str | None = Field(default=None, max_length=4096)
@@ -92,6 +93,7 @@ class TTSInvocationEvidence(FrozenModel):
     provider_id: str = Field(min_length=1, max_length=128)
     provider_version: str = Field(min_length=1, max_length=128)
     model_id: str = Field(min_length=1, max_length=512)
+    model_revision: str | None = Field(default=None, min_length=1, max_length=256)
     engine: str | None = Field(default=None, max_length=128)
     request_sha256: SHA256
     config_sha256: SHA256
@@ -173,6 +175,7 @@ def tts_cache_key(request: TTSRequest, health: TTSProviderHealth) -> str:
         "provider_id": health.provider_id,
         "provider_version": health.provider_version,
         "model_id": health.model_id,
+        "model_revision": health.model_revision,
         "config_sha256": health.config_sha256,
     }
     encoded = json.dumps(
