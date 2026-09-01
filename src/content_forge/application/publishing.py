@@ -9,7 +9,6 @@ from content_forge.providers import (
     ApprovedPublishRequest,
     PublishingExecutionError,
     PublishingProvider,
-    PublishingProviderError,
     PublishingResponseError,
     PublishingUnavailableError,
     publish_artifact_ref,
@@ -25,6 +24,10 @@ class PublishOrchestrationError(RuntimeError):
 
 class PublishArtifactError(PublishOrchestrationError):
     """The approved publish request no longer matches authenticated final-render evidence."""
+
+
+class PublishOutcomeUnknownError(PublishOrchestrationError):
+    """Remote publishing began but no authenticated durable outcome is known."""
 
 
 class PublishingService:
@@ -82,18 +85,11 @@ class PublishingService:
 
         try:
             health = self.provider.health()
-        except PublishingProviderError as exc:
-            self.library.publishing.mark_failed(
-                attempt.attempt_id,
-                code="provider_health_failed",
-                message=str(exc) or type(exc).__name__,
-            )
-            raise
         except Exception as exc:
             self.library.publishing.mark_failed(
                 attempt.attempt_id,
                 code="provider_health_failed",
-                message=str(exc) or type(exc).__name__,
+                message="publishing provider health check failed before remote execution",
             )
             raise PublishingExecutionError("publishing provider health check failed") from exc
 
@@ -101,20 +97,23 @@ class PublishingService:
             self.library.publishing.mark_failed(
                 attempt.attempt_id,
                 code="provider_unavailable",
-                message=health.reason or "publishing provider is unavailable",
+                message="publishing provider was unavailable before remote execution",
             )
-            raise PublishingUnavailableError(health.reason or "publishing provider is unavailable")
+            raise PublishingUnavailableError("publishing provider is unavailable")
         if health.provider_id != approved.request.target.provider_id:
             self.library.publishing.mark_failed(
                 attempt.attempt_id,
                 code="provider_identity_mismatch",
-                message="publish target provider does not match provider health identity",
+                message="publish target provider did not match provider health identity",
             )
             raise PublishingResponseError(
                 "publish target provider does not match provider health identity"
             )
 
         running = self.library.publishing.mark_running(attempt.attempt_id, health)
+        pinned_health = running.provider_health
+        if pinned_health is None:  # defensive: repository state contract requires this.
+            raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         idempotency_key = publish_idempotency_key(approved.request)
         try:
             result = self.provider.publish(
@@ -122,23 +121,24 @@ class PublishingService:
                 media_path=media_path,
                 idempotency_key=idempotency_key,
             )
-            validate_publish_result(approved, health, result)
+            validate_publish_result(approved, pinned_health, result)
             return self.library.publishing.mark_succeeded(running.attempt_id, result)
         except Exception as exc:
             # Once the provider call has begun, a local exception cannot prove that the
-            # remote side effect did not happen. Preserve that uncertainty and block retry.
+            # remote side effect did not happen. Provider-controlled exception text is
+            # deliberately excluded from durable evidence and public error messages.
             try:
                 self.library.publishing.mark_outcome_unknown(
                     running.attempt_id,
                     code="remote_outcome_unknown",
-                    message=str(exc) or type(exc).__name__,
+                    message="remote publish execution began but no authenticated outcome was recorded",
                 )
-            except StorageConflictError:
-                pass
-            if isinstance(exc, PublishingProviderError):
-                raise
-            raise PublishingExecutionError(
-                "publishing provider failed after remote execution began; outcome is unknown"
+            except StorageConflictError as ledger_exc:
+                raise PublishOrchestrationError(
+                    "failed to persist unknown remote publish outcome"
+                ) from ledger_exc
+            raise PublishOutcomeUnknownError(
+                "remote publish outcome is unknown; automatic retry is blocked"
             ) from exc
 
     def reconcile_interrupted(self) -> int:
@@ -150,5 +150,6 @@ class PublishingService:
 __all__ = [
     "PublishArtifactError",
     "PublishOrchestrationError",
+    "PublishOutcomeUnknownError",
     "PublishingService",
 ]
