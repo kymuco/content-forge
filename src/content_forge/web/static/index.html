@@ -194,6 +194,41 @@
       <div id="production-library-duplicate-view" class="review-list" aria-live="polite"></div>
       <p id="production-library-status" class="status"></p>
     </section>
+    <section id="publishing-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">PUBLISHING</p><h2>Approve exact export handoff</h2></div>
+        <span id="publishing-provider-badge" class="badge neutral">Approval only</span>
+      </div>
+      <p class="muted">Publishing is separate from render approval. Build a candidate from an authenticated final render, approve that exact digest, then execute the durable attempt as a separate action. No filesystem paths or credentials are accepted here.</p>
+      <form id="publishing-candidate-form" class="stack compact">
+        <strong>Build publish candidate</strong>
+        <label>Final render job ID<input id="publishing-render-job" maxlength="64" placeholder="cf_job_…" required></label>
+        <label>Provider ID<input id="publishing-provider-id" maxlength="128" placeholder="youtube" required></label>
+        <label>Destination / channel ID<input id="publishing-destination-id" maxlength="512" placeholder="main_channel" required></label>
+        <label>Title<input id="publishing-title" maxlength="500" required></label>
+        <label>Description<textarea id="publishing-description" rows="4" maxlength="20000"></textarea></label>
+        <label>Tags<input id="publishing-tags" maxlength="4096" placeholder="Genshin, Raiden"></label>
+        <label>Visibility<select id="publishing-visibility"><option value="private" selected>Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label>
+        <label>Schedule (optional)<input id="publishing-schedule" type="datetime-local"></label>
+        <button class="secondary" type="submit">Build exact candidate</button>
+      </form>
+      <div id="publishing-candidate-view" class="review-list" aria-live="polite"></div>
+      <div class="stack compact">
+        <strong>Human approval</strong>
+        <label>Approval note<textarea id="publishing-approval-note" rows="2" maxlength="4096" placeholder="Optional local note"></textarea></label>
+        <button id="publishing-approve" class="primary" type="button" disabled>Approve exact request</button>
+      </div>
+      <div class="stack compact">
+        <strong>Durable publish attempt</strong>
+        <label>Attempt ID<input id="publishing-attempt-id" maxlength="64" placeholder="cf_publish_…"></label>
+        <div class="row">
+          <button id="publishing-load-attempt" class="secondary" type="button">Load attempt</button>
+          <button id="publishing-execute" class="primary" type="button" disabled>Execute approved attempt</button>
+        </div>
+      </div>
+      <div id="publishing-attempt-view" class="review-list" aria-live="polite"></div>
+      <p id="publishing-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -211,5 +246,6 @@
   <script src="voiced-scene.js"></script>
   <script src="production-profiles.js"></script>
   <script src="production-library.js"></script>
+  <script src="publishing.js"></script>
 </body>
 </html>
