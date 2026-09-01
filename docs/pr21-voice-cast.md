@@ -102,6 +102,14 @@ The route family preserves the existing local API transport boundary: non-loopba
 
 The TTS provider is optional at API construction time. Registry and binding operations work without Qwen/Torch or another TTS runtime. Preview returns a controlled unavailable response if no provider is configured.
 
+For the normal CLI server, preview synthesis is explicitly opt-in:
+
+```text
+content-forge-api --tts-provider qwen
+```
+
+Install the PR20 `tts` optional extra first. Without `--tts-provider qwen`, `content-forge-api` remains provider-free. Selecting Qwen constructs the existing pinned PR20 adapter but still does not load/download model weights at server startup; the heavy runtime remains lazy until synthesis actually needs it.
+
 ## Preview semantics
 
 Voice preview intentionally reuses real accepted project dialogue rather than inventing a second free-text preview artifact. PR21 selects the first accepted PR19 line spoken by the chosen character and sends it through the normal guarded PR20 synthesis path.
@@ -159,5 +167,6 @@ PR21 regression coverage includes:
 - authenticated registry/binding/preview HTTP behavior;
 - bounded pre-parser transport behavior;
 - optional-provider preview failure;
+- explicit lazy CLI Qwen provider selection;
 - versioned PWA shell precaching for Voice Cast;
 - real WAV preview publication through the existing PR20 asset/cache path.
