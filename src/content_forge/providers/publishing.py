@@ -176,6 +176,7 @@ class PublishInvocationEvidence(FrozenModel):
     provider_id: str = Field(min_length=1, max_length=128)
     provider_version: str = Field(min_length=1, max_length=128)
     request_sha256: SHA256
+    idempotency_key: str = Field(pattern=r"^cfp-[0-9a-f]{64}$")
     output_sha256: SHA256
     destination_id: str = Field(min_length=1, max_length=512)
 
@@ -211,7 +212,13 @@ class PublishingProvider(Protocol):
 
     def health(self) -> PublishingProviderHealth: ...
 
-    def publish(self, request: ApprovedPublishRequest, *, media_path: Path) -> PublishResult: ...
+    def publish(
+        self,
+        request: ApprovedPublishRequest,
+        *,
+        media_path: Path,
+        idempotency_key: str,
+    ) -> PublishResult: ...
 
 
 def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef:
@@ -253,6 +260,12 @@ def semantic_publish_request_digest(request: PublishRequest) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def publish_idempotency_key(request: PublishRequest) -> str:
+    """Stable remote-side-effect key shared by every retry of one semantic request."""
+
+    return f"cfp-{semantic_publish_request_digest(request)}"
+
+
 def approve_publish_request(
     request: PublishRequest,
     *,
@@ -286,5 +299,6 @@ __all__ = [
     "PublishingUnavailableError",
     "approve_publish_request",
     "publish_artifact_ref",
+    "publish_idempotency_key",
     "semantic_publish_request_digest",
 ]
