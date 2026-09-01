@@ -19,6 +19,7 @@ import content_forge.application.voiced_scene as voiced_scene_base
 
 def _approved_project(*, priority: ReviewPriority = ReviewPriority.BLOCKING) -> Project:
     project = Project(content_kind="pr23_review_fixture", state=ProjectState.READY)
+    now = datetime.now(timezone.utc)
     preview = ReviewTask(
         project_id=project.project_id,
         task_type="preview_approval",
@@ -33,7 +34,8 @@ def _approved_project(*, priority: ReviewPriority = ReviewPriority.BLOCKING) -> 
             "project_revision_digest": "b" * 64,
         },
         accepted_value="cf_job_preview",
-        resolved_at=datetime.now(timezone.utc),
+        created_at=now,
+        resolved_at=now,
     )
     return project.validated_copy(
         update={
