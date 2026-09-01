@@ -11,6 +11,7 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .dialogue_routes import install_dialogue_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
 
@@ -22,7 +23,7 @@ def create_app(
     ffmpeg_path: str = "ffmpeg",
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
 ):
-    """Build the authenticated API, PR9 PWA, and PR10 review/preview surface."""
+    """Build the local API, PWA, review surface, and PR19 dialogue authority."""
 
     app = _create_api_app(
         root=root,
@@ -42,6 +43,11 @@ def create_app(
             app,
             auth=app.state.auth,
             review=review,
+        )
+        install_dialogue_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
         )
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old

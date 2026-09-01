@@ -1,6 +1,22 @@
 """Application services between transport clients and Content Forge core/runtime."""
 
 from .auth import AuthManager, AuthenticationError, IssuedSession
+from .dialogue import (
+    CharacterRecord,
+    DialogueAssignment,
+    DialogueAssignmentSuggestion,
+    DialogueConflictError,
+    DialogueError,
+    DialogueLine,
+    DialogueNotFoundError,
+    DialogueValidationError,
+    ProjectDialogueManifest,
+    SceneDialogue,
+    SceneFocusHint,
+    dialogue_manifest,
+    scene_dialogue_digest,
+)
+from .dialogue_pr19_integrity import DialogueWorkflow
 from .inbox import InboxError, InboxService, UploadTooLargeError
 from .models import (
     AuthSession,
@@ -41,6 +57,15 @@ __all__ = [
     "AuthManager",
     "AuthenticationError",
     "AuthSession",
+    "CharacterRecord",
+    "DialogueAssignment",
+    "DialogueAssignmentSuggestion",
+    "DialogueConflictError",
+    "DialogueError",
+    "DialogueLine",
+    "DialogueNotFoundError",
+    "DialogueValidationError",
+    "DialogueWorkflow",
     "InboxError",
     "InboxIntake",
     "InboxService",
@@ -57,6 +82,7 @@ __all__ = [
     "PanelTextExtraction",
     "PanelTextRegion",
     "PreparationState",
+    "ProjectDialogueManifest",
     "ReviewConflictError",
     "ReviewError",
     "ReviewNotFoundError",
@@ -64,7 +90,11 @@ __all__ = [
     "ReviewRenderError",
     "ReviewService",
     "ReviewValidationError",
+    "SceneDialogue",
+    "SceneFocusHint",
     "UploadTooLargeError",
+    "dialogue_manifest",
     "panel_extraction_digest",
     "prepare_panel_ocr",
+    "scene_dialogue_digest",
 ]

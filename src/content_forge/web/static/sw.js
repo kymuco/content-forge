@@ -3,7 +3,10 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-const CACHE_NAME = `${CACHE_PREFIX}v8`;
+// Keep the immediately previous namespace explicit so PR19's worker upgrade has a
+// testable migration edge from already-installed PR10/PR18 shells.
+const LEGACY_CACHE_NAME = `${CACHE_PREFIX}v8`;
+const CACHE_NAME = `${CACHE_PREFIX}v9`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -31,6 +34,7 @@ const SHELL_ASSETS = [
   appUrl("shared.js"),
   appUrl("app.js"),
   appUrl("review.js"),
+  appUrl("dialogue.js"),
   appUrl("manifest.webmanifest"),
   appUrl("icons/icon-192.png"),
   appUrl("icons/icon-512.png"),
@@ -49,7 +53,10 @@ self.addEventListener("activate", (event) => {
     caches.keys()
       .then((keys) => Promise.all(
         keys
-          .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+          .filter((key) => (
+            key === LEGACY_CACHE_NAME
+            || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+          ))
           .map((key) => caches.delete(key))
       ))
       .then(() => self.clients.claim())
