@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from content_forge.core import EntityKind, RegistryKey, require_entity_id
 from content_forge.core.models import FrozenModel, SHA256
@@ -37,10 +36,10 @@ class PublishingResponseError(PublishingProviderError):
     """A provider response violated the PR27 result contract."""
 
 
-def _aware(value: datetime) -> datetime:
+def _aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
-    return value
+    return value.astimezone(timezone.utc)
 
 
 def _nonblank(value: str, *, label: str) -> str:
@@ -121,26 +120,15 @@ class PublishMetadata(FrozenModel):
     @field_validator("scheduled_for")
     @classmethod
     def validate_scheduled_for(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else _aware(value)
+        return None if value is None else _aware_utc(value)
 
 
 class PublishRequest(FrozenModel):
-    """One exact publish intent. media_path is machine-local and not semantic identity."""
+    """One exact, persistable publish intent with no local paths or credentials."""
 
-    media_path: Path
     artifact: PublishArtifactRef
     target: PublishTarget
     metadata: PublishMetadata
-    provider_options: Mapping[str, JsonValue] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def bound_provider_options(self):
-        if len(self.provider_options) > 64:
-            raise ValueError("publish provider options exceed 64 entries")
-        for key in self.provider_options:
-            if not key or len(key) > 128 or key != key.strip():
-                raise ValueError("publish provider option keys must be canonical non-empty strings")
-        return self
 
 
 class PublishApproval(FrozenModel):
@@ -154,7 +142,7 @@ class PublishApproval(FrozenModel):
     @field_validator("approved_at")
     @classmethod
     def validate_approved_at(cls, value: datetime) -> datetime:
-        return _aware(value)
+        return _aware_utc(value)
 
     @field_validator("note")
     @classmethod
@@ -204,7 +192,7 @@ class PublishResult(FrozenModel):
     @field_validator("effective_at")
     @classmethod
     def validate_effective_at(cls, value: datetime) -> datetime:
-        return _aware(value)
+        return _aware_utc(value)
 
     @field_validator("remote_url")
     @classmethod
@@ -223,7 +211,7 @@ class PublishingProvider(Protocol):
 
     def health(self) -> PublishingProviderHealth: ...
 
-    def publish(self, request: ApprovedPublishRequest) -> PublishResult: ...
+    def publish(self, request: ApprovedPublishRequest, *, media_path: Path) -> PublishResult: ...
 
 
 def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef:
@@ -247,14 +235,13 @@ def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef
 
 
 def semantic_publish_request_digest(request: PublishRequest) -> str:
-    """Hash exact publish semantics while excluding the machine-local media path."""
+    """Hash exact machine-independent publish semantics."""
 
     payload = {
         "contract_version": _PUBLISH_CONTRACT_VERSION,
         "artifact": request.artifact.model_dump(mode="json"),
         "target": request.target.model_dump(mode="json"),
         "metadata": request.metadata.model_dump(mode="json"),
-        "provider_options": dict(request.provider_options),
     }
     encoded = json.dumps(
         payload,
