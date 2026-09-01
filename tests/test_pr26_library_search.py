@@ -200,6 +200,7 @@ def test_pr26_extension_initializes_over_existing_library_without_mutating_asset
 
 def test_pr26_extension_fails_closed_on_future_feature_schema(tmp_path: Path) -> None:
     library = LocalLibrary(tmp_path / "runtime")
+    _ = library.index
     with library.database.transaction() as connection:
         connection.execute(
             "UPDATE application_schema SET version = 2 WHERE component = 'production_library'"
