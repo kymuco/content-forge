@@ -62,6 +62,7 @@ from .publishing import (
     PublishingUnavailableError,
     approve_publish_request,
     publish_artifact_ref,
+    publish_idempotency_key,
     semantic_publish_request_digest,
 )
 from .publishing_validation import validate_publish_result
@@ -150,6 +151,7 @@ __all__ = [
     "build_task_prompt",
     "ocr_config_digest",
     "publish_artifact_ref",
+    "publish_idempotency_key",
     "replace_provider_suggestions",
     "semantic_ocr_request_digest",
     "semantic_publish_request_digest",
