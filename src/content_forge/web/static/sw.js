@@ -3,11 +3,12 @@ importScripts("config.js", "shared.js");
 "use strict";
 
 const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
-// Retain both known predecessor namespaces so an installed shell may upgrade directly
-// from the PR10/PR18 generation or from PR19 without leaving stale cache authority.
+// Retain known predecessor namespaces so installed shells may upgrade directly without
+// leaving stale UI authority behind.
 const OLDEST_LEGACY_CACHE_NAME = `${CACHE_PREFIX}v8`;
 const LEGACY_CACHE_NAME = `${CACHE_PREFIX}v9`;
-const CACHE_NAME = `${CACHE_PREFIX}v10`;
+const PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v10`;
+const CACHE_NAME = `${CACHE_PREFIX}v11`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -37,6 +38,7 @@ const SHELL_ASSETS = [
   appUrl("review.js"),
   appUrl("dialogue.js"),
   appUrl("voice-cast.js"),
+  appUrl("voiced-story.js"),
   appUrl("manifest.webmanifest"),
   appUrl("icons/icon-192.png"),
   appUrl("icons/icon-512.png"),
@@ -58,6 +60,7 @@ self.addEventListener("activate", (event) => {
           .filter((key) => (
             key === OLDEST_LEGACY_CACHE_NAME
             || key === LEGACY_CACHE_NAME
+            || key === PREVIOUS_CACHE_NAME
             || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           ))
           .map((key) => caches.delete(key))
