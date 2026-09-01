@@ -24,12 +24,8 @@ from .library_index import (
 )
 from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths, default_runtime_root
-from .publishing import (
-    PublishAttemptRecord,
-    PublishAttemptState,
-    PublishOperationRecord,
-    PublishingRepository,
-)
+from .publishing import PublishAttemptRecord, PublishAttemptState, PublishOperationRecord
+from .publishing_hardening import PublishingRepository
 from .records import DerivativeSlot, SourceInput, StoredJob
 
 __all__ = [
