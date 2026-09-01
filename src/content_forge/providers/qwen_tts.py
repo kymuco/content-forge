@@ -70,7 +70,7 @@ class QwenTTSConfig(FrozenModel):
         marker = markers[self.mode]
         if marker not in folded:
             raise ValueError(f"Qwen TTS model_id does not match mode {self.mode!r}")
-        if self.model_id != _DEFAULT_MODEL_ID and self.revision == _DEFAULT_MODEL_REVISION:
+        if self.model_id != _DEFAULT_MODEL_ID and "revision" not in self.model_fields_set:
             raise ValueError("non-default Qwen TTS model requires an explicit model revision")
         return self
 
@@ -236,8 +236,8 @@ def _sha256_file(path: Path) -> str:
 
 
 def _is_06b_custom_voice(config: QwenTTSConfig) -> bool:
-    folded = config.model_id.casefold().replace("_", "").replace("-", "")
-    return config.mode == "custom_voice" and "0.6b".replace(".", "") in folded.replace(".", "")
+    normalized = "".join(character for character in config.model_id.casefold() if character.isalnum())
+    return config.mode == "custom_voice" and "06b" in normalized
 
 
 class QwenTTSProvider:
@@ -296,6 +296,12 @@ class QwenTTSProvider:
         if self.config.mode == "voice_clone":
             if request.reference is None:
                 raise TTSResponseError("Qwen3-TTS voice_clone requires reference audio")
+            if request.instruction is not None:
+                raise TTSResponseError("Qwen3-TTS voice_clone does not accept an instruction")
+            if request.reference.x_vector_only_mode and request.reference.text is not None:
+                raise TTSResponseError(
+                    "Qwen3-TTS x-vector-only voice_clone must omit reference text because it is ignored"
+                )
             if not request.reference.x_vector_only_mode and request.reference.text is None:
                 raise TTSResponseError(
                     "Qwen3-TTS voice_clone requires reference text unless x_vector_only_mode is enabled"
