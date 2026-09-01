@@ -67,6 +67,28 @@ def test_programmatic_asgi_lan_plaintext_is_rejected_but_https_is_allowed(tmp_pa
         app.state.runtime_lease.close()
 
 
+def test_dialogue_middleware_preserves_plaintext_lan_transport_rejection(tmp_path) -> None:
+    app = create_app(root=tmp_path)
+
+    async def request():
+        transport = httpx.ASGITransport(
+            app=app,
+            client=("192.168.50.23", 48152),
+        )
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://content-forge.lan",
+        ) as client:
+            return await client.get("/api/v1/dialogue/review-queue")
+
+    try:
+        response = asyncio.run(request())
+        assert response.status_code == 426
+        assert response.json()["detail"] == "non-loopback requests require HTTPS"
+    finally:
+        app.state.runtime_lease.close()
+
+
 def test_pairing_challenge_rejects_nonloopback_browser_authority(tmp_path) -> None:
     client = TestClient(create_app(root=tmp_path))
     assert client.post(
