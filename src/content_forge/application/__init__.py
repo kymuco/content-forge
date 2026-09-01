@@ -88,11 +88,11 @@ from .voiced_scene import (
     VoicedSceneScenePlan,
     VoicedSceneTrackPlan,
     VoicedSceneValidationError,
-    VoicedSceneWorkflow,
     natural_dialogue_preset,
     voiced_scene_manifest,
     voiced_story_digest,
 )
+from .voiced_scene_hardening import VoicedSceneWorkflow
 from .voiced_story import (
     ProjectVoicedStoryManifest,
     TimedTextCue,
