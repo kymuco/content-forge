@@ -10,13 +10,13 @@ from .dialogue import (
     DialogueLine,
     DialogueNotFoundError,
     DialogueValidationError,
-    DialogueWorkflow,
     ProjectDialogueManifest,
     SceneDialogue,
     SceneFocusHint,
     dialogue_manifest,
     scene_dialogue_digest,
 )
+from .dialogue_pr19_hardening import DialogueWorkflow
 from .inbox import InboxError, InboxService, UploadTooLargeError
 from .models import (
     AuthSession,
