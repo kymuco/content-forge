@@ -122,6 +122,7 @@ def test_pr23_installed_surface_returns_preview_manifest_and_dematerializes(
         )
         assert current.status_code == 200
         assert current.json()["contract_version"] == "pr23_voiced_scene_manifest_v1"
+        assert current.json()["plan"]["project_id"] == project_id
 
         materialized = client.post(
             f"/api/v1/voiced-scene/projects/{project_id}/materialize",
@@ -129,7 +130,11 @@ def test_pr23_installed_surface_returns_preview_manifest_and_dematerializes(
             json={},
         )
         assert materialized.status_code == 200
-        assert materialized.json()["plan"]["passed"] if "passed" in materialized.json()["plan"] else True
+        payload = materialized.json()
+        assert payload["contract_version"] == "pr23_voiced_scene_manifest_v1"
+        assert payload["project_id"] == project_id
+        assert payload["plan"]["contract_version"] == "pr23_voiced_scene_plan_v1"
+        assert payload["plan"]["issues"] == []
 
         removed = client.delete(
             f"/api/v1/voiced-scene/projects/{project_id}/materialization",
