@@ -169,11 +169,11 @@ def _validated_resume_state(value: object, *, label: str) -> ProjectState:
     return state
 
 
-def _review_task_for(
+def _review_payload_for(
     extraction: PanelTextExtraction,
     *,
     resume_state: ProjectState,
-) -> ReviewTask | None:
+) -> dict[str, object] | None:
     uncertain = extraction.uncertain_region_ids
     if not uncertain:
         return None
@@ -191,20 +191,31 @@ def _review_task_for(
         }
         for region_id in uncertain
     ]
+    return {
+        "scene_id": extraction.scene_id,
+        "asset_id": extraction.asset_id,
+        "resume_state": resume_state.value,
+        "extraction_digest": panel_extraction_digest(extraction),
+        "uncertain_region_ids": list(uncertain),
+        "regions": payload_regions,
+    }
+
+
+def _review_task_for(
+    extraction: PanelTextExtraction,
+    *,
+    resume_state: ProjectState,
+) -> ReviewTask | None:
+    payload = _review_payload_for(extraction, resume_state=resume_state)
+    if payload is None:
+        return None
     return ReviewTask(
         project_id=extraction.project_id,
         task_type=_OCR_REVIEW_TASK,
         attention=AttentionMode.REVIEW,
         priority=ReviewPriority.HIGH,
         blocking=True,
-        payload={
-            "scene_id": extraction.scene_id,
-            "asset_id": extraction.asset_id,
-            "resume_state": resume_state.value,
-            "extraction_digest": panel_extraction_digest(extraction),
-            "uncertain_region_ids": list(uncertain),
-            "regions": payload_regions,
-        },
+        payload=payload,
     )
 
 
@@ -518,6 +529,15 @@ class PanelOCRWorkflow:
         expected_digest = task.payload.get("extraction_digest")
         if expected_digest != panel_extraction_digest(extraction):
             raise PanelOCRConflictError("OCR correction task no longer matches raw extraction")
+        canonical_payload = _review_payload_for(
+            extraction,
+            resume_state=checkpoint_resume_state,
+        )
+        task_payload = task.model_dump(mode="json")["payload"]
+        if canonical_payload is None or task_payload != canonical_payload:
+            raise PanelOCRConflictError(
+                "OCR correction task payload no longer matches retained extraction"
+            )
 
         uncertain = set(extraction.uncertain_region_ids)
         supplied = set(corrections)
