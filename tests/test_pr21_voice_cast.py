@@ -19,6 +19,7 @@ from content_forge.application import (
     VoiceCastDefinition,
     VoiceCastRegistry,
     VoiceCastWorkflow,
+    tts_manifest,
 )
 from content_forge.core import AssetRef, MediaType, Project, ProjectState, Scene
 from content_forge.providers import (
@@ -339,10 +340,19 @@ def test_cast_synthesis_reuses_pr20_cache_and_rebind_invalidates_it(tmp_path: Pa
         "protagonist",
         cast_revision=revision2.revision,
     )
+    rebound_project = library.load_project(project_id)
+    assert rebound_project is not None
+    assert tts_manifest(rebound_project).lines == ()
+
     second = workflow.synthesize_line(project_id, scene_id, "dlg_ocr_0000")
     assert len(provider.calls) == 2
     assert second.cache_key != first.cache_key
     assert second.audio_sha256 != first.audio_sha256
+
+    workflow.unbind_character(project_id, "alice")
+    unbound_project = library.load_project(project_id)
+    assert unbound_project is not None
+    assert tts_manifest(unbound_project).lines == ()
 
 
 def test_cast_synthesis_rejects_project_change_after_resolution(
