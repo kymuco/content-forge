@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from content_forge.providers import PublishingProviderHealth
+from content_forge.providers.publishing import PublishingProviderHealth
 
 from .publishing import PublishingRepository as _BasePublishingRepository
 
