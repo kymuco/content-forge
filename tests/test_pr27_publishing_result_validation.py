@@ -22,7 +22,7 @@ from content_forge.providers.publishing import (
 from content_forge.providers.publishing_validation import validate_publish_result
 
 
-def _approved():
+def _approved(*, scheduled_for: datetime | None = None):
     manifest = RenderArtifactManifest(
         job_id=new_entity_id(EntityKind.JOB),
         project_id=new_entity_id(EntityKind.PROJECT),
@@ -47,7 +47,11 @@ def _approved():
     request = PublishRequest(
         artifact=publish_artifact_ref(manifest),
         target=PublishTarget(provider_id="fixture", destination_id="channel-main"),
-        metadata=PublishMetadata(title="Approved title", visibility="private"),
+        metadata=PublishMetadata(
+            title="Approved title",
+            visibility="private",
+            scheduled_for=scheduled_for,
+        ),
     )
     return approve_publish_request(request)
 
@@ -60,7 +64,7 @@ def _health() -> PublishingProviderHealth:
     )
 
 
-def _result(approved, **evidence_updates) -> PublishResult:
+def _result(approved, *, disposition: str = "published", **evidence_updates) -> PublishResult:
     evidence = PublishInvocationEvidence(
         provider_id="fixture",
         provider_version="1",
@@ -70,7 +74,7 @@ def _result(approved, **evidence_updates) -> PublishResult:
         destination_id=approved.request.target.destination_id,
     ).model_copy(update=evidence_updates)
     return PublishResult(
-        disposition="published",
+        disposition=disposition,
         remote_id="remote-1",
         remote_url="https://example.invalid/watch/remote-1",
         effective_at=datetime(2026, 9, 2, 13, 0, tzinfo=timezone.utc),
@@ -122,8 +126,26 @@ def test_pr27_validate_publish_result_rejects_wrong_or_unavailable_provider() ->
         )
 
 
-def test_pr27_scheduled_result_requires_scheduled_request() -> None:
+def test_pr27_unscheduled_request_requires_published_result() -> None:
     approved = _approved()
-    result = _result(approved).model_copy(update={"disposition": "scheduled"})
-    with pytest.raises(PublishingResponseError, match="unscheduled request"):
-        validate_publish_result(approved, _health(), result)
+    with pytest.raises(PublishingResponseError, match="must be published"):
+        validate_publish_result(
+            approved,
+            _health(),
+            _result(approved, disposition="scheduled"),
+        )
+
+
+def test_pr27_scheduled_request_requires_scheduled_result() -> None:
+    approved = _approved(
+        scheduled_for=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+    )
+    scheduled = _result(approved, disposition="scheduled")
+    assert validate_publish_result(approved, _health(), scheduled) is scheduled
+
+    with pytest.raises(PublishingResponseError, match="must be scheduled"):
+        validate_publish_result(
+            approved,
+            _health(),
+            _result(approved, disposition="published"),
+        )
