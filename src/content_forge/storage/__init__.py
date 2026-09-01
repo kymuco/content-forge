@@ -20,9 +20,9 @@ from .library_index import (
     LibrarySearchQuery,
     LibraryTag,
     LibraryTagKind,
-    ProductionLibraryIndex,
     VirtualCollection,
 )
+from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths, default_runtime_root
 from .records import DerivativeSlot, SourceInput, StoredJob
 
