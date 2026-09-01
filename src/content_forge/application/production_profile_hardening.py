@@ -53,6 +53,14 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         self.library = library
         self.registry = ProductionProfileRegistry(library, registries)
 
+    def _snapshot(self, project_id: str) -> tuple[Project, str]:
+        try:
+            return super()._snapshot(project_id)
+        except ValueError as exc:
+            raise _base.ProductionProfileValidationError(
+                "invalid project ID"
+            ) from exc
+
     def _validate_snapshot_revision(
         self,
         manifest: _base.ProjectProductionProfileManifest,
