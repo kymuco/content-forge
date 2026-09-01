@@ -150,11 +150,15 @@ class _FakeProvider:
 
     def extract(self, request: OCRRequest) -> OCRResult:
         self.calls += 1
+        evidence = self.result.evidence.validated_copy(
+            update={"request_sha256": semantic_ocr_request_digest(request)}
+        )
         return self.result.validated_copy(
             update={
                 "source_sha256": request.source_sha256,
                 "width": request.width,
                 "height": request.height,
+                "evidence": evidence,
             }
         )
 
@@ -269,7 +273,10 @@ def test_panel_ocr_workflow_retains_raw_text_and_resolves_uncertain_review(
         if item.review_task_id == task.review_task_id
     )
     assert resolved.status is ReviewStatus.RESOLVED
-    assert resolved.accepted_value["corrections"] == {"ocr_0001": "Corrected uncertain"}
+    assert resolved.accepted_value is not None
+    assert dict(resolved.accepted_value["corrections"]) == {
+        "ocr_0001": "Corrected uncertain"
+    }
 
     with pytest.raises(PanelOCRConflictError, match="already closed"):
         workflow.apply_corrections(
