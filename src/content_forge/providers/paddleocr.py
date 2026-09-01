@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from numbers import Real
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from content_forge.core.models import FrozenModel
 
@@ -247,14 +247,19 @@ class PaddleOCRProvider:
                 continue
             polygon = _points(polygons[provider_index])
             box_value = None if boxes is None else boxes[provider_index]
-            region = OCRRegion(
-                region_id=f"ocr_{len(regions):04d}",
-                provider_index=provider_index,
-                raw_text=raw,
-                confidence=_finite_score(scores[provider_index]),
-                polygon=polygon,
-                bbox=_bbox(box_value, polygon),
-            )
+            try:
+                region = OCRRegion(
+                    region_id=f"ocr_{len(regions):04d}",
+                    provider_index=provider_index,
+                    raw_text=raw,
+                    confidence=_finite_score(scores[provider_index]),
+                    polygon=polygon,
+                    bbox=_bbox(box_value, polygon),
+                )
+            except ValidationError as exc:
+                raise OCRResponseError(
+                    "PaddleOCR recognition region violates the OCR contract"
+                ) from exc
             regions.append(region)
 
         config_json = self.config.model_dump(mode="json")
@@ -274,7 +279,7 @@ class PaddleOCRProvider:
                 regions=tuple(regions),
                 evidence=evidence,
             )
-        except Exception as exc:
+        except ValidationError as exc:
             raise OCRResponseError("PaddleOCR result violates source geometry contract") from exc
 
 
