@@ -69,7 +69,7 @@ def _project_payload(
     project_id: str,
 ) -> dict[str, object]:
     project, _ = workflow._snapshot(project_id)
-    manifest = workflow.manifest(project_id)
+    manifest = workflow.validate_snapshot(project)
     return {
         "project_id": project.project_id,
         "project_state": project.state.value,
