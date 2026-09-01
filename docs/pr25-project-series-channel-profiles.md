@@ -36,14 +36,16 @@ Registry revisions are immutable. Re-putting an identical definition is idempote
 
 ## External evidence validation
 
-Before a profile revision is accepted or read as current, PR25 validates its external references:
+Before a profile revision is accepted or used as current authority, PR25 validates its external references:
 
 - template ID/version must exist in the supplied template registry;
 - an optional skin must exist and be declared by the selected template;
 - cast defaults must resolve to the exact PR21 revision and definition digest;
 - pinned local assets must exist, retain the exact SHA-256, have a compatible media type, and pass content-store verification.
 
-The exact revision stored by a Project is revalidated against the registry before PR25-owned state is trusted, replaced, or removed. This prevents a reusable profile from becoming a bag of unverified string identifiers or a stale retained snapshot whose external references are no longer valid.
+`put`, `get`, latest-revision listing, ordinary Project manifest reads, same-revision binds and target revisions for rebind all preserve that fail-closed rule.
+
+Safe removal has a narrower requirement by design. `unbind()` and removal of an old revision during rebind verify that the immutable registry record still exactly matches the Project snapshot and that PR25-owned Project fields have not drifted, but they do **not** require an old optional cast/music/watermark dependency to remain available. A missing external dependency may make the old profile unusable, but it cannot permanently trap the Project under authority that the user is trying to remove.
 
 ## Project binding
 
@@ -65,16 +67,44 @@ PR25 can safely rebind or unbind because it only claims ownership of fields that
 Before replacement/removal it:
 
 1. parses the retained profile manifest;
-2. revalidates the exact retained registry revision and all external references;
+2. verifies the exact retained immutable registry record still equals the Project snapshot;
 3. verifies any PR25-owned template/output values still exactly equal the retained definition;
 4. removes only the values whose ownership flags are true;
 5. preserves explicit Project values that PR25 never owned.
 
-A rebind then applies the new revision to that reconstructed base and commits the complete change with one CAS against the original persisted Project snapshot. There is no persisted intermediate Project with old profile metadata and partially replaced defaults.
+For a rebind, the **new** target revision is fully externally validated before it is applied. The workflow then applies the target revision to the reconstructed base and commits the complete change with one CAS against the original persisted Project snapshot. There is no persisted intermediate Project with old profile metadata and partially replaced defaults.
 
-Binding the same exact revision is idempotent. `unbind()` removes the PR25 metadata and only PR25-owned defaults. Drift of owned state is a conflict rather than a best-effort restore.
+Binding the same exact revision is idempotent. `unbind()` removes the PR25 metadata and only PR25-owned defaults. Drift of owned state or immutable revision identity is a conflict rather than a best-effort restore.
 
-Mutations are limited to `INBOX`, `DRAFT`, and `PREPARED`. PR25 does not silently alter already-reviewed/ready/rendered Projects, so it does not need to invent a parallel preview-approval invalidation path.
+Mutations are limited to `INBOX`, `DRAFT`, and `PREPARED`. PR25 does not silently alter already-reviewed/ready/rendered Projects, so it does not invent a parallel preview-approval invalidation path.
+
+## HTTP surface
+
+PR25 installs an authenticated production-profile API through the normal `create_app()` path:
+
+- list latest profile revisions;
+- create an immutable revision (idempotent identical definitions return the existing revision);
+- get an exact/latest profile revision;
+- inspect one Project's exact profile snapshot;
+- bind or rebind a Project explicitly;
+- unbind a Project explicitly.
+
+The transport boundary requires secure transport where applicable, authenticates before JSON parsing, requires JSON for write bodies, requires `Content-Length`, and caps profile request bodies at 256 KiB.
+
+Project responses are built from one exact Project snapshot: PR25 validates the retained manifest against that same in-memory Project object instead of performing a second Project read, preventing a read-side bind/rebind TOCTOU mix of core fields and profile metadata.
+
+## PWA surface
+
+The packaged PWA exposes a production-profile panel for:
+
+- browsing immutable latest revisions;
+- creating/revising the basic reusable profile fields exposed by the browser UI;
+- selecting a recent Project;
+- explicit bind/rebind to a selected revision;
+- explicit unbind;
+- showing the exact retained Project revision and whether PR25 owns template/output defaults.
+
+The browser remains an API client rather than a second authority. It does not independently materialize cast, language, credit, branding, music or reaction defaults. Installed shells advance the service-worker cache namespace from v12 to v13 so the new panel cannot be shadowed by the previous cached UI.
 
 ## Authority boundaries
 
@@ -91,13 +121,8 @@ PR25 does **not** replace:
 
 It only provides reusable, exact, revisioned defaults and bounded explicit Project snapshot operations.
 
-## Remaining PR25 layers
+## Deliberate follow-ons / non-goals
 
-Still to add on top of this authority contract:
+PR25 retains several defaults without automatically consuming them. Later bounded integrations may apply language, credit, cast-role, branding, music or reaction defaults only where they can do so without stealing authority from PR16, PR21, provenance or PR14.
 
-- authenticated profile create/list/get and Project bind/rebind/unbind API;
-- PWA profile management/selection;
-- bounded consumers for language, credit, cast-role, branding, music and reaction defaults where they can be applied without stealing authority from PR16/PR21/provenance/PR14;
-- adversarial corruption/TOCTOU regressions for the final surface.
-
-Automatic narrative-character to cast-role guessing and implicit mutation of already-reviewed/rendered Projects remain non-goals.
+Automatic narrative-character to cast-role guessing, hidden live inheritance from a changing profile revision, and implicit mutation of already-reviewed/rendered Projects remain non-goals.
