@@ -6,6 +6,8 @@ import unicodedata
 
 from . import library_index as _base
 
+_MAX_QUERY_TAGS = 128
+
 
 def _normalize_tag_value(value: str) -> str:
     """Mirror the PR26 normalization contract while rejecting non-scalar text."""
@@ -40,6 +42,11 @@ def _prefix_upper_bound(prefix: str) -> str | None:
     return None
 
 
+def _require_query_bound(query: _base.LibrarySearchQuery) -> None:
+    if len(query.tags) > _MAX_QUERY_TAGS:
+        raise ValueError(f"library search query exceeds {_MAX_QUERY_TAGS} exact tags")
+
+
 # Base Pydantic validators resolve this module global at validation time. Replace the
 # original helper once the public hardened storage surface loads so malformed lone
 # surrogates fail as validation errors before they can reach sqlite3's UTF-8 encoder.
@@ -47,7 +54,7 @@ _base._normalize_tag_value = _normalize_tag_value
 
 
 class ProductionLibraryIndex(_base.ProductionLibraryIndex):
-    """Final PR26 index surface with atomic schema setup and Unicode-correct prefix search."""
+    """Final PR26 index surface with atomic schema setup and bounded Unicode search."""
 
     def initialize(self) -> "ProductionLibraryIndex":
         with self.database.transaction() as connection:
@@ -120,6 +127,7 @@ class ProductionLibraryIndex(_base.ProductionLibraryIndex):
         return self
 
     def search(self, query: _base.LibrarySearchQuery) -> tuple[_base.LibrarySearchHit, ...]:
+        _require_query_bound(query)
         if query.tag_prefix is None:
             return super().search(query)
 
@@ -222,6 +230,15 @@ class ProductionLibraryIndex(_base.ProductionLibraryIndex):
             )
             for row in rows
         )
+
+    def put_collection(
+        self,
+        collection_id: _base.RegistryKey,
+        name: str,
+        query: _base.LibrarySearchQuery,
+    ) -> _base.VirtualCollection:
+        _require_query_bound(query)
+        return super().put_collection(collection_id, name, query)
 
 
 __all__ = ["ProductionLibraryIndex"]
