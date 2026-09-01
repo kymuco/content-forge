@@ -8,6 +8,7 @@ import math
 import struct
 import wave
 from collections.abc import Callable, Iterable
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,6 +30,8 @@ from .tts import (
 
 _PROVIDER_ID = "qwen3_tts_local"
 _SUPPORTED_QWEN_TTS_SERIES = (0, 1)
+_DEFAULT_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+_DEFAULT_MODEL_REVISION = "85e237c12c027371202489a0ec509ded67b5e4b5"
 _LANGUAGE_NAMES = {
     "zh": "Chinese",
     "en": "English",
@@ -46,18 +49,15 @@ _LANGUAGE_NAMES = {
 class QwenTTSConfig(FrozenModel):
     """Portable Qwen3-TTS model intent; weights/device remain local runtime concerns."""
 
-    model_id: str = Field(
-        default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-        min_length=1,
-        max_length=512,
-    )
+    model_id: str = Field(default=_DEFAULT_MODEL_ID, min_length=1, max_length=512)
+    revision: str = Field(default=_DEFAULT_MODEL_REVISION, min_length=1, max_length=256)
     mode: Literal["custom_voice", "voice_clone", "voice_design"] = "custom_voice"
     device_map: str = Field(default="auto", min_length=1, max_length=128)
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     attn_implementation: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
-    def model_matches_mode(self):
+    def model_matches_mode_and_revision(self):
         folded = self.model_id.casefold()
         markers = {
             "custom_voice": "customvoice",
@@ -67,6 +67,8 @@ class QwenTTSConfig(FrozenModel):
         marker = markers[self.mode]
         if marker not in folded:
             raise ValueError(f"Qwen TTS model_id does not match mode {self.mode!r}")
+        if self.model_id != _DEFAULT_MODEL_ID and self.revision == _DEFAULT_MODEL_REVISION:
+            raise ValueError("non-default Qwen TTS model requires an explicit model revision")
         return self
 
 
@@ -106,6 +108,7 @@ def _default_runtime_factory(config: QwenTTSConfig):
         "float32": torch.float32,
     }[config.dtype]
     kwargs: dict[str, object] = {
+        "revision": config.revision,
         "device_map": config.device_map,
         "dtype": dtype,
     }
@@ -243,6 +246,7 @@ class QwenTTSProvider:
                 provider_id=_PROVIDER_ID,
                 provider_version=self._provider_version_override or "unavailable",
                 model_id=self.config.model_id,
+                model_revision=self.config.revision,
                 config_sha256=self._config_sha256(),
                 available=False,
                 reason=str(exc),
@@ -251,6 +255,7 @@ class QwenTTSProvider:
             provider_id=_PROVIDER_ID,
             provider_version=version,
             model_id=self.config.model_id,
+            model_revision=self.config.revision,
             config_sha256=self._config_sha256(),
             available=True,
         )
@@ -311,7 +316,10 @@ class QwenTTSProvider:
         except Exception as exc:
             raise TTSExecutionError("Qwen3-TTS generation failed") from exc
 
-        if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+        if isinstance(sample_rate, bool) or not isinstance(sample_rate, Integral):
+            raise TTSResponseError("Qwen3-TTS returned an invalid sample rate")
+        sample_rate = int(sample_rate)
+        if sample_rate <= 0:
             raise TTSResponseError("Qwen3-TTS returned an invalid sample rate")
         samples = _finite_samples(_one_waveform(waveforms))
         output = Path(request.output_path)
@@ -334,6 +342,7 @@ class QwenTTSProvider:
                 provider_id=_PROVIDER_ID,
                 provider_version=self._provider_version(),
                 model_id=self.config.model_id,
+                model_revision=self.config.revision,
                 engine="qwen-tts",
                 request_sha256=request_sha256,
                 config_sha256=self._config_sha256(),
