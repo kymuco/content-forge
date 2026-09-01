@@ -73,6 +73,18 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
         if validate_external:
             self.registry._validate_definition(current.definition)
 
+    def validate_snapshot(
+        self,
+        project: Project,
+    ) -> _base.ProjectProductionProfileManifest | None:
+        """Validate PR25 authority using exactly the supplied Project snapshot."""
+
+        manifest = _base.production_profile_manifest(project)
+        if manifest is not None:
+            self._validate_materialized(project, manifest)
+            self._validate_snapshot_revision(manifest, validate_external=True)
+        return manifest
+
     def _base_project(
         self,
         project: Project,
@@ -109,11 +121,7 @@ class ProductionProfileWorkflow(_base.ProductionProfileWorkflow):
 
     def manifest(self, project_id: str) -> _base.ProjectProductionProfileManifest | None:
         project, _ = self._snapshot(project_id)
-        manifest = _base.production_profile_manifest(project)
-        if manifest is not None:
-            self._validate_materialized(project, manifest)
-            self._validate_snapshot_revision(manifest, validate_external=True)
-        return manifest
+        return self.validate_snapshot(project)
 
     def bind(
         self,
