@@ -14,6 +14,9 @@
   if (!panel || !projectInput || !projectOptions || !previewButton || !materializeButton
       || !scenesNode || !statusNode || !countNode) return;
 
+  let activeAudio = null;
+  let activeAudioUrl = null;
+
   function setHidden(element, hidden) { element.classList.toggle("hidden", Boolean(hidden)); }
   function setStatus(message, kind) {
     statusNode.textContent = message || "";
@@ -50,6 +53,70 @@
     return response;
   }
   async function apiJson(relativePath, options) { return (await api(relativePath, options)).json(); }
+
+  function stopAudio() {
+    if (activeAudio) {
+      try { activeAudio.pause(); } catch (_) {}
+      activeAudio = null;
+    }
+    if (activeAudioUrl) {
+      URL.revokeObjectURL(activeAudioUrl);
+      activeAudioUrl = null;
+    }
+  }
+
+  async function listenLine(projectId, sceneId, lineId) {
+    setStatus(`Loading ${lineId}…`);
+    const response = await api(
+      `voiced-story/projects/${encodeURIComponent(projectId)}`
+      + `/scenes/${encodeURIComponent(sceneId)}`
+      + `/lines/${encodeURIComponent(lineId)}/audio`
+    );
+    const blob = await response.blob();
+    stopAudio();
+    activeAudioUrl = URL.createObjectURL(blob);
+    activeAudio = new Audio(activeAudioUrl);
+    activeAudio.addEventListener("ended", stopAudio, { once: true });
+    activeAudio.addEventListener("error", stopAudio, { once: true });
+    await activeAudio.play();
+    setStatus(`Playing ${lineId}.`, "success");
+  }
+
+  async function regenerateLine(projectId, sceneId, lineId) {
+    setStatus(`Regenerating ${lineId}…`);
+    const payload = await apiJson(
+      `voiced-story/projects/${encodeURIComponent(projectId)}`
+      + `/scenes/${encodeURIComponent(sceneId)}`
+      + `/lines/${encodeURIComponent(lineId)}/regenerate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }
+    );
+    let manifest = payload && payload.manifest;
+    let mode = payload && payload.materialized ? "materialized" : "derived";
+    if (!manifest) {
+      try {
+        manifest = await apiJson(
+          `voiced-story/projects/${encodeURIComponent(projectId)}/preview`
+        );
+      } catch (error) {
+        setStatus(
+          `Voice regenerated, but timing refresh failed: ${error.message || "unknown error"}`,
+          "error"
+        );
+        return;
+      }
+    }
+    drawManifest(manifest, mode);
+    setStatus(
+      payload && payload.materialized
+        ? `${lineId} regenerated and materialized timing refreshed.`
+        : `${lineId} regenerated; derived timing refreshed.`,
+      "success"
+    );
+  }
 
   function drawManifest(manifest, mode) {
     scenesNode.replaceChildren();
@@ -88,6 +155,28 @@
           `${seconds(line.start_seconds)} → ${seconds(line.end_seconds)} · audio ${seconds(line.audio_duration_seconds)}`,
           "muted compact-text mono wrap"
         ));
+
+        const actions = document.createElement("div");
+        actions.className = "row";
+        const listen = document.createElement("button");
+        listen.className = "ghost";
+        listen.type = "button";
+        listen.textContent = "Listen";
+        listen.addEventListener("click", () => guardedAction(
+          listen,
+          () => listenLine(manifest.project_id, scene.scene_id, line.line_id)
+        ));
+        const regenerate = document.createElement("button");
+        regenerate.className = "secondary";
+        regenerate.type = "button";
+        regenerate.textContent = "Regenerate";
+        regenerate.addEventListener("click", () => guardedAction(
+          regenerate,
+          () => regenerateLine(manifest.project_id, scene.scene_id, line.line_id)
+        ));
+        actions.append(listen, regenerate);
+        block.appendChild(actions);
+
         const cues = Array.isArray(line.cues) ? line.cues : [];
         if (cues.length) {
           const cueList = document.createElement("div");
@@ -126,7 +215,7 @@
   async function materialize() {
     const projectId = selectedProjectId();
     setStatus(`Materializing voiced timing for ${projectId}…`);
-    const manifest = await apiJson(
+    const response = await api(
       `voiced-story/projects/${encodeURIComponent(projectId)}/materialize`,
       {
         method: "POST",
@@ -134,8 +223,22 @@
         body: JSON.stringify({}),
       }
     );
+    if (response.status === 204) {
+      stopAudio();
+      scenesNode.replaceChildren();
+      countNode.textContent = "0";
+      setStatus(
+        "Accepted voiced dialogue is empty; PR22 timing, text, and voice-track ownership was removed.",
+        "success"
+      );
+      return;
+    }
+    const manifest = await response.json();
     drawManifest(manifest, "materialized");
-    setStatus("Voiced-story timing is materialized from current PR19/PR20/PR21 authority.", "success");
+    setStatus(
+      "Voiced-story timing, timed text, and voice tracks are materialized from current PR19/PR20/PR21 authority.",
+      "success"
+    );
   }
 
   async function refreshRecentProjectOptions() {
@@ -158,6 +261,7 @@
     const bearer = await token();
     setHidden(panel, !bearer);
     if (!bearer) {
+      stopAudio();
       scenesNode.replaceChildren();
       countNode.textContent = "0";
       return;
@@ -195,6 +299,7 @@
     });
   }
   window.addEventListener("focus", refresh);
+  window.addEventListener("beforeunload", stopAudio);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();
   });
