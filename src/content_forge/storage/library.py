@@ -8,7 +8,7 @@ from content_forge.core import Project
 
 from .asset_store import AssetStore
 from .database import LibraryDatabase
-from .library_index import ProductionLibraryIndex
+from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths
 
 
