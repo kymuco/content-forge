@@ -315,6 +315,7 @@ class LineTTSWorkflow:
             evidence.provider_id != health.provider_id
             or evidence.provider_version != health.provider_version
             or evidence.model_id != health.model_id
+            or evidence.model_revision != health.model_revision
             or evidence.config_sha256 != health.config_sha256
         ):
             raise TTSValidationError("TTS provider identity changed during synthesis")
@@ -341,6 +342,7 @@ class LineTTSWorkflow:
             provider_id=record.evidence.provider_id,
             provider_version=record.evidence.provider_version,
             model_id=record.evidence.model_id,
+            model_revision=record.evidence.model_revision,
             config_sha256=record.evidence.config_sha256,
             available=True,
         )
