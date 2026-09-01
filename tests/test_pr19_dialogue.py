@@ -131,6 +131,43 @@ def _register_cast(workflow: DialogueWorkflow, project_id: str) -> None:
     )
 
 
+def _assignment() -> DialogueAssignment:
+    return DialogueAssignment(
+        reading_order=("ocr_0000", "ocr_0001"),
+        speaker_by_region={"ocr_0000": "alice", "ocr_0001": "bob"},
+    )
+
+
+def _replace_scene_media(
+    tmp_path: Path,
+    library: LocalLibrary,
+    project_id: str,
+) -> None:
+    replacement_source = tmp_path / "replacement-panel.bin"
+    replacement_source.write_bytes(b"replacement dialogue panel")
+    ingested = library.assets.ingest_file(
+        replacement_source,
+        media_type=MediaType.IMAGE,
+        mime_type="image/png",
+    )
+    replacement = ingested.asset.validated_copy(update={"width": 100, "height": 100})
+    ApplicationRepository(library.database).enrich_asset(replacement)
+
+    current = library.load_project(project_id)
+    assert current is not None
+    replaced_scene = current.scenes[0].validated_copy(
+        update={"media": AssetRef(asset_id=replacement.asset_id)}
+    )
+    library.save_project(
+        current.validated_copy(
+            update={
+                "source_refs": (*current.source_refs, AssetRef(asset_id=replacement.asset_id)),
+                "scenes": (replaced_scene, *current.scenes[1:]),
+            }
+        )
+    )
+
+
 def test_dialogue_assignment_requires_explicit_reading_order_and_speaker_authority(
     tmp_path: Path,
 ) -> None:
@@ -142,10 +179,7 @@ def test_dialogue_assignment_requires_explicit_reading_order_and_speaker_authori
     suggestion = DialogueAssignmentSuggestion(
         label="Candidate",
         provider="fake_assistant",
-        assignment=DialogueAssignment(
-            reading_order=("ocr_0000", "ocr_0001"),
-            speaker_by_region={"ocr_0000": "alice", "ocr_0001": "bob"},
-        ),
+        assignment=_assignment(),
     )
     prepared = workflow.prepare_scene_assignment(
         project.project_id,
@@ -159,6 +193,17 @@ def test_dialogue_assignment_requires_explicit_reading_order_and_speaker_authori
     assert {item["character_id"] for item in task.payload["characters"]} == {"alice", "bob"}
     assert len(task.suggestions) == 1
     assert task.accepted_value is None
+
+    repeated = workflow.prepare_scene_assignment(
+        project.project_id,
+        scenes[0].scene_id,
+        suggestions=(suggestion,),
+    )
+    repeated_task = next(
+        item for item in repeated.review_tasks if item.task_type == "dialogue_scene_assignment"
+    )
+    assert repeated_task.review_task_id == task.review_task_id
+    assert repeated_task.suggestions == task.suggestions
 
     accepted = workflow.apply_scene_assignment(
         project.project_id,
@@ -221,7 +266,7 @@ def test_dialogue_cannot_start_or_change_cast_during_uncertain_ocr_review(
     extracted = ocr.extract_scene(project.project_id, scenes[0].scene_id)
     assert extracted.state is ProjectState.NEEDS_REVIEW
 
-    with pytest.raises(DialogueConflictError, match="another blocking review"):
+    with pytest.raises(DialogueConflictError, match="OCR uncertainty"):
         workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
 
     with pytest.raises(DialogueConflictError, match="another blocking review"):
@@ -236,33 +281,24 @@ def test_dialogue_rejects_retained_ocr_after_scene_media_replacement(tmp_path: P
     ocr.extract_scene(project.project_id, scenes[0].scene_id)
     workflow = DialogueWorkflow(library)
     _register_cast(workflow, project.project_id)
-
-    replacement_source = tmp_path / "replacement-panel.bin"
-    replacement_source.write_bytes(b"replacement dialogue panel")
-    ingested = library.assets.ingest_file(
-        replacement_source,
-        media_type=MediaType.IMAGE,
-        mime_type="image/png",
-    )
-    replacement = ingested.asset.validated_copy(update={"width": 100, "height": 100})
-    ApplicationRepository(library.database).enrich_asset(replacement)
-
-    current = library.load_project(project.project_id)
-    assert current is not None
-    replaced_scene = current.scenes[0].validated_copy(
-        update={"media": AssetRef(asset_id=replacement.asset_id)}
-    )
-    library.save_project(
-        current.validated_copy(
-            update={
-                "source_refs": (*current.source_refs, AssetRef(asset_id=replacement.asset_id)),
-                "scenes": (replaced_scene,),
-            }
-        )
-    )
+    _replace_scene_media(tmp_path, library, project.project_id)
 
     with pytest.raises(DialogueConflictError, match="no longer matches"):
         workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
+
+
+def test_accepted_dialogue_fails_closed_after_source_provenance_drifts(tmp_path: Path) -> None:
+    library, project, scenes, ocr = _project(tmp_path)
+    ocr.extract_scene(project.project_id, scenes[0].scene_id)
+    workflow = DialogueWorkflow(library)
+    _register_cast(workflow, project.project_id)
+    prepared = workflow.prepare_scene_assignment(project.project_id, scenes[0].scene_id)
+    task = next(task for task in prepared.review_tasks if task.task_type == "dialogue_scene_assignment")
+    workflow.apply_scene_assignment(project.project_id, task.review_task_id, _assignment())
+
+    _replace_scene_media(tmp_path, library, project.project_id)
+    with pytest.raises(DialogueConflictError, match="no longer matches"):
+        workflow.manifest(project.project_id)
 
 
 def test_tampered_dialogue_review_payload_cannot_authorize_assignment(tmp_path: Path) -> None:
@@ -292,10 +328,7 @@ def test_tampered_dialogue_review_payload_cannot_authorize_assignment(tmp_path: 
         workflow.apply_scene_assignment(
             project.project_id,
             task.review_task_id,
-            DialogueAssignment(
-                reading_order=("ocr_0000", "ocr_0001"),
-                speaker_by_region={"ocr_0000": "alice", "ocr_0001": "bob"},
-            ),
+            _assignment(),
         )
     assert workflow.manifest(project.project_id).scenes == ()
 
@@ -334,10 +367,7 @@ def test_multi_panel_dialogue_shares_resume_checkpoint_until_last_assignment(
     }
     assert set(tasks) == {scenes[0].scene_id, scenes[1].scene_id}
 
-    assignment = DialogueAssignment(
-        reading_order=("ocr_0000", "ocr_0001"),
-        speaker_by_region={"ocr_0000": "alice", "ocr_0001": "bob"},
-    )
+    assignment = _assignment()
     after_first = workflow.apply_scene_assignment(
         project.project_id,
         tasks[scenes[0].scene_id].review_task_id,
