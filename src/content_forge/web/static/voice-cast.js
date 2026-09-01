@@ -18,6 +18,7 @@
   let casts = [];
   let loadedProject = null;
   let activeAudioUrl = null;
+  let activeAudio = null;
 
   function setStatus(message, kind) {
     status.textContent = message || "";
@@ -37,7 +38,13 @@
     item.textContent = label;
     item.addEventListener("click", async () => {
       item.disabled = true;
-      try { await onClick(); } finally { item.disabled = false; }
+      try {
+        await onClick();
+      } catch (error) {
+        setStatus(error && error.message ? error.message : "Voice Cast action failed.", "error");
+      } finally {
+        item.disabled = false;
+      }
     });
     return item;
   }
@@ -120,6 +127,18 @@
     return casts.find((item) => item.cast_id === castId) || null;
   }
 
+  function stopPreview() {
+    if (activeAudio) {
+      activeAudio.pause();
+      activeAudio.src = "";
+      activeAudio = null;
+    }
+    if (activeAudioUrl) {
+      URL.revokeObjectURL(activeAudioUrl);
+      activeAudioUrl = null;
+    }
+  }
+
   async function playPreview(projectId, characterId) {
     setStatus(`Generating preview for ${characterId}…`);
     const response = await api(
@@ -128,10 +147,10 @@
     );
     const blob = await response.blob();
     if (!blob.size) throw new Error("Voice preview returned an empty audio file.");
-    if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
+    stopPreview();
     activeAudioUrl = URL.createObjectURL(blob);
-    const audio = new Audio(activeAudioUrl);
-    await audio.play();
+    activeAudio = new Audio(activeAudioUrl);
+    await activeAudio.play();
     const resolved = response.headers.get("X-Content-Forge-Cast");
     setStatus(`Playing ${resolved || characterId}.`, "success");
   }
@@ -214,6 +233,7 @@
             settings_override: settingsOverride,
           })
         );
+        stopPreview();
         drawCharacters();
         setStatus(`${character.display_name || character.character_id} assigned to ${castId}.`, "success");
       }));
@@ -229,6 +249,7 @@
             `voice-cast/projects/${encodeURIComponent(loadedProject.project_id)}/characters/${encodeURIComponent(character.character_id)}`,
             { method: "DELETE" }
           );
+          stopPreview();
           drawCharacters();
           setStatus(`${character.display_name || character.character_id} unassigned.`, "success");
         }));
@@ -264,6 +285,7 @@
   async function loadProject() {
     const projectId = projectInput.value.trim();
     if (!projectId) throw new Error("Choose or paste a project ID.");
+    stopPreview();
     loadedProject = await apiJson(`voice-cast/projects/${encodeURIComponent(projectId)}`);
     drawCharacters();
     setStatus(`Loaded ${projectId}.`, "success");
@@ -309,6 +331,7 @@
     const bearer = await token();
     setHidden(panel, !bearer);
     if (!bearer) {
+      stopPreview();
       casts = [];
       loadedProject = null;
       registryList.replaceChildren();
@@ -332,8 +355,6 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refresh();
   });
-  window.addEventListener("beforeunload", () => {
-    if (activeAudioUrl) URL.revokeObjectURL(activeAudioUrl);
-  });
+  window.addEventListener("beforeunload", stopPreview);
   refresh();
 })();
