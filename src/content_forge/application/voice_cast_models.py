@@ -44,13 +44,18 @@ class VoiceCastUnavailableError(VoiceCastError):
 
 
 def cast_definition_digest(
-    *, cast_id: str, display_name: str, settings: LineTTSSettings
+    *,
+    cast_id: str,
+    display_name: str,
+    settings: LineTTSSettings,
+    reference_audio_sha256: str | None,
 ) -> str:
     encoded = json.dumps(
         {
             "cast_id": cast_id,
             "display_name": display_name,
             "settings": settings.model_dump(mode="json"),
+            "reference_audio_sha256": reference_audio_sha256,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -84,6 +89,7 @@ class VoiceCastRevision(FrozenModel):
     revision: int = Field(ge=1)
     display_name: str = Field(min_length=1, max_length=512)
     settings: LineTTSSettings
+    reference_audio_sha256: SHA256 | None = None
     definition_sha256: SHA256
     created_at: datetime
 
@@ -96,10 +102,16 @@ class VoiceCastRevision(FrozenModel):
 
     @model_validator(mode="after")
     def definition_digest_matches(self):
+        has_reference = self.settings.reference_asset_id is not None
+        if has_reference != (self.reference_audio_sha256 is not None):
+            raise ValueError(
+                "voice cast revision reference asset and reference digest must be retained together"
+            )
         expected = cast_definition_digest(
             cast_id=self.cast_id,
             display_name=self.display_name,
             settings=self.settings,
+            reference_audio_sha256=self.reference_audio_sha256,
         )
         if self.definition_sha256 != expected:
             raise ValueError("voice cast revision definition digest mismatch")
@@ -114,6 +126,19 @@ class CharacterCastBinding(FrozenModel):
     cast_revision: int = Field(ge=1)
     cast_definition_sha256: SHA256
     settings_override: LineTTSSettings | None = None
+    settings_override_reference_sha256: SHA256 | None = None
+
+    @model_validator(mode="after")
+    def pin_override_reference(self):
+        has_override_reference = (
+            self.settings_override is not None
+            and self.settings_override.reference_asset_id is not None
+        )
+        if has_override_reference != (self.settings_override_reference_sha256 is not None):
+            raise ValueError(
+                "voice cast override reference asset and reference digest must be retained together"
+            )
+        return self
 
 
 class ProjectVoiceCastManifest(FrozenModel):
@@ -143,12 +168,18 @@ class ResolvedLineVoice(FrozenModel):
     cast_revision: int = Field(ge=1)
     cast_definition_sha256: SHA256
     settings: LineTTSSettings
+    reference_audio_sha256: SHA256 | None = None
     override_applied: bool
 
     @model_validator(mode="after")
-    def validate_ids(self):
+    def validate_ids_and_reference(self):
         require_entity_id(self.project_id, EntityKind.PROJECT)
         require_entity_id(self.scene_id, EntityKind.SCENE)
+        has_reference = self.settings.reference_asset_id is not None
+        if has_reference != (self.reference_audio_sha256 is not None):
+            raise ValueError(
+                "resolved voice reference asset and reference digest must be retained together"
+            )
         return self
 
 
