@@ -17,13 +17,14 @@ from content_forge.core import (
     AssetRef,
     MediaType,
     Project,
+    ProjectState,
     Scene,
     SourceRecord,
 )
 from content_forge.storage import LocalLibrary
 
 
-def _source() -> tuple[Project, SourceRecord]:
+def _source() -> tuple[Project, SourceRecord, Asset]:
     asset = Asset(
         sha256="9" * 64,
         media_type=MediaType.IMAGE,
@@ -47,6 +48,7 @@ def _source() -> tuple[Project, SourceRecord]:
             scenes=(Scene(order=0, duration_seconds=1.0, media=ref),),
         ),
         record,
+        asset,
     )
 
 
@@ -74,11 +76,13 @@ def test_pr24_shared_reference_and_materialization_fail_if_source_provenance_cha
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     library = LocalLibrary(tmp_path / "runtime")
-    source, record = _source()
+    source, record, asset = _source()
     host = Project(
         content_kind="long_form_fixture",
+        state=ProjectState.DRAFT,
         scenes=(Scene(order=0, duration_seconds=1.0),),
     )
+    library.database.put_asset(asset)
     library.save_project(source)
     library.save_project(host)
     manifest = _manifest(source)
@@ -110,6 +114,7 @@ def test_pr24_shared_materialize_requires_explicit_nonempty_reference_set(tmp_pa
     library = LocalLibrary(tmp_path / "runtime")
     host = Project(
         content_kind="long_form_fixture",
+        state=ProjectState.DRAFT,
         scenes=(Scene(order=0, duration_seconds=1.0),),
     )
     library.save_project(host)
