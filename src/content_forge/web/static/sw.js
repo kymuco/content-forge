@@ -8,7 +8,8 @@ const CACHE_PREFIX = `content-forge-shell:${self.registration.scope}:`;
 const OLDEST_LEGACY_CACHE_NAME = `${CACHE_PREFIX}v8`;
 const LEGACY_CACHE_NAME = `${CACHE_PREFIX}v9`;
 const PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v10`;
-const CACHE_NAME = `${CACHE_PREFIX}v11`;
+const LAST_CACHE_NAME = `${CACHE_PREFIX}v11`;
+const CACHE_NAME = `${CACHE_PREFIX}v12`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -39,6 +40,7 @@ const SHELL_ASSETS = [
   appUrl("dialogue.js"),
   appUrl("voice-cast.js"),
   appUrl("voiced-story.js"),
+  appUrl("voiced-scene.js"),
   appUrl("manifest.webmanifest"),
   appUrl("icons/icon-192.png"),
   appUrl("icons/icon-512.png"),
@@ -61,6 +63,7 @@ self.addEventListener("activate", (event) => {
             key === OLDEST_LEGACY_CACHE_NAME
             || key === LEGACY_CACHE_NAME
             || key === PREVIOUS_CACHE_NAME
+            || key === LAST_CACHE_NAME
             || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           ))
           .map((key) => caches.delete(key))
