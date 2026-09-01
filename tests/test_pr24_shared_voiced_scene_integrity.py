@@ -20,6 +20,7 @@ from content_forge.core import (
     ProjectState,
     Scene,
     SourceRecord,
+    dump_json,
 )
 from content_forge.storage import LocalLibrary
 
@@ -100,9 +101,18 @@ def test_pr24_shared_reference_and_materialization_fail_if_source_provenance_cha
     changed_record = record.validated_copy(
         update={"permission_note": "updated permission evidence"}
     )
-    library.save_project(
-        source.validated_copy(update={"source_records": (changed_record,)})
+    corrupted_source = source.validated_copy(
+        update={"source_records": (changed_record,)}
     )
+    # SourceRecord is intentionally immutable through the public storage API. Simulate
+    # an out-of-band manifest migration/corruption so PR24 proves that its own pinned
+    # provenance digest fails closed even when the project row no longer matches the
+    # separately stored source record.
+    with library.database.transaction() as connection:
+        connection.execute(
+            "UPDATE projects SET manifest_json = ? WHERE project_id = ?",
+            (dump_json(corrupted_source), source.project_id),
+        )
 
     with pytest.raises(LongFormSharedSceneConflictError, match="provenance changed"):
         resolve_shared_voiced_scene(library, reference)
