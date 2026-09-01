@@ -36,6 +36,7 @@ from content_forge.storage import LocalLibrary
 
 _PANEL_OCR_VERSION = "pr18_panel_ocr_v1"
 _PANEL_OCR_METADATA_KEY = "pr18_panel_ocr"
+_OCR_RESUME_STATE_KEY = "pr18_ocr_resume_state"
 _OCR_REVIEW_TASK = "ocr_text_correction"
 _MAX_PANEL_REGIONS = 2048
 _MAX_PANEL_RAW_TEXT_CHARS = 1_000_000
@@ -151,6 +152,16 @@ def _load_extraction(project: Project, scene_id: str) -> PanelTextExtraction:
         raise PanelOCRValidationError("stored panel OCR extraction is malformed") from exc
 
 
+def _validated_resume_state(value: object, *, label: str) -> ProjectState:
+    try:
+        state = ProjectState(value)
+    except (TypeError, ValueError) as exc:
+        raise PanelOCRValidationError(f"{label} is malformed") from exc
+    if state not in _EDITABLE_OCR_STATES:
+        raise PanelOCRValidationError(f"{label} is not editable")
+    return state
+
+
 def _review_task_for(
     extraction: PanelTextExtraction,
     *,
@@ -196,12 +207,16 @@ def prepare_panel_ocr(
     result: OCRResult,
     *,
     review_confidence_threshold: float = 0.80,
+    resume_state: ProjectState | None = None,
 ) -> PanelOCRPreparation:
     require_entity_id(scene_id, EntityKind.SCENE)
     if project.state not in _EDITABLE_OCR_STATES:
         raise PanelOCRConflictError(
             f"panel OCR cannot mutate project in state {project.state.value}"
         )
+    resolved_resume_state = project.state if resume_state is None else resume_state
+    if resolved_resume_state not in _EDITABLE_OCR_STATES:
+        raise PanelOCRValidationError("panel OCR resume state is not editable")
     scene = next((item for item in project.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise PanelOCRNotFoundError(f"unknown project scene: {scene_id}")
@@ -236,7 +251,7 @@ def prepare_panel_ocr(
     )
     return PanelOCRPreparation(
         extraction=extraction,
-        review_task=_review_task_for(extraction, resume_state=project.state),
+        review_task=_review_task_for(extraction, resume_state=resolved_resume_state),
     )
 
 
@@ -282,6 +297,16 @@ class PanelOCRWorkflow:
                     f"project changed concurrently: {updated.project_id}"
                 )
         return updated
+
+    def _shared_resume_state(self, project: Project) -> ProjectState:
+        raw = project.metadata.get(_OCR_RESUME_STATE_KEY)
+        if raw is None:
+            return project.state
+        if project.state is not ProjectState.NEEDS_REVIEW:
+            raise PanelOCRConflictError(
+                "OCR review checkpoint exists outside project state needs_review"
+            )
+        return _validated_resume_state(raw, label="project OCR resume state")
 
     def extract_scene(
         self,
@@ -339,6 +364,7 @@ class PanelOCRWorkflow:
                 )
             return project
 
+        shared_resume_state = self._shared_resume_state(project)
         result = self.provider.extract(request)
         if result.source_sha256 != asset.sha256:
             raise PanelOCRValidationError("OCR provider result source digest mismatch")
@@ -352,6 +378,7 @@ class PanelOCRWorkflow:
             scene_id,
             result,
             review_confidence_threshold=review_confidence_threshold,
+            resume_state=shared_resume_state,
         )
         snapshots[scene_id] = prepared.extraction.model_dump(mode="json")
 
@@ -370,6 +397,11 @@ class PanelOCRWorkflow:
         metadata = project.model_dump(mode="json")["metadata"]
         assert isinstance(metadata, dict)
         metadata[_PANEL_OCR_METADATA_KEY] = snapshots
+        if prepared.review_task is not None:
+            existing_resume = metadata.get(_OCR_RESUME_STATE_KEY)
+            if existing_resume is not None and existing_resume != shared_resume_state.value:
+                raise PanelOCRConflictError("project OCR review checkpoint changed unexpectedly")
+            metadata[_OCR_RESUME_STATE_KEY] = shared_resume_state.value
         updated = project.validated_copy(
             update={
                 "state": (
@@ -410,6 +442,17 @@ class PanelOCRWorkflow:
             raise PanelOCRConflictError(
                 "open OCR correction task requires project state needs_review"
             )
+        checkpoint_resume_state = _validated_resume_state(
+            project.metadata.get(_OCR_RESUME_STATE_KEY),
+            label="project OCR resume state",
+        )
+        task_resume_state = _validated_resume_state(
+            task.payload.get("resume_state"),
+            label="OCR correction task resume state",
+        )
+        if checkpoint_resume_state is not task_resume_state:
+            raise PanelOCRConflictError("OCR correction task resume state does not match project checkpoint")
+
         scene_id = task.payload.get("scene_id")
         if not isinstance(scene_id, str):
             raise PanelOCRValidationError("OCR correction task scene identity is malformed")
@@ -475,14 +518,17 @@ class PanelOCRWorkflow:
         remaining_blocking = any(
             item.status is ReviewStatus.OPEN and item.blocking for item in tasks
         )
-        raw_resume_state = task.payload.get("resume_state")
-        try:
-            resume_state = ProjectState(raw_resume_state)
-        except (TypeError, ValueError) as exc:
-            raise PanelOCRValidationError("OCR correction task resume state is malformed") from exc
-        if resume_state not in _EDITABLE_OCR_STATES:
-            raise PanelOCRValidationError("OCR correction task resume state is not editable")
-        next_state = ProjectState.NEEDS_REVIEW if remaining_blocking else resume_state
+        remaining_ocr = any(
+            item.status is ReviewStatus.OPEN and item.task_type == _OCR_REVIEW_TASK
+            for item in tasks
+        )
+        if not remaining_ocr:
+            metadata.pop(_OCR_RESUME_STATE_KEY, None)
+        next_state = (
+            ProjectState.NEEDS_REVIEW
+            if remaining_blocking
+            else checkpoint_resume_state
+        )
         updated = project.validated_copy(
             update={
                 "state": next_state,
