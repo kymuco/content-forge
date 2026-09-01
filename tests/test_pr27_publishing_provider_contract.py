@@ -64,6 +64,17 @@ def _request(*, title: str = "Exact title", destination_id: str = "channel-main"
     )
 
 
+def _evidence() -> PublishInvocationEvidence:
+    return PublishInvocationEvidence(
+        provider_id="fixture",
+        provider_version="1",
+        request_sha256="a" * 64,
+        idempotency_key=f"cfp-{'c' * 64}",
+        output_sha256="b" * 64,
+        destination_id="channel-main",
+    )
+
+
 def test_pr27_publish_artifact_ref_requires_final_render() -> None:
     final = _artifact()
     reference = publish_artifact_ref(final)
@@ -209,19 +220,30 @@ def test_pr27_provider_protocol_keeps_runtime_path_outside_approved_request() ->
     assert result.evidence.output_sha256 == approved.request.artifact.output_sha256
 
 
-def test_pr27_publish_result_rejects_secret_bearing_remote_url() -> None:
-    with pytest.raises(ValidationError, match="without userinfo"):
-        PublishResult(
-            disposition="published",
-            remote_id="remote-123",
-            remote_url="https://user:secret@example.invalid/watch/remote-123",
-            effective_at=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
-            evidence=PublishInvocationEvidence(
-                provider_id="fixture",
-                provider_version="1",
-                request_sha256="a" * 64,
-                idempotency_key=f"cfp-{'c' * 64}",
-                output_sha256="b" * 64,
-                destination_id="channel-main",
-            ),
-        )
+def test_pr27_publish_result_rejects_secret_bearing_or_noncanonical_remote_url() -> None:
+    for remote_url in (
+        "https://user:secret@example.invalid/watch/remote-123",
+        "https://example.invalid/watch/remote-123?access_token=secret",
+        "https://example.invalid/watch/remote-123#secret",
+        " https://example.invalid/watch/remote-123",
+    ):
+        with pytest.raises(ValidationError, match="remote URL"):
+            PublishResult(
+                disposition="published",
+                remote_id="remote-123",
+                remote_url=remote_url,
+                effective_at=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
+                evidence=_evidence(),
+            )
+
+
+def test_pr27_publish_result_rejects_noncanonical_remote_id() -> None:
+    for remote_id in (" remote-123", "remote 123", "remote\n123"):
+        with pytest.raises(ValidationError, match="remote ID"):
+            PublishResult(
+                disposition="published",
+                remote_id=remote_id,
+                remote_url="https://example.invalid/watch/remote-123",
+                effective_at=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
+                evidence=_evidence(),
+            )
