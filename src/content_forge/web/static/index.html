@@ -165,6 +165,35 @@
       <div id="production-profile-project-view" class="review-list" aria-live="polite"></div>
       <p id="production-profile-status" class="status"></p>
     </section>
+    <section id="production-library-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">PRODUCTION LIBRARY</p><h2>Search, tags & reuse</h2></div>
+        <span id="production-library-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Tags and virtual collections organize immutable Assets without moving files. Duplicate and reuse warnings come from canonical SHA/provenance and Project references.</p>
+      <form id="production-library-search-form" class="stack compact">
+        <strong>Search local assets</strong>
+        <label>Exact tags<textarea id="production-library-search-tags" rows="3" maxlength="8192" placeholder="game:Genshin Impact&#10;character:Raiden Shogun"></textarea></label>
+        <label>Tag prefix<input id="production-library-search-prefix" maxlength="256" placeholder="rai"></label>
+        <label>Usage<select id="production-library-search-used"><option value="">Any</option><option value="unused">Not used yet</option><option value="used">Previously used</option></select></label>
+        <button class="primary" type="submit">Search library</button>
+      </form>
+      <div id="production-library-results" class="review-list" aria-live="polite"></div>
+      <form id="production-library-collection-form" class="stack compact">
+        <strong>Save current search as a virtual collection</strong>
+        <label>Collection ID<input id="production-library-collection-id" maxlength="128" placeholder="raiden_panels"></label>
+        <label>Name<input id="production-library-collection-name" maxlength="256" placeholder="Raiden panels"></label>
+        <button class="secondary" type="submit">Save virtual collection</button>
+      </form>
+      <div id="production-library-collections" class="review-list" aria-live="polite"></div>
+      <form id="production-library-duplicate-form" class="stack compact">
+        <strong>Check SHA-256 duplicate</strong>
+        <label>SHA-256<input id="production-library-duplicate-sha" maxlength="64" placeholder="64 hex characters"></label>
+        <button class="secondary" type="submit">Check duplicate</button>
+      </form>
+      <div id="production-library-duplicate-view" class="review-list" aria-live="polite"></div>
+      <p id="production-library-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -181,5 +210,6 @@
   <script src="voiced-story.js"></script>
   <script src="voiced-scene.js"></script>
   <script src="production-profiles.js"></script>
+  <script src="production-library.js"></script>
 </body>
 </html>
