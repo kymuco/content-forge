@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 import shutil
+import struct
+import wave
 from pathlib import Path
 
 import pytest
@@ -8,6 +11,7 @@ import pytest
 from content_forge.core import (
     Asset,
     AssetRef,
+    AudioTrack,
     EntityKind,
     FitMode,
     MediaType,
@@ -42,6 +46,24 @@ def _ppm(path: Path) -> None:
                 color = (235, 200, 45)
             pixels.append(f"{color[0]} {color[1]} {color[2]}")
     path.write_text("P3\n64 48\n255\n" + "\n".join(pixels) + "\n", encoding="ascii")
+
+
+def _tone(path: Path, *, frequency: float, seconds: float, amplitude: float) -> None:
+    sample_rate = 48000
+    frame_count = int(sample_rate * seconds)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        frames = bytearray()
+        for index in range(frame_count):
+            value = int(
+                amplitude
+                * math.sin(2.0 * math.pi * frequency * index / sample_rate)
+                * 32767
+            )
+            frames.extend(struct.pack("<hh", value, value))
+        handle.writeframes(bytes(frames))
 
 
 def _capabilities():
@@ -120,3 +142,102 @@ def test_pr23_focus_zoom_renders_through_public_ffmpeg_backend(tmp_path: Path) -
     assert probe.height == 960
     assert probe.duration_seconds is not None
     assert 0.35 <= probe.duration_seconds <= 0.8
+
+
+def test_pr23_ambience_duck_renders_through_public_ffmpeg_backend(tmp_path: Path) -> None:
+    image_path = tmp_path / "panel.ppm"
+    voice_path = tmp_path / "voice.wav"
+    ambience_path = tmp_path / "ambience.wav"
+    _ppm(image_path)
+    _tone(voice_path, frequency=660.0, seconds=0.5, amplitude=0.25)
+    _tone(ambience_path, frequency=220.0, seconds=1.2, amplitude=0.12)
+
+    image = Asset(
+        sha256="a" * 64,
+        media_type=MediaType.IMAGE,
+        mime_type="image/x-portable-pixmap",
+        size_bytes=image_path.stat().st_size,
+        width=64,
+        height=48,
+        has_audio=False,
+    )
+    voice = Asset(
+        sha256="b" * 64,
+        media_type=MediaType.AUDIO,
+        mime_type="audio/wav",
+        size_bytes=voice_path.stat().st_size,
+        duration_seconds=0.5,
+        has_audio=True,
+    )
+    ambience = Asset(
+        sha256="c" * 64,
+        media_type=MediaType.AUDIO,
+        mime_type="audio/wav",
+        size_bytes=ambience_path.stat().st_size,
+        duration_seconds=1.2,
+        has_audio=True,
+    )
+    profile = shorts_preview_profile()
+    project = Project(
+        content_kind="pr23_ambience_duck_fixture",
+        scenes=(
+            Scene(
+                order=0,
+                duration_seconds=1.2,
+                media=AssetRef(asset_id=image.asset_id),
+                audio_tracks=(
+                    AudioTrack(
+                        track_type="voice",
+                        asset_ref=AssetRef(asset_id=voice.asset_id, role="voice"),
+                        start_seconds=0.25,
+                        duration_seconds=0.5,
+                    ),
+                    AudioTrack(
+                        track_type="ambience",
+                        asset_ref=AssetRef(asset_id=ambience.asset_id, role="ambience"),
+                        start_seconds=0.0,
+                        duration_seconds=1.2,
+                        gain_db=-3.0,
+                        properties={
+                            "pr23_owner": "pr23_voiced_mix_v1",
+                            "pr23_preset_id": "natural_dialogue",
+                            "pr23_preset_version": "1",
+                            "duck_db": -6.0,
+                        },
+                    ),
+                ),
+            ),
+        ),
+        output_profiles=(profile,),
+    )
+    assets = {
+        image.asset_id: image,
+        voice.asset_id: voice,
+        ambience.asset_id: ambience,
+    }
+    plan = compile_timeline(project, assets, profile_id=profile.profile_id)
+    output = tmp_path / "ambience-duck.mp4"
+    backend = FFmpegBackend(
+        _capabilities(),
+        {
+            image.asset_id: image_path,
+            voice.asset_id: voice_path,
+            ambience.asset_id: ambience_path,
+        },
+        prefer_nvenc=False,
+    )
+
+    manifest = backend.compile(plan, output)
+    assert manifest.metadata["presentation_backend"] == "pr23_v1"
+    assert manifest.metadata["ambience_duck_track_count"] == 1
+    assert "volume=-6dB:enable='between(t,0.25,0.75)'" in manifest.filtergraph
+
+    result = backend.render(plan, output, timeout=20)
+    assert result.bytes_written > 0
+    probe = probe_media(output, ffprobe_path=backend.capabilities.ffprobe_path)
+    assert probe.has_video is True
+    assert probe.has_audio is True
+    assert probe.width == 540
+    assert probe.height == 960
+    assert probe.duration_seconds is not None
+    assert 1.0 <= probe.duration_seconds <= 1.5
