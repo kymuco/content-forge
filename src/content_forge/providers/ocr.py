@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import Field, model_validator
 
@@ -73,7 +73,7 @@ class OCRRequest(FrozenModel):
 
 
 class OCRInvocationEvidence(FrozenModel):
-    contract_version: str = _OCR_CONTRACT_VERSION
+    contract_version: Literal["pr18_ocr_contract_v1"] = _OCR_CONTRACT_VERSION
     provider_id: str = Field(min_length=1, max_length=128)
     provider_version: str = Field(min_length=1, max_length=128)
     model_id: str = Field(min_length=1, max_length=256)
