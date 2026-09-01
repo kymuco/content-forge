@@ -13,6 +13,7 @@ from .app import (
     create_app as _create_api_app,
 )
 from .dialogue_routes import install_dialogue_routes
+from .production_profile_routes import install_production_profile_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
 from .voice_cast_routes import install_voice_cast_routes
@@ -28,7 +29,7 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
     tts_provider: TTSProvider | None = None,
 ):
-    """Build the local API/PWA with PR21 voice, PR22 story, and PR23 presentation."""
+    """Build the local API/PWA with review, voice, presentation, and profile surfaces."""
 
     app = _create_api_app(
         root=root,
@@ -67,6 +68,11 @@ def create_app(
             tts_provider=tts_provider,
         )
         install_voiced_scene_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+        )
+        install_production_profile_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,
