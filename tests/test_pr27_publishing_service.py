@@ -94,6 +94,7 @@ class _SuccessfulProvider:
         self.health_reason = health_reason
         self.seen_media_path: Path | None = None
         self.seen_idempotency_key: str | None = None
+        self.publish_calls = 0
 
     def health(self) -> PublishingProviderHealth:
         return PublishingProviderHealth(
@@ -104,6 +105,7 @@ class _SuccessfulProvider:
         )
 
     def publish(self, request, *, media_path: Path, idempotency_key: str) -> PublishResult:
+        self.publish_calls += 1
         self.seen_media_path = media_path
         self.seen_idempotency_key = idempotency_key
         return PublishResult(
@@ -138,10 +140,15 @@ def test_pr27_publishing_service_success_uses_authenticated_artifact_and_redacte
     assert attempt.provider_health.reason is None
     assert provider.seen_media_path == media_path
     assert provider.seen_idempotency_key == publish_idempotency_key(approved.request)
+    assert provider.publish_calls == 1
     stored = library.publishing.get_attempt(attempt.attempt_id)
     assert stored == attempt
     assert stored is not None and stored.provider_health is not None
     assert stored.provider_health.reason is None
+
+    # Lost HTTP/client response retries by durable attempt identity never call remote again.
+    assert service.execute_prepared(attempt.attempt_id) == attempt
+    assert provider.publish_calls == 1
 
 
 def test_pr27_health_exception_is_known_preflight_failure_without_secret_persistence(tmp_path) -> None:
@@ -241,33 +248,38 @@ def test_pr27_result_mismatch_becomes_unknown_instead_of_retryable_failure(tmp_p
     assert attempt.state == "outcome_unknown"
 
 
-def test_pr27_keyboard_interrupt_during_preflight_becomes_retryable_after_restart(tmp_path) -> None:
+def test_pr27_keyboard_interrupt_during_preflight_preserves_same_prepared_approval(tmp_path) -> None:
     library, artifact, approved, _ = _prepare(tmp_path)
 
-    class Provider:
+    class InterruptingProvider:
         def health(self):
             raise KeyboardInterrupt()
 
         def publish(self, request, *, media_path: Path, idempotency_key: str):
             raise AssertionError("publish must not be called")
 
-    service = PublishingService(library, Provider(), render_orchestrator=_ArtifactLoader(artifact))
+    interrupted = PublishingService(
+        library,
+        InterruptingProvider(),
+        render_orchestrator=_ArtifactLoader(artifact),
+    )
+    prepared = interrupted.prepare(approved)
     with pytest.raises(KeyboardInterrupt):
-        service.publish(approved)
+        interrupted.execute_prepared(prepared.attempt_id)
 
-    prepared = library.publishing.attempts(approved.approval.request_sha256)[0]
-    assert prepared.state == "prepared"
-    assert service.reconcile_interrupted() == 1
+    stored = library.publishing.get_attempt(prepared.attempt_id)
+    assert stored is not None and stored.state == "prepared"
+    assert interrupted.reconcile_interrupted() == 0
 
-    recovered = library.publishing.get_attempt(prepared.attempt_id)
-    assert recovered is not None
-    assert recovered.state == "failed"
-    assert recovered.error_code == "runtime_interrupted_preflight"
-    assert recovered.error_message == "runtime ended before remote publish execution began"
-
-    retry = library.publishing.prepare_attempt(approved)
-    assert retry.attempt_number == 2
-    assert retry.state == "prepared"
+    provider = _SuccessfulProvider()
+    recovered = PublishingService(
+        library,
+        provider,
+        render_orchestrator=_ArtifactLoader(artifact),
+    ).execute_prepared(prepared.attempt_id)
+    assert recovered.state == "succeeded"
+    assert recovered.attempt_id == prepared.attempt_id
+    assert provider.publish_calls == 1
 
 
 def test_pr27_keyboard_interrupt_leaves_running_until_restart_reconciliation(tmp_path) -> None:
@@ -278,8 +290,9 @@ def test_pr27_keyboard_interrupt_leaves_running_until_restart_reconciliation(tmp
             raise KeyboardInterrupt()
 
     service = PublishingService(library, Provider(), render_orchestrator=_ArtifactLoader(artifact))
+    prepared = service.prepare(approved)
     with pytest.raises(KeyboardInterrupt):
-        service.publish(approved)
+        service.execute_prepared(prepared.attempt_id)
 
     attempt = library.publishing.attempts(approved.approval.request_sha256)[0]
     assert attempt.state == "running"
