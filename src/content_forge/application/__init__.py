@@ -34,6 +34,15 @@ from .long_form_shared import (
     capture_shared_voiced_scene,
     resolve_shared_voiced_scene,
 )
+from .long_form_shared_workflow import (
+    LongFormSharedSceneBinding,
+    ProjectLongFormSharedManifest,
+    long_form_shared_manifest,
+)
+from .long_form_shared_hardening import (
+    LongFormSharedSceneWorkflow,
+    ProjectLongFormSharedProvenance,
+)
 from .models import (
     AuthSession,
     InboxIntake,
@@ -156,9 +165,11 @@ __all__ = [
     "LongFormChapterSpec",
     "LongFormComposition",
     "LongFormError",
+    "LongFormSharedSceneBinding",
     "LongFormSharedSceneConflictError",
     "LongFormSharedSceneError",
     "LongFormSharedSceneNotFoundError",
+    "LongFormSharedSceneWorkflow",
     "LongFormValidationError",
     "PairingChallenge",
     "PanelOCRConflictError",
@@ -171,6 +182,8 @@ __all__ = [
     "PanelTextRegion",
     "PreparationState",
     "ProjectDialogueManifest",
+    "ProjectLongFormSharedManifest",
+    "ProjectLongFormSharedProvenance",
     "ProjectTTSManifest",
     "ProjectVoiceCastManifest",
     "ProjectVoicedSceneManifest",
@@ -228,6 +241,7 @@ __all__ = [
     "capture_shared_voiced_scene",
     "compile_long_form_composition",
     "dialogue_manifest",
+    "long_form_shared_manifest",
     "natural_dialogue_preset",
     "panel_extraction_digest",
     "prepare_panel_ocr",
