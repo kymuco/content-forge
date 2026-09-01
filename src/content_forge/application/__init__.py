@@ -18,6 +18,31 @@ from .dialogue import (
 )
 from .dialogue_pr19_integrity import DialogueWorkflow
 from .inbox import InboxError, InboxService, UploadTooLargeError
+from .long_form import (
+    LongFormChapterPlan,
+    LongFormChapterSpec,
+    LongFormComposition,
+    LongFormError,
+    LongFormValidationError,
+    compile_long_form_composition,
+)
+from .long_form_shared import (
+    LongFormSharedSceneConflictError,
+    LongFormSharedSceneError,
+    LongFormSharedSceneNotFoundError,
+    SharedVoicedSceneRef,
+    capture_shared_voiced_scene,
+    resolve_shared_voiced_scene,
+)
+from .long_form_shared_workflow import (
+    LongFormSharedSceneBinding,
+    ProjectLongFormSharedManifest,
+    long_form_shared_manifest,
+)
+from .long_form_shared_integrity import (
+    LongFormSharedSceneWorkflow,
+    ProjectLongFormSharedProvenance,
+)
 from .models import (
     AuthSession,
     InboxIntake,
@@ -107,11 +132,9 @@ from .voiced_story import (
     VoicedStoryWorkflow,
     voiced_story_manifest,
 )
-# Install the PR17 startup ownership boundary before exposing the final ReviewService.
-# PR23 then layers an exact-snapshot voiced presentation gate over the established
-# seventh-pass review/recovery implementation without changing non-voiced authority.
+# Install startup and render-authority hardening before exposing the final ReviewService.
 from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
-from .review_pr23_hardening import ReviewService
+from .review_pr24_hardening import ReviewService
 
 __all__ = [
     "ApplicationRepository",
@@ -136,6 +159,16 @@ __all__ = [
     "IssuedSession",
     "LineTTSSettings",
     "LineTTSWorkflow",
+    "LongFormChapterPlan",
+    "LongFormChapterSpec",
+    "LongFormComposition",
+    "LongFormError",
+    "LongFormSharedSceneBinding",
+    "LongFormSharedSceneConflictError",
+    "LongFormSharedSceneError",
+    "LongFormSharedSceneNotFoundError",
+    "LongFormSharedSceneWorkflow",
+    "LongFormValidationError",
     "PairingChallenge",
     "PanelOCRConflictError",
     "PanelOCRError",
@@ -147,6 +180,8 @@ __all__ = [
     "PanelTextRegion",
     "PreparationState",
     "ProjectDialogueManifest",
+    "ProjectLongFormSharedManifest",
+    "ProjectLongFormSharedProvenance",
     "ProjectTTSManifest",
     "ProjectVoiceCastManifest",
     "ProjectVoicedSceneManifest",
@@ -162,6 +197,7 @@ __all__ = [
     "ReviewValidationError",
     "SceneDialogue",
     "SceneFocusHint",
+    "SharedVoicedSceneRef",
     "SynthesizedDialogueLine",
     "TTSConflictError",
     "TTSError",
@@ -200,10 +236,14 @@ __all__ = [
     "VoicedStoryTimingPolicy",
     "VoicedStoryValidationError",
     "VoicedStoryWorkflow",
+    "capture_shared_voiced_scene",
+    "compile_long_form_composition",
     "dialogue_manifest",
+    "long_form_shared_manifest",
     "natural_dialogue_preset",
     "panel_extraction_digest",
     "prepare_panel_ocr",
+    "resolve_shared_voiced_scene",
     "scene_dialogue_digest",
     "tts_manifest",
     "voice_cast_manifest",

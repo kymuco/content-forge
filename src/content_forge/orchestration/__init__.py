@@ -14,6 +14,7 @@ from .render_jobs import (
     RenderOrchestrationError,
     RenderOrchestrator,
 )
+from .reuse import RenderReuseIntegrityError, find_reusable_render_artifact
 
 __all__ = [
     "RENDER_ARTIFACT_MANIFEST_VERSION",
@@ -25,5 +26,7 @@ __all__ = [
     "RenderOrchestrationError",
     "RenderOrchestrator",
     "RenderPurpose",
+    "RenderReuseIntegrityError",
     "RenderSourceFingerprint",
+    "find_reusable_render_artifact",
 ]

@@ -212,6 +212,27 @@ class VoicedSceneWorkflow(_base.VoicedSceneWorkflow):
             self._validate_retained_ownership(manifest)
         return super()._base_project(project, manifest)
 
+    def validate_snapshot(self, project: Project) -> _base.ProjectVoicedSceneManifest:
+        """Validate current PR22/PR23 authority using exactly the supplied Project object.
+
+        Callers that already own a Project snapshot should use this method instead of
+        ``manifest(project_id)`` so validation and subsequent composition cannot observe
+        different database revisions.
+        """
+
+        stored = _base.voiced_scene_manifest(project)
+        if stored is None:
+            raise _base.VoicedSceneNotFoundError(
+                "project has no materialized PR23 voiced-scene presentation"
+            )
+        base = self._base_project(project, stored)
+        expected = self.derive(base, preset=stored.plan.preset)
+        if expected != stored.plan:
+            raise _base.VoicedSceneConflictError(
+                "materialized PR23 plan no longer matches current PR22/project authority"
+            )
+        return stored
+
     def _cas_project(self, expected_json: str, updated: Project) -> Project:
         # Presentation mutation and preview invalidation are one CAS. There is never an
         # intermediate persisted READY snapshot whose approved preview describes the old
