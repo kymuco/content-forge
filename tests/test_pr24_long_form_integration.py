@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from content_forge.core import AssetRef, MediaType, Project, Scene
-from content_forge.orchestration import RenderOrchestrator
+from content_forge.orchestration import (
+    RenderOrchestrator,
+    RenderReuseIntegrityError,
+    find_reusable_render_artifact,
+)
 from content_forge.profiles import (
     LONG_FORM_1080P_PROFILE_ID,
     LONG_FORM_1440P_PROFILE_ID,
@@ -105,3 +109,20 @@ def test_pr24_horizontal_profiles_render_through_existing_persistent_pipeline(
     assert artifact_1440.source_assets[0].sha256 == ingest.asset.sha256
     assert orchestrator.load_artifact(artifact_1080.job_id) == artifact_1080
     assert orchestrator.load_artifact(artifact_1440.job_id) == artifact_1440
+
+    # Long-form caching reuses only a fully authenticated existing PR7 render attempt.
+    assert (
+        find_reusable_render_artifact(library, plan_1080, purpose="final")
+        == artifact_1080
+    )
+    assert (
+        find_reusable_render_artifact(library, plan_1440, purpose="final")
+        == artifact_1440
+    )
+
+    # A matching SQLite identity is not enough. If the prior output is changed after
+    # success, reuse fails closed instead of silently accepting or skipping the candidate.
+    output_1080 = library.paths.root / artifact_1080.output_storage_key
+    output_1080.write_bytes(output_1080.read_bytes() + b"tampered")
+    with pytest.raises(RenderReuseIntegrityError, match="integrity verification"):
+        find_reusable_render_artifact(library, plan_1080, purpose="final")
