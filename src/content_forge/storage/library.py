@@ -8,6 +8,7 @@ from content_forge.core import Project
 
 from .asset_store import AssetStore
 from .database import LibraryDatabase
+from .library_index import ProductionLibraryIndex
 from .paths import RuntimePaths
 
 
@@ -18,6 +19,7 @@ class LocalLibrary:
         self.paths = RuntimePaths.from_root(root).ensure()
         self.database = LibraryDatabase(self.paths.database).initialize()
         self.assets = AssetStore(self.paths, self.database)
+        self.index = ProductionLibraryIndex(self.database).initialize()
 
     def save_project(self, project: Project) -> Project:
         return self.database.save_project(project)
