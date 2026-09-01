@@ -212,7 +212,7 @@ def install_voiced_story_routes(
         project_id: str,
         payload: MaterializeVoicedStoryRequest,
         _session: AuthSession = Depends(require_session),
-    ) -> dict[str, object] | Response:
+    ) -> Response:
         try:
             materialized = workflow.materialize(
                 project_id,
@@ -220,7 +220,7 @@ def install_voiced_story_routes(
             )
             if materialized is None:
                 return Response(status_code=204)
-            return materialized.model_dump(mode="json")
+            return JSONResponse(content=materialized.model_dump(mode="json"))
         except Exception as exc:
             raise _http_error(exc) from exc
 
