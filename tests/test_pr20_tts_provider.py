@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import sys
+import types
 import wave
 from pathlib import Path
 
 import pytest
 
+import content_forge.providers.qwen_tts as qwen_tts_module
 from content_forge.providers import (
     QwenTTSConfig,
     QwenTTSProvider,
@@ -85,6 +88,24 @@ def test_tts_semantic_identity_excludes_local_paths_and_tracks_generation(tmp_pa
         update={"generation": TTSGenerationSettings(top_p=0.8, max_new_tokens=1000)}
     )
     assert semantic_tts_request_digest(changed) != semantic_tts_request_digest(first)
+
+
+def test_qwen_resolves_complete_repository_at_exact_commit(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+    fake_hub = types.ModuleType("huggingface_hub")
+
+    def snapshot_download(*, repo_id: str, revision: str) -> str:
+        calls.append((repo_id, revision))
+        return str(tmp_path)
+
+    fake_hub.snapshot_download = snapshot_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    config = QwenTTSConfig(revision=_TEST_REVISION)
+    assert qwen_tts_module._resolve_model_snapshot(config) == tmp_path
+    assert calls == [(config.model_id, _TEST_REVISION)]
+
+    with pytest.raises(ValueError):
+        QwenTTSConfig(revision="main")
 
 
 def test_qwen_custom_voice_is_lazy_and_writes_verified_pcm16(tmp_path: Path) -> None:
