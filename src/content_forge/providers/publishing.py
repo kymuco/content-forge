@@ -184,13 +184,20 @@ class PublishInvocationEvidence(FrozenModel):
 
 
 class PublishResult(FrozenModel):
-    """Validated remote result; no provider credentials or secret material are retained."""
+    """Validated public remote result with no credential-bearing URL material."""
 
     disposition: PublishDisposition
     remote_id: str = Field(min_length=1, max_length=1024)
     remote_url: str | None = Field(default=None, max_length=4096)
     effective_at: datetime
     evidence: PublishInvocationEvidence
+
+    @field_validator("remote_id")
+    @classmethod
+    def validate_remote_id(cls, value: str) -> str:
+        if value != value.strip() or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("publish remote ID must be a canonical opaque non-whitespace string")
+        return value
 
     @field_validator("effective_at")
     @classmethod
@@ -202,9 +209,20 @@ class PublishResult(FrozenModel):
     def validate_remote_url(cls, value: str | None) -> str | None:
         if value is None:
             return None
+        if value != value.strip() or any(character.isspace() for character in value):
+            raise ValueError("publish remote URL must be canonical public HTTP(S) URL")
         parsed = urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username is not None:
-            raise ValueError("publish remote URL must be an absolute HTTP(S) URL without userinfo")
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or bool(parsed.query)
+            or bool(parsed.fragment)
+        ):
+            raise ValueError(
+                "publish remote URL must be an absolute public HTTP(S) URL without userinfo, query, or fragment"
+            )
         return value
 
 
