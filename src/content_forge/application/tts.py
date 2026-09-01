@@ -405,6 +405,8 @@ class LineTTSWorkflow:
         scene_id: str,
         line_id: str,
         settings: LineTTSSettings,
+        *,
+        force: bool = False,
     ) -> SynthesizedDialogueLine:
         project, expected_json = self._snapshot(project_id)
         if project.state not in _TTS_STATES:
@@ -431,7 +433,7 @@ class LineTTSWorkflow:
         expected_cache_key = tts_cache_key(semantic_request, health)
         if current is not None:
             self._validate_cached_asset(current)
-            if current.cache_key == expected_cache_key:
+            if current.cache_key == expected_cache_key and not force:
                 return current
 
         descriptor, temporary_name = tempfile.mkstemp(
