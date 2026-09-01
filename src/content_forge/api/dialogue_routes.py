@@ -22,6 +22,8 @@ from content_forge.application import (
 from content_forge.storage import LocalLibrary
 from content_forge.web import static_path
 
+from .app import _transport_is_secure
+
 _DIALOGUE_JSON_BODY_LIMIT = 512 * 1024
 
 
@@ -82,7 +84,7 @@ def install_dialogue_routes(
     auth: AuthManager,
     library: LocalLibrary,
 ) -> DialogueWorkflow:
-    """Install PR19 routes with auth/body checks before Pydantic body parsing."""
+    """Install PR19 routes with transport/auth/body gates before body parsing."""
 
     workflow = DialogueWorkflow(library)
     app.state.dialogue = workflow
@@ -92,6 +94,15 @@ def install_dialogue_routes(
         route_path = _route_relative_path(request)
         if not route_path.startswith("/api/v1/dialogue/"):
             return await call_next(request)
+
+        # This middleware is installed after the PR8 app middleware and therefore runs
+        # outside it. Preserve the global transport invariant here before authentication
+        # or body-policy responses can reveal dialogue-route behavior over plaintext LAN.
+        if not _transport_is_secure(request):
+            return JSONResponse(
+                status_code=426,
+                content={"detail": "non-loopback requests require HTTPS"},
+            )
 
         try:
             token = _authorization_token(request.headers.get("authorization"))
