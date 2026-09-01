@@ -13,6 +13,7 @@ from content_forge.storage import (
     LibraryTag,
     LocalLibrary,
     MissingAssetError,
+    ProductionLibraryIndex,
     StorageSchemaError,
 )
 from content_forge.web import static_path
@@ -78,6 +79,10 @@ def _asset_http_error(exc: MissingAssetError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(exc))
 
 
+def _is_json_content_type(value: str) -> bool:
+    return value.split(";", 1)[0].strip().lower() == "application/json"
+
+
 def install_production_library_routes(
     app: FastAPI,
     *,
@@ -108,7 +113,7 @@ def install_production_library_routes(
 
         if request.method in {"POST", "PUT", "PATCH"}:
             content_type = request.headers.get("content-type", "")
-            if not content_type.lower().startswith("application/json"):
+            if not _is_json_content_type(content_type):
                 return JSONResponse(status_code=415, content={"detail": "application/json is required"})
             raw_length = request.headers.get("content-length")
             if raw_length is None:
@@ -141,6 +146,15 @@ def install_production_library_routes(
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    def production_index() -> ProductionLibraryIndex:
+        try:
+            return library.index
+        except StorageSchemaError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="production library schema unavailable",
+            ) from exc
+
     @app.get("/app/production-library.js", include_in_schema=False)
     def production_library_script() -> FileResponse:
         response = FileResponse(
@@ -158,9 +172,10 @@ def install_production_library_routes(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         try:
-            return {"items": [item.model_dump(mode="json") for item in library.index.search(query)]}
-        except StorageSchemaError as exc:
-            raise HTTPException(status_code=500, detail="production library schema unavailable") from exc
+            items = production_index().search(query)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"items": [item.model_dump(mode="json") for item in items]}
 
     @app.get("/api/v1/production-library/assets/{asset_id}/tags")
     def get_asset_tags(
@@ -169,12 +184,13 @@ def install_production_library_routes(
     ) -> dict[str, object]:
         asset_id = _asset_path_id(asset_id)
         try:
-            return {
-                "asset_id": asset_id,
-                "tags": [tag.model_dump(mode="json") for tag in library.index.tags_for_asset(asset_id)],
-            }
+            tags = production_index().tags_for_asset(asset_id)
         except MissingAssetError as exc:
             raise _asset_http_error(exc) from exc
+        return {
+            "asset_id": asset_id,
+            "tags": [tag.model_dump(mode="json") for tag in tags],
+        }
 
     @app.put("/api/v1/production-library/assets/{asset_id}/tags")
     def replace_asset_tags(
@@ -184,10 +200,10 @@ def install_production_library_routes(
     ) -> dict[str, object]:
         asset_id = _asset_path_id(asset_id)
         try:
-            tags = library.index.set_tags(asset_id, payload.tags)
-            return {"asset_id": asset_id, "tags": [tag.model_dump(mode="json") for tag in tags]}
+            tags = production_index().set_tags(asset_id, payload.tags)
         except MissingAssetError as exc:
             raise _asset_http_error(exc) from exc
+        return {"asset_id": asset_id, "tags": [tag.model_dump(mode="json") for tag in tags]}
 
     @app.get("/api/v1/production-library/assets/{asset_id}/reuse")
     def asset_reuse_history(
@@ -196,14 +212,13 @@ def install_production_library_routes(
     ) -> dict[str, object]:
         asset_id = _asset_path_id(asset_id)
         try:
-            return {
-                "asset_id": asset_id,
-                "items": [
-                    item.model_dump(mode="json") for item in library.index.reuse_history(asset_id)
-                ],
-            }
+            items = production_index().reuse_history(asset_id)
         except MissingAssetError as exc:
             raise _asset_http_error(exc) from exc
+        return {
+            "asset_id": asset_id,
+            "items": [item.model_dump(mode="json") for item in items],
+        }
 
     @app.get("/api/v1/production-library/duplicates/{sha256}")
     def duplicate_lookup(
@@ -211,17 +226,22 @@ def install_production_library_routes(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         try:
-            match = library.index.duplicate_info(sha256)
+            match = production_index().duplicate_info(sha256)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"sha256": sha256.strip().lower(), "match": None if match is None else match.model_dump(mode="json")}
+        return {
+            "sha256": sha256.strip().lower(),
+            "match": None if match is None else match.model_dump(mode="json"),
+        }
 
     @app.get("/api/v1/production-library/collections")
     def list_collections(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         return {
-            "items": [item.model_dump(mode="json") for item in library.index.list_collections()]
+            "items": [
+                item.model_dump(mode="json") for item in production_index().list_collections()
+            ]
         }
 
     @app.put("/api/v1/production-library/collections/{collection_id}")
@@ -231,7 +251,10 @@ def install_production_library_routes(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         collection_id = _collection_id(collection_id)
-        item = library.index.put_collection(collection_id, payload.name, payload.query)
+        try:
+            item = production_index().put_collection(collection_id, payload.name, payload.query)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return item.model_dump(mode="json")
 
     @app.get("/api/v1/production-library/collections/{collection_id}")
@@ -240,7 +263,7 @@ def install_production_library_routes(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         collection_id = _collection_id(collection_id)
-        item = library.index.get_collection(collection_id)
+        item = production_index().get_collection(collection_id)
         if item is None:
             raise HTTPException(status_code=404, detail=f"unknown virtual collection: {collection_id}")
         return item.model_dump(mode="json")
@@ -252,10 +275,15 @@ def install_production_library_routes(
     ) -> dict[str, object]:
         collection_id = _collection_id(collection_id)
         try:
-            items = library.index.search_collection(collection_id)
+            items = production_index().search_collection(collection_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
-        return {"collection_id": collection_id, "items": [item.model_dump(mode="json") for item in items]}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "collection_id": collection_id,
+            "items": [item.model_dump(mode="json") for item in items],
+        }
 
     @app.delete("/api/v1/production-library/collections/{collection_id}")
     def delete_collection(
@@ -263,7 +291,7 @@ def install_production_library_routes(
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
         collection_id = _collection_id(collection_id)
-        if not library.index.delete_collection(collection_id):
+        if not production_index().delete_collection(collection_id):
             raise HTTPException(status_code=404, detail=f"unknown virtual collection: {collection_id}")
         return {"collection_id": collection_id, "deleted": True}
 
