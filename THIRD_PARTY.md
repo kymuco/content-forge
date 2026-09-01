@@ -20,13 +20,16 @@ Development/test dependencies currently include HTTPX and pytest.
 Optional provider extras currently include:
 
 - `chatgpt-web-adapter` for the PR15 LLM provider boundary;
-- `qwen-tts` 0.1.x for the PR20 local Qwen3-TTS provider boundary.
+- `qwen-tts` 0.1.x for the PR20 local Qwen3-TTS provider boundary;
+- `huggingface-hub` for resolving PR20 Qwen model repositories at exact immutable commit snapshots.
 
 These packages and their transitive dependencies are third-party works and remain governed by their respective upstream licenses. Their inclusion as dependencies does not make them Apache-2.0 works.
 
 ## Qwen3-TTS models and runtime
 
 PR20 can use the external `qwen-tts` package and Qwen3-TTS model checkpoints as an optional local provider runtime. Content Forge does not bundle Qwen3-TTS Python source, PyTorch/CUDA binaries, tokenizer/model weights, or downloaded Hugging Face/ModelScope caches in this repository.
+
+PR20 resolves configured Hugging Face Qwen repositories at an explicit immutable commit SHA before model construction so the model, processor, tokenizer/config, and generation files are loaded from one repository snapshot. The snapshot cache remains local runtime data and is not repository content.
 
 The currently targeted official Qwen3-TTS repository and released Qwen 12Hz model cards identify their code/model licensing as Apache-2.0. Downstream packaging must still inspect the authoritative license and metadata for the **exact package version and model checkpoint being distributed**, together with licenses of all transitive runtime dependencies.
 
