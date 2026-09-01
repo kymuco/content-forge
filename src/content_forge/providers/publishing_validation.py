@@ -7,6 +7,7 @@ from .publishing import (
     PublishResult,
     PublishingProviderHealth,
     PublishingResponseError,
+    publish_idempotency_key,
     semantic_publish_request_digest,
 )
 
@@ -23,6 +24,7 @@ def validate_publish_result(
     target = request.request.target
     artifact = request.request.artifact
     expected_request_sha256 = semantic_publish_request_digest(request.request)
+    expected_idempotency_key = publish_idempotency_key(request.request)
 
     if target.provider_id != health.provider_id:
         raise PublishingResponseError("publish target provider does not match provider health identity")
@@ -34,6 +36,8 @@ def validate_publish_result(
         raise PublishingResponseError("publish result request digest does not match approved request")
     if result.evidence.request_sha256 != request.approval.request_sha256:
         raise PublishingResponseError("publish result request digest does not match approval evidence")
+    if result.evidence.idempotency_key != expected_idempotency_key:
+        raise PublishingResponseError("publish result idempotency key does not match approved request")
     if result.evidence.output_sha256 != artifact.output_sha256:
         raise PublishingResponseError("publish result output digest does not match approved artifact")
     if result.evidence.destination_id != target.destination_id:
