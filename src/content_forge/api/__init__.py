@@ -16,6 +16,7 @@ from .app import (
 from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
 from .production_profile_routes import install_production_profile_routes
+from .publishing_pwa_route import install_publishing_pwa_route
 from .publishing_routes import install_publishing_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
@@ -93,6 +94,7 @@ def create_app(
             provider=publishing_provider,
             ffprobe_path=ffprobe_path,
         )
+        install_publishing_pwa_route(app)
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old
         # process can still be executing jobs in this runtime root while reconciliation
