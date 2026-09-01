@@ -274,17 +274,6 @@ class PanelOCRWorkflow:
         if not self.library.assets.verify(asset):
             raise PanelOCRValidationError("panel OCR source bytes failed SHA-256 verification")
 
-        snapshots = _metadata_snapshots(project)
-        if scene_id in snapshots:
-            existing = _load_extraction(project, scene_id)
-            if existing.asset_id != asset.asset_id or existing.source_sha256 != asset.sha256:
-                raise PanelOCRConflictError(
-                    "retained OCR extraction no longer matches the immutable scene asset"
-                )
-            # PR18 v1 has no implicit re-OCR. Repeating the operation is an idempotent
-            # read of the retained raw/corrected snapshot, independent of provider state.
-            return project
-
         path = self.library.assets.resolve(asset)
         request = OCRRequest(
             image_path=path,
@@ -293,12 +282,33 @@ class PanelOCRWorkflow:
             height=asset.height,
             language_hints=language_hints,
         )
+        request_digest = semantic_ocr_request_digest(request)
+
+        snapshots = _metadata_snapshots(project)
+        if scene_id in snapshots:
+            existing = _load_extraction(project, scene_id)
+            if existing.asset_id != asset.asset_id or existing.source_sha256 != asset.sha256:
+                raise PanelOCRConflictError(
+                    "retained OCR extraction no longer matches the immutable scene asset"
+                )
+            if existing.review_confidence_threshold != review_confidence_threshold:
+                raise PanelOCRConflictError(
+                    "retained OCR extraction uses a different review confidence threshold; explicit re-OCR/review-policy migration is required"
+                )
+            if existing.evidence.request_sha256 != request_digest:
+                raise PanelOCRConflictError(
+                    "retained OCR extraction uses different semantic request hints; explicit re-OCR is required"
+                )
+            # PR18 v1 has no implicit re-OCR. Repeating the exact operation is an
+            # idempotent read of the retained raw/corrected snapshot.
+            return project
+
         result = self.provider.extract(request)
         if result.source_sha256 != asset.sha256:
             raise PanelOCRValidationError("OCR provider result source digest mismatch")
         if result.width != asset.width or result.height != asset.height:
             raise PanelOCRValidationError("OCR provider result source dimensions mismatch")
-        if result.evidence.request_sha256 != semantic_ocr_request_digest(request):
+        if result.evidence.request_sha256 != request_digest:
             raise PanelOCRValidationError("OCR provider evidence request digest mismatch")
 
         prepared = prepare_panel_ocr(
