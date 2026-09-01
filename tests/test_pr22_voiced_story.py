@@ -156,7 +156,7 @@ def test_pr22_derives_deterministic_phrase_timing_and_scene_duration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, workflow, project, _ = _fixture(tmp_path, monkeypatch)
+    library, workflow, project, _ = _fixture(tmp_path, monkeypatch)
     policy = VoicedStoryTimingPolicy(
         between_line_pause_seconds=0.2,
         scene_tail_seconds=0.3,
@@ -167,6 +167,9 @@ def test_pr22_derives_deterministic_phrase_timing_and_scene_duration(
 
     assert first == second
     assert first.scenes[0].duration_seconds == 1.3
+    persisted = library.load_project(project.project_id)
+    assert persisted is not None
+    assert persisted.scenes[0].duration_seconds == 1.0
     line = first.scenes[0].lines[0]
     assert line.start_seconds == 0.0
     assert line.end_seconds == 1.0
@@ -191,6 +194,8 @@ def test_pr22_materialization_is_idempotent_and_revalidates_upstream(
     materialized = workflow.materialize(project.project_id)
     raw_after_first = library.load_project(project.project_id)
     assert raw_after_first is not None
+    assert raw_after_first.scenes[0].duration_seconds == materialized.scenes[0].duration_seconds
+    assert raw_after_first.scenes[0].duration_seconds == 1.3
     updated_at = raw_after_first.updated_at
 
     repeated = workflow.materialize(project.project_id)
@@ -211,6 +216,28 @@ def test_pr22_materialization_is_idempotent_and_revalidates_upstream(
             update={"metadata": metadata, "updated_at": datetime.now(timezone.utc)}
         )
     )
+    with pytest.raises(VoicedStoryConflictError, match="no longer matches current upstream"):
+        workflow.manifest(project.project_id)
+
+
+def test_pr22_materialized_manifest_rejects_core_scene_duration_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    library, workflow, project, _ = _fixture(tmp_path, monkeypatch)
+    workflow.materialize(project.project_id)
+    stored = library.load_project(project.project_id)
+    assert stored is not None
+    changed_scene = stored.scenes[0].validated_copy(update={"duration_seconds": 9.0})
+    library.save_project(
+        stored.validated_copy(
+            update={
+                "scenes": (changed_scene,),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+    )
+
     with pytest.raises(VoicedStoryConflictError, match="no longer matches current upstream"):
         workflow.manifest(project.project_id)
 
