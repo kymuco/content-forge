@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import math
 from collections.abc import Callable, Mapping, Sequence
+from numbers import Real
 from typing import Any
 
 from pydantic import Field
@@ -91,35 +92,48 @@ def _as_mapping(value: object) -> Mapping[str, object]:
     raise OCRResponseError("PaddleOCR result does not expose a mapping/json payload")
 
 
+def _sequence_items(value: object, label: str) -> tuple[object, ...]:
+    """Accept JSON lists and PaddleOCR's numpy-backed result arrays."""
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (str, bytes, bytearray, Mapping)) or value is None:
+        raise OCRResponseError(f"PaddleOCR {label} is missing or malformed")
+    if isinstance(value, Sequence):
+        return tuple(value)
+    try:
+        return tuple(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise OCRResponseError(f"PaddleOCR {label} is missing or malformed") from exc
+
+
+def _finite_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise OCRResponseError(f"PaddleOCR {label} is not numeric")
+    number = float(value)
+    if not math.isfinite(number):
+        raise OCRResponseError(f"PaddleOCR {label} is not finite")
+    return number
+
+
 def _finite_score(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise OCRResponseError("PaddleOCR recognition score is not numeric")
-    score = float(value)
-    if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+    score = _finite_number(value, "recognition score")
+    if not 0.0 <= score <= 1.0:
         raise OCRResponseError("PaddleOCR recognition score is outside [0, 1]")
     return score
 
 
 def _points(value: object) -> tuple[OCRPoint, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        raise OCRResponseError("PaddleOCR polygon is not a coordinate sequence")
     result: list[OCRPoint] = []
-    for pair in value:
-        if not isinstance(pair, Sequence) or isinstance(pair, (str, bytes, bytearray)):
-            raise OCRResponseError("PaddleOCR polygon point is malformed")
-        if len(pair) != 2:
+    for pair in _sequence_items(value, "polygon"):
+        coordinates = _sequence_items(pair, "polygon point")
+        if len(coordinates) != 2:
             raise OCRResponseError("PaddleOCR polygon point must contain x/y")
-        x, y = pair
-        if (
-            isinstance(x, bool)
-            or isinstance(y, bool)
-            or not isinstance(x, (int, float))
-            or not isinstance(y, (int, float))
-        ):
-            raise OCRResponseError("PaddleOCR polygon coordinates must be numeric")
-        xf, yf = float(x), float(y)
-        if not math.isfinite(xf) or not math.isfinite(yf) or xf < 0.0 or yf < 0.0:
-            raise OCRResponseError("PaddleOCR polygon contains invalid coordinates")
+        xf = _finite_number(coordinates[0], "polygon x coordinate")
+        yf = _finite_number(coordinates[1], "polygon y coordinate")
+        if xf < 0.0 or yf < 0.0:
+            raise OCRResponseError("PaddleOCR polygon contains negative coordinates")
         result.append(OCRPoint(x=xf, y=yf))
     if len(result) < 4:
         raise OCRResponseError("PaddleOCR polygon must contain at least four points")
@@ -128,18 +142,12 @@ def _points(value: object) -> tuple[OCRPoint, ...]:
 
 def _bbox(value: object | None, polygon: tuple[OCRPoint, ...]) -> OCRPixelRect:
     if value is not None:
-        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-            raise OCRResponseError("PaddleOCR bbox is not a coordinate sequence")
-        if len(value) != 4:
+        raw = _sequence_items(value, "bbox")
+        if len(raw) != 4:
             raise OCRResponseError("PaddleOCR bbox must contain four coordinates")
-        coordinates: list[float] = []
-        for coordinate in value:
-            if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
-                raise OCRResponseError("PaddleOCR bbox coordinates must be numeric")
-            number = float(coordinate)
-            if not math.isfinite(number) or number < 0.0:
-                raise OCRResponseError("PaddleOCR bbox contains invalid coordinates")
-            coordinates.append(number)
+        coordinates = [_finite_number(item, "bbox coordinate") for item in raw]
+        if any(number < 0.0 for number in coordinates):
+            raise OCRResponseError("PaddleOCR bbox contains negative coordinates")
         return OCRPixelRect(
             x_min=coordinates[0],
             y_min=coordinates[1],
@@ -221,27 +229,15 @@ class PaddleOCRProvider:
         if not isinstance(result_payload, Mapping):
             raise OCRResponseError("PaddleOCR result payload is malformed")
 
-        texts = result_payload.get("rec_texts")
-        scores = result_payload.get("rec_scores")
-        polygons = result_payload.get("rec_polys")
-        boxes = result_payload.get("rec_boxes")
-        for label, value in (
-            ("rec_texts", texts),
-            ("rec_scores", scores),
-            ("rec_polys", polygons),
-        ):
-            if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-                raise OCRResponseError(f"PaddleOCR {label} is missing or malformed")
-        assert isinstance(texts, Sequence)
-        assert isinstance(scores, Sequence)
-        assert isinstance(polygons, Sequence)
+        texts = _sequence_items(result_payload.get("rec_texts"), "rec_texts")
+        scores = _sequence_items(result_payload.get("rec_scores"), "rec_scores")
+        polygons = _sequence_items(result_payload.get("rec_polys"), "rec_polys")
+        boxes_value = result_payload.get("rec_boxes")
+        boxes = None if boxes_value is None else _sequence_items(boxes_value, "rec_boxes")
         if len(texts) != len(scores) or len(texts) != len(polygons):
             raise OCRResponseError("PaddleOCR recognition arrays have different lengths")
-        if boxes is not None:
-            if not isinstance(boxes, Sequence) or isinstance(boxes, (str, bytes, bytearray)):
-                raise OCRResponseError("PaddleOCR rec_boxes is malformed")
-            if len(boxes) != len(texts):
-                raise OCRResponseError("PaddleOCR rec_boxes length does not match text results")
+        if boxes is not None and len(boxes) != len(texts):
+            raise OCRResponseError("PaddleOCR rec_boxes length does not match text results")
 
         regions: list[OCRRegion] = []
         for provider_index, raw in enumerate(texts):
