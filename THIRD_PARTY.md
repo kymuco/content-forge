@@ -20,7 +20,7 @@ Development/test dependencies currently include HTTPX and pytest.
 Optional provider extras currently include:
 
 - `chatgpt-web-adapter` for the PR15 LLM provider boundary;
-- `qwen-tts` 0.1.x for the PR20 local Qwen3-TTS provider boundary;
+- `qwen-tts==0.1.1` for the PR20 local Qwen3-TTS provider boundary;
 - `huggingface-hub` for resolving PR20 Qwen model repositories at exact immutable commit snapshots.
 
 These packages and their transitive dependencies are third-party works and remain governed by their respective upstream licenses. Their inclusion as dependencies does not make them Apache-2.0 works.
