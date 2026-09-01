@@ -16,6 +16,7 @@ from .dialogue_routes import install_dialogue_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
 from .voice_cast_routes import install_voice_cast_routes
+from .voiced_scene_routes import install_voiced_scene_routes
 from .voiced_story_routes import install_voiced_story_routes
 
 
@@ -27,7 +28,7 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
     tts_provider: TTSProvider | None = None,
 ):
-    """Build the local API/PWA with PR21 voice and PR22 voiced-story surfaces."""
+    """Build the local API/PWA with PR21 voice, PR22 story, and PR23 presentation."""
 
     app = _create_api_app(
         root=root,
@@ -64,6 +65,11 @@ def create_app(
             auth=app.state.auth,
             library=app.state.library,
             tts_provider=tts_provider,
+        )
+        install_voiced_scene_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
         )
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old

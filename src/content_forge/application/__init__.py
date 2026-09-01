@@ -74,6 +74,25 @@ from .voice_cast import (
     VoiceCastWorkflow,
     voice_cast_manifest,
 )
+from .voiced_scene import (
+    ProjectVoicedSceneManifest,
+    ProjectVoicedScenePlan,
+    VoicedSceneCameraPolicy,
+    VoicedSceneConflictError,
+    VoicedSceneError,
+    VoicedSceneMixPolicy,
+    VoicedSceneNotFoundError,
+    VoicedSceneNotReadyError,
+    VoicedScenePreset,
+    VoicedSceneQCIssue,
+    VoicedSceneScenePlan,
+    VoicedSceneTrackPlan,
+    VoicedSceneValidationError,
+    natural_dialogue_preset,
+    voiced_scene_manifest,
+    voiced_story_digest,
+)
+from .voiced_scene_hardening import VoicedSceneWorkflow
 from .voiced_story import (
     ProjectVoicedStoryManifest,
     TimedTextCue,
@@ -88,10 +107,11 @@ from .voiced_story import (
     VoicedStoryWorkflow,
     voiced_story_manifest,
 )
-# Install the PR17 startup ownership boundary in place before exposing the existing
-# seventh-pass ReviewService class. This preserves all public class identities.
+# Install the PR17 startup ownership boundary before exposing the final ReviewService.
+# PR23 then layers an exact-snapshot voiced presentation gate over the established
+# seventh-pass review/recovery implementation without changing non-voiced authority.
 from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
-from .review_seventh_hardening import ReviewService
+from .review_pr23_hardening import ReviewService
 
 __all__ = [
     "ApplicationRepository",
@@ -129,6 +149,8 @@ __all__ = [
     "ProjectDialogueManifest",
     "ProjectTTSManifest",
     "ProjectVoiceCastManifest",
+    "ProjectVoicedSceneManifest",
+    "ProjectVoicedScenePlan",
     "ProjectVoicedStoryManifest",
     "ResolvedLineVoice",
     "ReviewConflictError",
@@ -157,6 +179,18 @@ __all__ = [
     "VoiceCastUnavailableError",
     "VoiceCastValidationError",
     "VoiceCastWorkflow",
+    "VoicedSceneCameraPolicy",
+    "VoicedSceneConflictError",
+    "VoicedSceneError",
+    "VoicedSceneMixPolicy",
+    "VoicedSceneNotFoundError",
+    "VoicedSceneNotReadyError",
+    "VoicedScenePreset",
+    "VoicedSceneQCIssue",
+    "VoicedSceneScenePlan",
+    "VoicedSceneTrackPlan",
+    "VoicedSceneValidationError",
+    "VoicedSceneWorkflow",
     "VoicedStoryConflictError",
     "VoicedStoryError",
     "VoicedStoryLine",
@@ -167,10 +201,13 @@ __all__ = [
     "VoicedStoryValidationError",
     "VoicedStoryWorkflow",
     "dialogue_manifest",
+    "natural_dialogue_preset",
     "panel_extraction_digest",
     "prepare_panel_ocr",
     "scene_dialogue_digest",
     "tts_manifest",
     "voice_cast_manifest",
+    "voiced_scene_manifest",
+    "voiced_story_digest",
     "voiced_story_manifest",
 ]
