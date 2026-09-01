@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from content_forge.application import (
@@ -20,6 +20,7 @@ from content_forge.application import (
     DialogueWorkflow,
 )
 from content_forge.storage import LocalLibrary
+from content_forge.web import static_path
 
 _DIALOGUE_JSON_BODY_LIMIT = 512 * 1024
 
@@ -135,6 +136,17 @@ def install_dialogue_routes(
             return auth.authenticate(token)
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    @app.get("/app/dialogue.js", include_in_schema=False)
+    def dialogue_script() -> FileResponse:
+        response = FileResponse(
+            static_path("dialogue.js"),
+            media_type="text/javascript; charset=utf-8",
+        )
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.get("/api/v1/dialogue/review-queue")
     def dialogue_review_queue(
