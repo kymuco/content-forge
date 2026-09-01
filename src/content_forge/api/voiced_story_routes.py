@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -17,10 +17,12 @@ from content_forge.application import (
     TTSError,
     TTSConflictError,
     TTSNotFoundError,
+    TTSSynthesisError,
     TTSValidationError,
     VoiceCastConflictError,
     VoiceCastError,
     VoiceCastNotFoundError,
+    VoiceCastUnavailableError,
     VoiceCastValidationError,
     VoicedStoryConflictError,
     VoicedStoryError,
@@ -30,6 +32,7 @@ from content_forge.application import (
     VoicedStoryValidationError,
     VoicedStoryWorkflow,
 )
+from content_forge.providers.tts import TTSProvider
 from content_forge.storage import LocalLibrary
 from content_forge.web import static_path
 
@@ -41,6 +44,10 @@ _VOICED_STORY_JSON_BODY_LIMIT = 64 * 1024
 class MaterializeVoicedStoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     timing_policy: VoicedStoryTimingPolicy | None = None
+
+
+class RegenerateVoicedStoryLineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 def _route_relative_path(request: Request) -> str:
@@ -71,6 +78,10 @@ def _http_error(exc: Exception) -> HTTPException:
         (VoicedStoryNotFoundError, DialogueNotFoundError, TTSNotFoundError, VoiceCastNotFoundError),
     ):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, VoiceCastUnavailableError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, TTSSynthesisError):
+        return HTTPException(status_code=502, detail=str(exc))
     if isinstance(
         exc,
         (
@@ -102,10 +113,11 @@ def install_voiced_story_routes(
     *,
     auth: AuthManager,
     library: LocalLibrary,
+    tts_provider: TTSProvider | None = None,
 ) -> VoicedStoryWorkflow:
     """Install PR22 preview/materialization with auth before JSON parsing."""
 
-    workflow = VoicedStoryWorkflow(library)
+    workflow = VoicedStoryWorkflow(library, tts_provider)
     app.state.voiced_story = workflow
 
     @app.middleware("http")
@@ -200,12 +212,82 @@ def install_voiced_story_routes(
         project_id: str,
         payload: MaterializeVoicedStoryRequest,
         _session: AuthSession = Depends(require_session),
-    ) -> dict[str, object]:
+    ) -> dict[str, object] | Response:
         try:
-            return workflow.materialize(
+            materialized = workflow.materialize(
                 project_id,
                 policy=payload.timing_policy,
-            ).model_dump(mode="json")
+            )
+            if materialized is None:
+                return Response(status_code=204)
+            return materialized.model_dump(mode="json")
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @app.delete("/api/v1/voiced-story/projects/{project_id}/materialization")
+    def dematerialize_story(
+        project_id: str,
+        _session: AuthSession = Depends(require_session),
+    ) -> Response:
+        try:
+            workflow.dematerialize(project_id)
+            return Response(status_code=204)
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @app.get(
+        "/api/v1/voiced-story/projects/{project_id}/scenes/{scene_id}/lines/{line_id}/audio"
+    )
+    def line_audio(
+        project_id: str,
+        scene_id: str,
+        line_id: str,
+        _session: AuthSession = Depends(require_session),
+    ) -> FileResponse:
+        try:
+            asset = workflow.line_audio(project_id, scene_id, line_id)
+            if not library.assets.verify(asset):
+                raise VoicedStoryConflictError("PR20 synthesized audio failed content verification")
+            response = FileResponse(
+                library.assets.resolve(asset),
+                media_type="audio/wav",
+            )
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Content-Forge-Line"] = line_id
+            response.headers["X-Content-Forge-Audio-SHA256"] = asset.sha256
+            return response
+        except (FileNotFoundError, OSError) as exc:
+            raise _http_error(
+                VoicedStoryConflictError("PR20 synthesized audio bytes are unavailable")
+            ) from exc
+        except Exception as exc:
+            raise _http_error(exc) from exc
+
+    @app.post(
+        "/api/v1/voiced-story/projects/{project_id}/scenes/{scene_id}/lines/{line_id}/regenerate"
+    )
+    def regenerate_line(
+        project_id: str,
+        scene_id: str,
+        line_id: str,
+        _payload: RegenerateVoicedStoryLineRequest,
+        _session: AuthSession = Depends(require_session),
+    ) -> dict[str, object]:
+        try:
+            synthesized, materialized = workflow.regenerate_line(
+                project_id,
+                scene_id,
+                line_id,
+            )
+            return {
+                "line": synthesized.model_dump(mode="json"),
+                "materialized": materialized is not None,
+                "manifest": (
+                    None
+                    if materialized is None
+                    else materialized.model_dump(mode="json")
+                ),
+            }
         except Exception as exc:
             raise _http_error(exc) from exc
 
