@@ -4,9 +4,9 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR20: **complete** in the intended post-merge repository state.
-- Current step: **PR21 — Voice Cast registry**.
-- Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
+- PR1–PR23: **complete** in the intended post-merge repository state.
+- Current step: **PR24 — Long-form output profiles**.
+- Current milestone: **Milestone 6 — Long-form and reusable production assets**.
 - The intended **v0.1 batch-production boundary is complete through PR17**.
 
 ## Milestone 0 — Foundation
@@ -374,46 +374,68 @@ Exit condition: accepted PR19 dialogue lines can synthesize independently verifi
 
 ### PR21 — Voice Cast registry
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
-- persistent cast voices such as protagonist, secondary characters, narrator;
-- character-to-cast mapping;
-- preview voice button from phone/desktop;
+- runtime-wide immutable/revisioned persistent cast voices such as protagonist, secondary characters, and narrator;
+- explicit separation between PR19 narrative `character_id` and reusable PR21 `cast_id`;
+- project character-to-cast mapping pinned to exact cast revision and definition digest;
+- exact reference-audio SHA pinning for global cast recipes and project-local overrides;
 - project overrides without mutating global cast;
-- channel/profile-specific casts later.
+- authenticated phone/desktop registry, assignment, unassignment, and voice-preview surface;
+- guarded PR21→PR20 synthesis against Project TOCTOU changes;
+- immediate invalidation of affected current PR20 synthesis receipts when cast authority changes;
+- optional CLI wiring to the existing lazy Qwen provider;
+- channel/profile-specific casts deferred to a later profile layer.
+
+Exit condition: accepted PR19 characters can reuse persistent immutable voice recipes across projects, resolve them into the PR20 synthesis contract with exact reference evidence, preview them from the authenticated PWA, and change cast authority without leaving stale synthesized audio represented as current project state.
 
 ### PR22 — Voiced story review UI and timed text
 
+Status: **complete**
+
 Deliverables:
 
-- panel-centric editor instead of a generic NLE timeline;
-- OCR correction;
-- speaker and voice assignment;
-- listen/regenerate controls;
-- automatic scene duration from synthesized lines;
-- phrase-level timed text/ASS rendering;
-- optional forced alignment left for a later PR.
+- derived `pr22_voiced_story` evidence over exact current PR19 dialogue, PR20 audio, and PR21 cast authority;
+- deterministic dialogue sequencing, voiced scene duration, and phrase-level editorial timing in canonical microseconds;
+- panel-centric authenticated review surface with verified **Listen** and explicit **Regenerate** controls;
+- PR22-owned timed-text `Overlay` and voice `AudioTrack` materialization into the existing shared `Scene` runtime;
+- reversible ownership that retains/restores pre-PR22 scene duration and removes only PR22-owned state;
+- successful regeneration refreshes audio/timing while failed regeneration preserves the previous valid receipt/materialization;
+- custom timing-policy preservation across preview, materialization, and regeneration;
+- fail-closed detection of upstream evidence drift, owned scene drift, deterministic ID collision, and orphaned PR22-owned state;
+- PR22-aware preview/final render guard at the application layer while keeping generic `compile_timeline()` renderer-only;
+- optional forced alignment deferred to a later timing provider rather than misrepresenting proportional cue timing as phoneme alignment.
+
+Exit condition: accepted PR19 dialogue with current PR20 synthesis and PR21 cast can be reviewed as one voiced story, materialized as verified voice audio plus phrase timing in the canonical scene graph, listened to/regenerated safely, rendered through the existing pipeline, and reversed without creating a second timeline, subtitle, audio, or identity authority.
 
 ### PR23 — Voiced scene audio mix and camera choreography
 
+Status: **complete**
+
 Deliverables:
 
-- dialogue sequencing;
-- ambience/music ducking;
-- pause rules;
-- pan/zoom/focus changes around speakers;
-- reusable scene presets;
-- preview and QC for missing/overlapping dialogue.
+- versioned voiced-scene presentation plan and materialized manifest pinned to exact PR22 authority;
+- deterministic pause/overlap QC without taking ownership of PR19 dialogue or PR20/PR21 voice evidence;
+- reusable presentation presets with bounded music/ambience ducking;
+- profile-independent `focus_zoom` camera intent derived only from accepted face/explicit-crop geometry, with semantic `speaker` hints remaining non-geometric warnings rather than guessed face locations;
+- reversible ownership of only PR23 camera motion and non-PR22 music/ambience presentation state;
+- retained base-state hardening that proves each restore target matches the exact derived PR23 transform before dematerialization;
+- FFmpeg presentation compilation layered over the existing PR13 motion and PR14 audio compilers, with real camera and ambience-duck integration coverage;
+- authenticated PR23 preview/current/materialize/dematerialize API and persistent PWA presentation/QC surface;
+- fail-closed exact-snapshot PR10 preview/final render gate for materialized voiced stories;
+- presentation changes invalidate stale preview/final identity and reopen canonical preview approval before final render.
 
-Exit condition: a panel sequence can become a polished voiced Short with only bounded review tasks.
+Exit condition: a PR22 voiced panel sequence can become a polished voiced Short with bounded presentation review, deterministic camera/mix behavior, real FFmpeg evidence, reversible ownership, and no second dialogue, audio, timeline, or render authority.
 
 ---
 
 ## Milestone 6 — Long-form and reusable production assets
 
 ### PR24 — Long-form output profiles
+
+Status: **in progress**
 
 Deliverables:
 
