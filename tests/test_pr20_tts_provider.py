@@ -254,6 +254,43 @@ def test_qwen_voice_clone_verifies_reference_and_maps_arguments(tmp_path: Path) 
         }
     ]
 
+    with pytest.raises(TTSResponseError, match="does not accept an instruction"):
+        provider.synthesize(
+            request.validated_copy(
+                update={"output_path": tmp_path / "clone-instruct.wav", "instruction": "Calm"}
+            )
+        )
+    assert len(runtime.calls) == 1
+
+    with pytest.raises(TTSResponseError, match="must omit reference text"):
+        provider.synthesize(
+            request.validated_copy(
+                update={
+                    "output_path": tmp_path / "clone-xvec-with-text.wav",
+                    "reference": request.reference.validated_copy(
+                        update={"x_vector_only_mode": True}
+                    ),
+                }
+            )
+        )
+    assert len(runtime.calls) == 1
+
+    xvec_request = request.validated_copy(
+        update={
+            "output_path": tmp_path / "clone-xvec.wav",
+            "reference": request.reference.validated_copy(
+                update={"x_vector_only_mode": True, "text": None}
+            ),
+        }
+    )
+    provider.synthesize(xvec_request)
+    assert runtime.calls[1] == {
+        "text": "New sentence",
+        "language": "Japanese",
+        "ref_audio": str(reference),
+        "x_vector_only_mode": True,
+    }
+
     reference.write_bytes(b"tampered")
     with pytest.raises(TTSResponseError, match="digest mismatch"):
         provider.synthesize(request.validated_copy(update={"output_path": tmp_path / "bad.wav"}))
