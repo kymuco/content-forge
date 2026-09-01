@@ -13,6 +13,16 @@ from .database import (
 from .job_query import list_jobs
 from .job_state import transition_job_state
 from .library import LocalLibrary
+from .library_index import (
+    LibraryDuplicateInfo,
+    LibraryReuseRecord,
+    LibrarySearchHit,
+    LibrarySearchQuery,
+    LibraryTag,
+    LibraryTagKind,
+    VirtualCollection,
+)
+from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths, default_runtime_root
 from .records import DerivativeSlot, SourceInput, StoredJob
 
@@ -23,15 +33,23 @@ __all__ = [
     "DerivativeSlot",
     "IngestResult",
     "LibraryDatabase",
+    "LibraryDuplicateInfo",
+    "LibraryReuseRecord",
+    "LibrarySearchHit",
+    "LibrarySearchQuery",
+    "LibraryTag",
+    "LibraryTagKind",
     "LocalLibrary",
     "MissingAssetError",
     "MissingProjectError",
+    "ProductionLibraryIndex",
     "RuntimePaths",
     "SourceInput",
     "StorageConflictError",
     "StorageError",
     "StorageSchemaError",
     "StoredJob",
+    "VirtualCollection",
     "default_runtime_root",
     "list_jobs",
     "sha256_file",

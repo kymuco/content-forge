@@ -13,6 +13,7 @@ from .app import (
     create_app as _create_api_app,
 )
 from .dialogue_routes import install_dialogue_routes
+from .production_library_routes import install_production_library_routes
 from .production_profile_routes import install_production_profile_routes
 from .review_prepare_routes import install_review_prepare_route
 from .review_routes import install_review_routes
@@ -29,7 +30,7 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
     tts_provider: TTSProvider | None = None,
 ):
-    """Build the local API/PWA with review, voice, presentation, and profile surfaces."""
+    """Build the local API/PWA with review, voice, presentation, profile, and library surfaces."""
 
     app = _create_api_app(
         root=root,
@@ -73,6 +74,11 @@ def create_app(
             library=app.state.library,
         )
         install_production_profile_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+        )
+        install_production_library_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,
