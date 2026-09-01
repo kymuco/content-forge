@@ -20,6 +20,7 @@ from content_forge.providers import (
     PublishingProviderHealth,
     approve_publish_request,
     publish_artifact_ref,
+    publish_idempotency_key,
     semantic_publish_request_digest,
 )
 
@@ -84,6 +85,8 @@ def test_pr27_publish_request_is_machine_independent_and_digest_is_exact() -> No
 
     digest = semantic_publish_request_digest(request)
     assert digest == semantic_publish_request_digest(request.model_copy(deep=True))
+    assert publish_idempotency_key(request) == f"cfp-{digest}"
+    assert publish_idempotency_key(request) == publish_idempotency_key(request.model_copy(deep=True))
     assert digest != semantic_publish_request_digest(_request(title="Changed title"))
     assert digest != semantic_publish_request_digest(_request(destination_id="channel-secondary"))
 
@@ -93,6 +96,7 @@ def test_pr27_publish_request_is_machine_independent_and_digest_is_exact() -> No
         }
     )
     assert digest != semantic_publish_request_digest(changed_artifact)
+    assert publish_idempotency_key(request) != publish_idempotency_key(changed_artifact)
 
 
 def test_pr27_publish_schedule_is_canonicalized_to_utc_for_identity() -> None:
@@ -100,8 +104,16 @@ def test_pr27_publish_schedule_is_canonicalized_to_utc_for_identity() -> None:
     instant_plus_six = instant_utc.astimezone(timezone(timedelta(hours=6)))
     base = _request()
 
-    first = base.model_copy(
-        update={"metadata": base.metadata.model_copy(update={"scheduled_for": instant_utc})}
+    first = PublishRequest(
+        artifact=base.artifact,
+        target=base.target,
+        metadata=PublishMetadata(
+            title=base.metadata.title,
+            description=base.metadata.description,
+            tags=base.metadata.tags,
+            visibility=base.metadata.visibility,
+            scheduled_for=instant_utc,
+        ),
     )
     second = PublishRequest(
         artifact=base.artifact,
@@ -116,6 +128,7 @@ def test_pr27_publish_schedule_is_canonicalized_to_utc_for_identity() -> None:
     )
     assert second.metadata.scheduled_for == instant_utc
     assert semantic_publish_request_digest(first) == semantic_publish_request_digest(second)
+    assert publish_idempotency_key(first) == publish_idempotency_key(second)
 
 
 def test_pr27_approval_is_bound_to_exact_publish_request() -> None:
@@ -155,8 +168,15 @@ class _FixturePublishingProvider:
             available=True,
         )
 
-    def publish(self, request: ApprovedPublishRequest, *, media_path: Path) -> PublishResult:
+    def publish(
+        self,
+        request: ApprovedPublishRequest,
+        *,
+        media_path: Path,
+        idempotency_key: str,
+    ) -> PublishResult:
         assert media_path == Path("/runtime/final.mp4")
+        assert idempotency_key == publish_idempotency_key(request.request)
         digest = semantic_publish_request_digest(request.request)
         return PublishResult(
             disposition="published",
@@ -167,6 +187,7 @@ class _FixturePublishingProvider:
                 provider_id="fixture",
                 provider_version="1",
                 request_sha256=digest,
+                idempotency_key=idempotency_key,
                 output_sha256=request.request.artifact.output_sha256,
                 destination_id=request.request.target.destination_id,
             ),
@@ -177,8 +198,14 @@ def test_pr27_provider_protocol_keeps_runtime_path_outside_approved_request() ->
     provider = _FixturePublishingProvider()
     assert isinstance(provider, PublishingProvider)
     approved = approve_publish_request(_request())
-    result = provider.publish(approved, media_path=Path("/runtime/final.mp4"))
+    key = publish_idempotency_key(approved.request)
+    result = provider.publish(
+        approved,
+        media_path=Path("/runtime/final.mp4"),
+        idempotency_key=key,
+    )
     assert result.evidence.request_sha256 == approved.approval.request_sha256
+    assert result.evidence.idempotency_key == key
     assert result.evidence.output_sha256 == approved.request.artifact.output_sha256
 
 
@@ -193,6 +220,7 @@ def test_pr27_publish_result_rejects_secret_bearing_remote_url() -> None:
                 provider_id="fixture",
                 provider_version="1",
                 request_sha256="a" * 64,
+                idempotency_key=f"cfp-{'c' * 64}",
                 output_sha256="b" * 64,
                 destination_id="channel-main",
             ),
