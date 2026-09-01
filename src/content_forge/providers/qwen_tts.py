@@ -235,6 +235,11 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_06b_custom_voice(config: QwenTTSConfig) -> bool:
+    folded = config.model_id.casefold().replace("_", "").replace("-", "")
+    return config.mode == "custom_voice" and "0.6b".replace(".", "") in folded.replace(".", "")
+
+
 class QwenTTSProvider:
     """Lazy Qwen3-TTS 0.1.x adapter with explicit model-mode boundaries."""
 
@@ -301,6 +306,11 @@ class QwenTTSProvider:
             )
         if self.config.mode == "voice_design" and request.instruction is None:
             raise TTSResponseError("Qwen3-TTS voice_design requires an instruction")
+        if _is_06b_custom_voice(self.config) and request.instruction is not None:
+            raise TTSResponseError(
+                "Qwen3-TTS 0.6B CustomVoice ignores instructions; use a compatible 1.7B "
+                "CustomVoice checkpoint for instruction-controlled synthesis"
+            )
 
         try:
             runtime = self._get_runtime()
