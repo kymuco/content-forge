@@ -18,6 +18,14 @@ from .dialogue import (
 )
 from .dialogue_pr19_integrity import DialogueWorkflow
 from .inbox import InboxError, InboxService, UploadTooLargeError
+from .long_form import (
+    LongFormChapterPlan,
+    LongFormChapterSpec,
+    LongFormComposition,
+    LongFormError,
+    LongFormValidationError,
+    compile_long_form_composition,
+)
 from .models import (
     AuthSession,
     InboxIntake,
@@ -136,6 +144,11 @@ __all__ = [
     "IssuedSession",
     "LineTTSSettings",
     "LineTTSWorkflow",
+    "LongFormChapterPlan",
+    "LongFormChapterSpec",
+    "LongFormComposition",
+    "LongFormError",
+    "LongFormValidationError",
     "PairingChallenge",
     "PanelOCRConflictError",
     "PanelOCRError",
@@ -200,6 +213,7 @@ __all__ = [
     "VoicedStoryTimingPolicy",
     "VoicedStoryValidationError",
     "VoicedStoryWorkflow",
+    "compile_long_form_composition",
     "dialogue_manifest",
     "natural_dialogue_preset",
     "panel_extraction_digest",
