@@ -117,6 +117,24 @@
       <div id="voiced-story-scenes" class="review-list" aria-live="polite"></div>
       <p id="voiced-story-status" class="status"></p>
     </section>
+    <section id="voiced-scene-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">SCENE PRESENTATION</p><h2>Mix & camera choreography</h2></div>
+        <span id="voiced-scene-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Derive reversible camera and ducking policy over exact materialized PR22 timing. Blocking QC fails closed; PR23 never rewrites PR22-owned voice tracks.</p>
+      <div class="stack compact">
+        <label>Project ID<input id="voiced-scene-project" list="voiced-scene-project-options" placeholder="Choose a recent project or paste its ID"></label>
+        <datalist id="voiced-scene-project-options"></datalist>
+        <div class="row">
+          <button id="voiced-scene-preview" class="secondary" type="button">Preview presentation</button>
+          <button id="voiced-scene-materialize" class="primary" type="button">Materialize presentation</button>
+          <button id="voiced-scene-dematerialize" class="ghost" type="button">Remove presentation</button>
+        </div>
+      </div>
+      <div id="voiced-scene-scenes" class="review-list" aria-live="polite"></div>
+      <p id="voiced-scene-status" class="status"></p>
+    </section>
     <section id="inbox-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent projects</h2></div><span id="inbox-count" class="badge neutral">0</span></div>
       <div id="inbox-list" class="inbox-list" aria-live="polite"></div>
@@ -131,5 +149,6 @@
   <script src="dialogue.js"></script>
   <script src="voice-cast.js"></script>
   <script src="voiced-story.js"></script>
+  <script src="voiced-scene.js"></script>
 </body>
 </html>
