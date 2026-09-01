@@ -4,9 +4,9 @@ This roadmap is intentionally organized as small reviewable pull requests. The a
 
 ## Current implementation status
 
-- PR1–PR22: **complete** in the intended post-merge repository state.
-- Current step: **PR23 — Voiced scene audio mix and camera choreography**.
-- Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
+- PR1–PR23: **complete** in the intended post-merge repository state.
+- Current step: **PR24 — Long-form output profiles**.
+- Current milestone: **Milestone 6 — Long-form and reusable production assets**.
 - The intended **v0.1 batch-production boundary is complete through PR17**.
 
 ## Milestone 0 — Foundation
@@ -412,25 +412,30 @@ Exit condition: accepted PR19 dialogue with current PR20 synthesis and PR21 cast
 
 ### PR23 — Voiced scene audio mix and camera choreography
 
-Status: **in progress**
+Status: **complete**
 
 Deliverables:
 
-- dialogue sequencing over current PR22 line timing without taking ownership of PR19/PR20/PR21 authority;
-- ambience/music ducking and deterministic gain-envelope policy;
-- bounded pause and overlap policy;
-- pan/zoom/focus changes around accepted speaker/focus hints;
-- reusable voiced-scene presentation presets;
-- preview and QC for missing, stale, clipped, or unintentionally overlapping dialogue;
-- materialization into the existing `Scene.motion`, audio tracks/properties, and shared render plan rather than a second mixer/timeline.
+- versioned voiced-scene presentation plan and materialized manifest pinned to exact PR22 authority;
+- deterministic pause/overlap QC without taking ownership of PR19 dialogue or PR20/PR21 voice evidence;
+- reusable presentation presets with bounded music/ambience ducking;
+- profile-independent `focus_zoom` camera intent derived only from accepted face/explicit-crop geometry, with semantic `speaker` hints remaining non-geometric warnings rather than guessed face locations;
+- reversible ownership of only PR23 camera motion and non-PR22 music/ambience presentation state;
+- retained base-state hardening that proves each restore target matches the exact derived PR23 transform before dematerialization;
+- FFmpeg presentation compilation layered over the existing PR13 motion and PR14 audio compilers, with real camera and ambience-duck integration coverage;
+- authenticated PR23 preview/current/materialize/dematerialize API and persistent PWA presentation/QC surface;
+- fail-closed exact-snapshot PR10 preview/final render gate for materialized voiced stories;
+- presentation changes invalidate stale preview/final identity and reopen canonical preview approval before final render.
 
-Exit condition: a panel sequence can become a polished voiced Short with only bounded review tasks while all dialogue, voice, generated-audio, and timing evidence remains traceable to PR19–PR22 authority.
+Exit condition: a PR22 voiced panel sequence can become a polished voiced Short with bounded presentation review, deterministic camera/mix behavior, real FFmpeg evidence, reversible ownership, and no second dialogue, audio, timeline, or render authority.
 
 ---
 
 ## Milestone 6 — Long-form and reusable production assets
 
 ### PR24 — Long-form output profiles
+
+Status: **in progress**
 
 Deliverables:
 
