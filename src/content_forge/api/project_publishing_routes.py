@@ -9,6 +9,14 @@ from content_forge.core import EntityKind, require_entity_id
 from content_forge.providers import PublishRequest, PublishTarget, PublishingProvider
 from content_forge.storage import LocalLibrary, StorageConflictError
 
+_STATE_PRIORITY = {
+    "outcome_unknown": 5,
+    "running": 4,
+    "succeeded": 3,
+    "prepared": 2,
+    "failed": 1,
+}
+
 
 def _authorization_token(value: str | None) -> str:
     if value is None or not value.startswith("Bearer "):
@@ -60,7 +68,7 @@ def _project_attempt_ids(
     *,
     limit: int,
 ) -> tuple[str, ...]:
-    """Return newest attempts for one exact final, applying limit after exact filtering."""
+    """Return safety-significant attempts for one exact final before applying the limit."""
 
     # Accessing the repository initializes the additive publishing schema before the
     # read-only join below. No ledger row is created or mutated by this projection.
@@ -68,7 +76,7 @@ def _project_attempt_ids(
     with library.database.connection() as connection:
         rows = connection.execute(
             """
-            SELECT a.attempt_id, o.request_json
+            SELECT a.attempt_id, a.state, o.request_json
             FROM publish_attempts AS a
             JOIN publish_operations AS o
               ON o.request_sha256 = a.request_sha256
@@ -76,8 +84,12 @@ def _project_attempt_ids(
             """
         ).fetchall()
 
-    selected: list[str] = []
-    for row in rows:
+    # Rows begin newest-first. Preserve that order within each state while moving remote
+    # risk ahead of success/local states so a small projection limit can never hide an
+    # older outcome_unknown/running attempt behind a newer prepared/failed request for
+    # the same exact final.
+    exact: list[tuple[int, int, str]] = []
+    for order, row in enumerate(rows):
         try:
             request = PublishRequest.model_validate_json(str(row["request_json"]))
         except Exception as exc:
@@ -89,10 +101,14 @@ def _project_attempt_ids(
             or artifact.output_sha256 != output_sha256
         ):
             continue
-        selected.append(str(row["attempt_id"]))
-        if len(selected) >= limit:
-            break
-    return tuple(selected)
+        state = str(row["state"])
+        priority = _STATE_PRIORITY.get(state)
+        if priority is None:
+            raise StorageConflictError("stored publish attempt has invalid state")
+        exact.append((priority, order, str(row["attempt_id"])))
+
+    exact.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(item[2] for item in exact[:limit])
 
 
 def install_project_publishing_routes(
