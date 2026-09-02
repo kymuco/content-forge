@@ -77,11 +77,11 @@ Analytics and evidence-driven recommendations remain a later feedback-loop phase
 
 ## Development status
 
-**PR1–PR32 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, PR30 reconciles the roadmap/provider documentation, PR31 adds the project-centric phone Production Home, and PR32 adds the first real phone Create video wizard over existing template/Review/Render authority.
+**PR1–PR33 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, PR30 reconciles the roadmap/provider documentation, PR31 adds the project-centric phone Production Home, PR32 adds the real phone Create video wizard over existing template/Review/Render authority, and PR33 keeps bounded review, preview approval/rejection, final progress, and final playback inside one Project-specific phone context.
 
-The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved YouTube publication declarations, a daily-use mobile production projection, and human-facing production presets that create provenance-preserving Projects without introducing a second product state machine.
+The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved YouTube publication declarations, a daily-use mobile production projection, human-facing production presets that create provenance-preserving Projects, and a project-specific phone workflow that reuses existing Review/Preview/Final authority without introducing a second product state machine.
 
-The current product direction is **Daily Production Completion**. PR32 establishes `Production Home → Create video → choose a human-facing preset → choose/order compatible media → existing Review/Preview/Final`; the current implementation step is **PR33 — Project-specific edit, preview, and final happy path**. Later steps carry the exact final into publishing and improve batch attention handling before analytics work resumes. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
+The current product direction is **Daily Production Completion**. PR33 now establishes `Production Home → Create video → choose/order media → one Project screen → bounded decisions → authenticated preview → approve/reject → final render/QC → final playback`. The next implementation step is **PR34 — Final-to-publish phone handoff**, followed by the mobile batch/attention work before analytics resumes. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
 
 The original v0.1 vertical slice remains implemented through PR17:
 
@@ -137,6 +137,24 @@ PR32 exposes product vocabulary instead of raw template/version identifiers:
 
 These are aliases over existing registered template authority, not a parallel renderer. The phone's selected source order is frozen into canonical PR32 evidence together with exact asset/source provenance, and the resulting Project immediately enters the existing Review → Preview → Approve → Final lifecycle.
 
+## Phone project flow
+
+PR33 keeps that lifecycle inside one coherent Project-specific phone surface. Production Home opens the exact Project rather than sending the user through a global engineering queue.
+
+The Project screen exposes only already-modeled review authority:
+
+- hook editing where a hook task exists;
+- bounded full-frame or normalized per-scene crop editing where crop review exists;
+- optional title/description/hashtags through the existing metadata task;
+- PR32 source order as read-only retained authority;
+- authenticated low-resolution preview generation/playback;
+- exact preview approve or reject-and-edit actions;
+- final render progress and authenticated final playback.
+
+No new backend Project endpoint or state machine is introduced. `READY` remains editable according to existing core semantics: an edit invalidates the approved preview and returns the Project to review. `RENDERING`, `QC`, and `DONE` never offer review mutations; any historically open optional task is displayed as locked history.
+
+Global Capture/Review and specialist production panels remain available behind `Advanced` for fallback/debug work, but ordinary Short / Framed / Story production no longer requires them.
+
 ## Initial content families
 
 The production runtime currently covers:
@@ -162,7 +180,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 
 ## Documentation
 
-- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR32 roadmap
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR33 roadmap
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
@@ -195,6 +213,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr28-youtube-publishing-adapter.md`](docs/pr28-youtube-publishing-adapter.md) — YouTube upload/scheduling adapter and local OAuth boundary
 - [`docs/pr29-versioned-publication-declarations.md`](docs/pr29-versioned-publication-declarations.md) — versioned exact publication declarations
 - [`docs/pr32-phone-create-video-presets.md`](docs/pr32-phone-create-video-presets.md) — phone Create video presets, deterministic create identity, and exact ordered source evidence
+- [`docs/pr33-project-specific-phone-flow.md`](docs/pr33-project-specific-phone-flow.md) — project-specific bounded editing, preview approval/rejection, final lifecycle, and phone projection authority
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
