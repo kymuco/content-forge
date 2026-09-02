@@ -67,21 +67,21 @@ Inbox                Review Queue
 The current product-completion phase makes the original asymmetric workflow pleasant to use every day:
 
 ```text
-Phone: Share / Create video / choose format + sources / bounded decisions / approve
+Phone: Share / Create video / choose format + sources / bounded decisions / approve / publish
                                       |
                                       v
-Desktop: ingest / prepare / preview / render / QC / publish boundary
+Desktop: ingest / prepare / preview / render / QC / authenticated publishing boundary
 ```
 
 Analytics and evidence-driven recommendations remain a later feedback-loop phase after the daily production workflow is genuinely convenient.
 
 ## Development status
 
-**PR1–PR33 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, PR30 reconciles the roadmap/provider documentation, PR31 adds the project-centric phone Production Home, PR32 adds the real phone Create video wizard over existing template/Review/Render authority, and PR33 keeps bounded review, preview approval/rejection, final progress, and final playback inside one Project-specific phone context.
+**PR1–PR34 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, PR30 reconciles the roadmap/provider documentation, PR31 adds the project-centric phone Production Home, PR32 adds the real phone Create video wizard over existing template/Review/Render authority, PR33 keeps bounded review, preview approval/rejection, final progress, and final playback inside one Project-specific phone context, and PR34 carries that exact final into the existing PR27–PR29 publishing authority without routine manual IDs.
 
-The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved YouTube publication declarations, a daily-use mobile production projection, human-facing production presets that create provenance-preserving Projects, and a project-specific phone workflow that reuses existing Review/Preview/Final authority without introducing a second product state machine.
+The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved YouTube publication declarations, a daily-use mobile production projection, human-facing production presets that create provenance-preserving Projects, a project-specific Review/Preview/Final flow, and an exact final-to-publish phone handoff that reuses the existing durable publishing ledger and approval semantics.
 
-The current product direction is **Daily Production Completion**. PR33 now establishes `Production Home → Create video → choose/order media → one Project screen → bounded decisions → authenticated preview → approve/reject → final render/QC → final playback`. The next implementation step is **PR34 — Final-to-publish phone handoff**, followed by the mobile batch/attention work before analytics resumes. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
+The current product direction is **Daily Production Completion**. PR34 now establishes `Production Home → Create video → choose/order media → one Project screen → bounded decisions → authenticated preview → approve/reject → final render/QC → final playback → exact publish request → human approval → explicit execution → durable result`. The next implementation step is **PR35 — Mobile batch Inbox and attention queue**; analytics resumes only after that daily production path is comfortable under repeated use. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
 
 The original v0.1 vertical slice remains implemented through PR17:
 
@@ -155,6 +155,18 @@ No new backend Project endpoint or state machine is introduced. `READY` remains 
 
 Global Capture/Review and specialist production panels remain available behind `Advanced` for fallback/debug work, but ordinary Short / Framed / Story production no longer requires them.
 
+## Phone final-to-publish flow
+
+PR34 extends the same Project screen only after canonical state reaches `DONE`. The routine phone path automatically carries the exact final render job and output SHA-256 into the existing publishing candidate boundary, so users do not paste render job, provider, destination, or publish-attempt IDs.
+
+A configured provider may expose only a credential-free `PublishTarget`. The YouTube adapter projects its provider ID and configured channel ID while OAuth token paths and credentials remain provider-local. Unknown providers are not guessed and fall back to Advanced publishing.
+
+The phone still requires the real publication decisions: title, description, tags, visibility, optional schedule, and explicit PR29 Yes/No declarations. It then preserves the proven sequence `build exact candidate → review digest/final identity → approve exact request → separately execute durable attempt`.
+
+Project publishing history is a read-only projection over the existing PR27 ledger, filtered by exact `{project_id, render_job_id, output_sha256}`. Remote-risk state is prioritized before bounded projection results: `outcome_unknown > running > succeeded > prepared > failed`. This prevents an older uncertain remote side effect from being hidden by a newer local request, including after phone/browser restart.
+
+No publishing side effect follows automatically from final rendering or publish approval. `outcome_unknown` remains retry-blocking, provider-free final playback/export remains usable, and Advanced publishing remains available for recovery/debugging.
+
 ## Initial content families
 
 The production runtime currently covers:
@@ -180,7 +192,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 
 ## Documentation
 
-- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR33 roadmap
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR34 roadmap
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
@@ -214,6 +226,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr29-versioned-publication-declarations.md`](docs/pr29-versioned-publication-declarations.md) — versioned exact publication declarations
 - [`docs/pr32-phone-create-video-presets.md`](docs/pr32-phone-create-video-presets.md) — phone Create video presets, deterministic create identity, and exact ordered source evidence
 - [`docs/pr33-project-specific-phone-flow.md`](docs/pr33-project-specific-phone-flow.md) — project-specific bounded editing, preview approval/rejection, final lifecycle, and phone projection authority
+- [`docs/pr34-final-to-publish-phone-handoff.md`](docs/pr34-final-to-publish-phone-handoff.md) — exact final-to-publish phone handoff, credential-free destination projection, and durable publish-state recovery
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
