@@ -23,21 +23,20 @@ PR28 adds a YouTube Data API v3 adapter only. It does not add analytics, a secon
 
 Anything rejected before `running` is a known preflight failure. If uncertainty begins after the upload call starts, PR27 records `outcome_unknown` rather than automatically creating a potentially duplicate video.
 
-## Provider identity and policy
+## Provider identity and immutable PR28 policy
 
 The concrete provider identity is:
 
 - provider ID: `youtube`;
-- provider-version base: `youtube_data_api_v3_pr28_v1`;
-- destination identity: exact YouTube channel ID;
-- configured upload category, default `22` (`People & Blogs`);
-- subscriber notification policy fixed to `notifySubscribers=false` in PR28.
+- provider version: `youtube_data_api_v3_pr28_v1:category=22:notify=0`;
+- destination identity: exact YouTube channel ID.
 
-The non-secret provider policy is pinned into the durable provider version, for example:
+PR28 fixes two YouTube-specific values as immutable adapter policy:
 
-`youtube_data_api_v3_pr28_v1:category=22:notify=0`
+- upload category `22` (`People & Blogs`);
+- `notifySubscribers=false`.
 
-This means a different category policy produces different provider evidence rather than silently changing remote behavior under the same recorded runtime identity.
+They are intentionally **not runtime configuration**. Neither value exists in the PR27 human-approved request, so allowing an operator to change them after approval would permit the same approval digest to produce different remote semantics. A later PR can add category or notification behavior only by extending/versioning the approved publish contract.
 
 `health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token resolves to exactly the configured channel. A successful health check pins that service on the current execution thread so later preflight/upload uses the credential context verified immediately before the remote boundary.
 
@@ -55,7 +54,7 @@ YouTube preflight checks:
 - YouTube's 256 GB upload ceiling;
 - YouTube's 12-hour duration ceiling;
 - for videos longer than 15 minutes, a read-only `channels.list(part="status", mine=true)` check requiring `status.longUploadsStatus == "allowed"`;
-- exact configured category through read-only `videoCategories.list`, requiring an assignable category;
+- fixed category `22` through read-only `videoCategories.list`, requiring it to remain assignable;
 - title length and prohibited angle brackets;
 - UTF-8 description byte limit and prohibited angle brackets;
 - YouTube tag-budget accounting;
@@ -66,7 +65,7 @@ YouTube preflight checks:
 
 The capability/category lookups are read-only and cannot create a video. The actual publication boundary begins only after the durable transition to `running`, when `next_chunk()` is invoked on the already-built resumable request.
 
-This distinction is intentional: local request-construction failures, invalid categories, unsupported long uploads, and invalid metadata remain retryable `failed`; only uncertainty after a video upload may have begun becomes `outcome_unknown`.
+This distinction is intentional: local request-construction failures, invalid platform capability, and invalid metadata remain retryable `failed`; only uncertainty after a video upload may have begun becomes `outcome_unknown`.
 
 The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do not leak into other future providers.
 
@@ -76,8 +75,8 @@ PR28 uses the Google API Python client's resumable path:
 
 - `MediaFileUpload(..., resumable=True)` with 8 MiB chunks;
 - `videos.insert(part="snippet,status", ...)` request construction during preflight;
-- `snippet.categoryId` set to the validated provider category policy;
-- `notifySubscribers=false` fixed for PR28;
+- `snippet.categoryId = "22"` as immutable PR28 policy;
+- `notifySubscribers=false` as immutable PR28 policy;
 - remote upload through `next_chunk(num_retries=...)` only after `running`.
 
 Using finite resumable chunks preserves meaningful interruption recovery rather than degenerating the resumable API into one large request.
@@ -106,7 +105,8 @@ A successful `videos.insert` response is not enough durable evidence. After uplo
 - exact approved title;
 - exact approved description;
 - exact approved tags;
-- exact configured category policy;
+- fixed category `22`;
+- `status.uploadStatus` is `uploaded` or `processed`, never `failed`/`rejected`/`deleted`;
 - requested privacy for unscheduled uploads;
 - `private` plus exact `publishAt` for scheduled uploads.
 
@@ -154,11 +154,8 @@ Start the API explicitly with YouTube publishing enabled:
 content-forge-api \
   --publishing-provider youtube \
   --youtube-token /private/path/youtube-token.json \
-  --youtube-channel-id UC... \
-  --youtube-category-id 22
+  --youtube-channel-id UC...
 ```
-
-`--youtube-category-id` is optional and defaults to `22`. The selected category must resolve as assignable during preflight.
 
 Without `--publishing-provider youtube`, the runtime remains provider-free and cannot perform remote publishing.
 
@@ -173,6 +170,7 @@ The YouTube Data API / YouTube Help currently document that:
 - videos longer than 15 minutes require channel long-upload eligibility/enablement;
 - uploaded videos require valid category metadata;
 - `status.publishAt` applies only while a video is private and before it has been published;
+- `status.uploadStatus` distinguishes uploaded/processed content from failed or rejected uploads;
 - uploads from API projects created after July 28, 2020 that have not passed YouTube's API audit are restricted to private viewing.
 
 That last rule is external platform governance, not something Content Forge can or should bypass. An upload can succeed while public visibility remains unavailable until the Google/YouTube API project satisfies the applicable audit requirements.
@@ -193,4 +191,4 @@ Therefore:
 
 ## Non-goals
 
-PR28 does not add analytics ingest, thumbnail upload, playlists, captions, made-for-kids publish semantics, synthetic-media disclosure publish semantics, monetization settings, subscriber-notification controls, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
+PR28 does not add analytics ingest, thumbnail upload, playlists, captions, category selection, made-for-kids publish semantics, synthetic-media disclosure publish semantics, monetization settings, subscriber-notification controls, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
