@@ -69,6 +69,23 @@ def test_pr33_pr32_source_order_remains_read_only_in_project_flow() -> None:
     assert 'resolveProjectTask(task, order)' not in script
 
 
+def test_pr33_terminal_projects_never_offer_false_review_mutations() -> None:
+    script = static_path("production-home.js").read_text(encoding="utf-8")
+
+    assert 'let activeProjectState = null' in script
+    assert 'function projectIsTerminal()' in script
+    assert 'activeProjectState === "RENDERING"' in script
+    assert 'activeProjectState === "QC"' in script
+    assert 'activeProjectState === "DONE"' in script
+    assert 'function taskIsEditable(task)' in script
+    assert 'return taskIsOpen(task) && !projectIsTerminal()' in script
+    assert 'if (!taskIsEditable(task))' in script
+    assert 'Production has already crossed the final-render boundary' in script
+    # READY remains intentionally editable: changing an optional detail there reuses the
+    # existing core behavior that invalidates the approved preview and returns to review.
+    assert 'activeProjectState === "READY"' not in script.split('function projectIsTerminal()', 1)[1].split('}', 1)[0]
+
+
 def test_pr33_installed_pwa_advances_from_pr32_shell() -> None:
     worker = static_path("sw.js").read_text(encoding="utf-8")
 
