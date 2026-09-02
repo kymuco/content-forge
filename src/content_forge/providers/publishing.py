@@ -30,6 +30,10 @@ class PublishingUnavailableError(PublishingProviderError):
     """The provider runtime/account integration is unavailable."""
 
 
+class PublishingPreflightError(PublishingProviderError):
+    """The exact approved request cannot enter this provider's remote boundary."""
+
+
 class PublishingExecutionError(PublishingProviderError):
     """Remote publishing failed before a validated result existed."""
 
@@ -195,8 +199,13 @@ class PublishResult(FrozenModel):
     @field_validator("remote_id")
     @classmethod
     def validate_remote_id(cls, value: str) -> str:
-        if value != value.strip() or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value):
-            raise ValueError("publish remote ID must be a canonical opaque non-whitespace string")
+        if value != value.strip() or any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in value
+        ):
+            raise ValueError(
+                "publish remote ID must be a canonical opaque non-whitespace string"
+            )
         return value
 
     @field_validator("effective_at")
@@ -239,6 +248,19 @@ class PublishingProvider(Protocol):
         media_path: Path,
         idempotency_key: str,
     ) -> PublishResult: ...
+
+
+@runtime_checkable
+class PublishingPreflightProvider(Protocol):
+    """Optional local preparation that must complete before remote execution may begin."""
+
+    def preflight(
+        self,
+        request: ApprovedPublishRequest,
+        *,
+        media_path: Path,
+        idempotency_key: str,
+    ) -> None: ...
 
 
 def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef:
@@ -312,6 +334,8 @@ __all__ = [
     "PublishTarget",
     "PublishVisibility",
     "PublishingExecutionError",
+    "PublishingPreflightError",
+    "PublishingPreflightProvider",
     "PublishingProvider",
     "PublishingProviderError",
     "PublishingProviderHealth",
