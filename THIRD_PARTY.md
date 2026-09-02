@@ -21,9 +21,18 @@ Optional provider extras currently include:
 
 - `chatgpt-web-adapter` for the PR15 LLM provider boundary;
 - `qwen-tts==0.1.1` for the PR20 local Qwen3-TTS provider boundary;
-- `huggingface-hub` for resolving PR20 Qwen model repositories at exact immutable commit snapshots.
+- `huggingface-hub` for resolving PR20 Qwen model repositories at exact immutable commit snapshots;
+- `google-api-python-client`, `google-auth`, `google-auth-httplib2`, and `google-auth-oauthlib` for the PR28 YouTube Data API v3 publishing adapter and installed-application OAuth flow.
 
 These packages and their transitive dependencies are third-party works and remain governed by their respective upstream licenses. Their inclusion as dependencies does not make them Apache-2.0 works.
+
+## YouTube Data API and Google OAuth runtime
+
+PR28 can use the external Google API Python client and OAuth libraries as an optional publishing runtime. Content Forge does not bundle Google OAuth client secrets, access tokens, refresh tokens, user credentials, or YouTube account data in the repository.
+
+The OAuth client-secrets JSON is supplied by the operator from Google Cloud Console. The authorized-user token created by `content-forge-youtube-auth` is local runtime state and is written to an explicitly selected owner-only path. Neither credential file is part of `PublishRequest`, publish approval identity, SQLite publishing evidence, API request bodies, or the PWA.
+
+Use of the YouTube Data API remains subject to Google's and YouTube's current API terms, policies, quotas, verification/audit requirements, and account restrictions. The ability to upload through the API does not grant rights to publish underlying media. Operators are responsible for the rights, permissions, disclosures, and platform settings applicable to their content and channel.
 
 ## Qwen3-TTS models and runtime
 
