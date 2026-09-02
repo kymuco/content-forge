@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
+from content_forge.application import AnalyticsService
 from content_forge.core import EntityKind, new_entity_id
 from content_forge.providers import (
     AnalyticsInvocationEvidence,
@@ -161,6 +162,37 @@ def test_model_copy_validation_bypass_is_rejected_at_provider_and_storage_bounda
     assert library.analytics.observations_for_publication(attempt.attempt_id) == ()
 
 
+def test_provider_health_model_copy_bypass_is_rejected_before_observe(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    attempt, effective_at = _successful_publication(library)
+
+    class Provider:
+        observe_called = False
+
+        def health(self):
+            return AnalyticsProviderHealth(
+                provider_id="analytics",
+                provider_version="1",
+                available=True,
+            ).model_copy(update={"provider_id": " "})
+
+        def observe(self, query):
+            self.observe_called = True
+            raise AssertionError("observe must not run after invalid health evidence")
+
+    provider = Provider()
+    with pytest.raises(AnalyticsResponseError):
+        AnalyticsService(library, provider).collect(
+            attempt.attempt_id,
+            window=AnalyticsWindow(
+                start_at=effective_at,
+                end_at=datetime(2026, 9, 2, 10, 0, tzinfo=UTC),
+            ),
+            metric_ids=("views",),
+        )
+    assert provider.observe_called is False
+
+
 def test_successful_publication_is_revalidated_before_analytics_use(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     attempt, _effective_at = _successful_publication(library)
@@ -196,7 +228,7 @@ def test_analytics_schema_is_lazy_and_provider_free_runtime_stays_usable(tmp_pat
     assert after is not None
 
 
-def test_stored_observation_json_is_revalidated_on_read(tmp_path) -> None:
+def test_stored_observation_json_and_index_columns_are_revalidated_on_read(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     attempt, _effective_at = _successful_publication(library)
     _query, _health, observation = _valid_observation(library, attempt.attempt_id)
@@ -204,8 +236,17 @@ def test_stored_observation_json_is_revalidated_on_read(tmp_path) -> None:
 
     with library.database.transaction() as connection:
         connection.execute(
-            "UPDATE analytics_observations SET observation_json = ? WHERE observation_sha256 = ?",
-            ("{}", record.observation_sha256),
+            "UPDATE analytics_observations SET analytics_provider_id = ? WHERE observation_sha256 = ?",
+            ("other-analytics", record.observation_sha256),
         )
-    with pytest.raises(ValidationError):
+    with pytest.raises(StorageConflictError):
+        library.analytics.get_observation(record.observation_sha256)
+
+    with library.database.transaction() as connection:
+        connection.execute(
+            "UPDATE analytics_observations SET analytics_provider_id = ?, observation_json = ? "
+            "WHERE observation_sha256 = ?",
+            ("analytics", "{}", record.observation_sha256),
+        )
+    with pytest.raises(StorageConflictError):
         library.analytics.get_observation(record.observation_sha256)
