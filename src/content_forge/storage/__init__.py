@@ -1,5 +1,6 @@
 """Local persistence and content-addressed media storage."""
 
+from .analytics import AnalyticsObservationRecord, AnalyticsRepository
 from .asset_store import AssetIntegrityError, AssetStore, IngestResult, sha256_file
 from .database import (
     DATABASE_SCHEMA_VERSION,
@@ -29,6 +30,8 @@ from .publishing_hardening import PublishingRepository
 from .records import DerivativeSlot, SourceInput, StoredJob
 
 __all__ = [
+    "AnalyticsObservationRecord",
+    "AnalyticsRepository",
     "AssetIntegrityError",
     "AssetStore",
     "DATABASE_SCHEMA_VERSION",
