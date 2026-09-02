@@ -12,8 +12,8 @@ def test_pr28_real_google_media_upload_factory_is_resumable_mp4(tmp_path: Path) 
     media = tmp_path / "fixture.mp4"
     media.write_bytes(b"test")
 
-    upload = _media_upload(media)
-
-    assert upload.resumable() is True
-    assert upload.mimetype() == "video/mp4"
-    assert upload.size() == 4
+    with media.open("rb") as handle:
+        upload = _media_upload(handle)
+        assert upload.resumable() is True
+        assert upload.mimetype() == "video/mp4"
+        assert upload.size() == 4
