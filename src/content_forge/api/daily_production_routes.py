@@ -14,11 +14,11 @@ from content_forge.application import (
     InboxService,
 )
 from content_forge.application.production_presets import (
-    ProductionPresetConflictError,
     ProductionPresetError,
     ProductionPresetService,
     _preset_evidence,
     _source_snapshots,
+    preset_for_project,
 )
 from content_forge.application.review import ReviewError, ReviewService
 from content_forge.providers import PublishRequest, PublishingProvider
@@ -72,19 +72,60 @@ def _preview_safe(summary: Mapping[str, object]) -> bool:
     return isinstance(preview, Mapping) and preview.get("status") == "not_rendered"
 
 
-def _used_source_project_ids(projects: tuple[object, ...]) -> set[str]:
+def _used_source_project_ids(
+    library: LocalLibrary,
+    source_items: tuple[dict[str, object], ...],
+) -> set[str]:
+    """Find all valid PR32 uses of the currently visible source assets across history."""
+
+    by_asset: dict[str, set[str]] = {}
+    for source in source_items:
+        source_project_id = source.get("source_project_id")
+        asset_id = source.get("asset_id")
+        if isinstance(source_project_id, str) and isinstance(asset_id, str):
+            by_asset.setdefault(asset_id, set()).add(source_project_id)
+    if not by_asset:
+        return set()
+
+    asset_ids = sorted(by_asset)
+    placeholders = ",".join("?" for _ in asset_ids)
+    with library.database.connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT project_id
+            FROM project_assets
+            WHERE asset_id IN ({placeholders})
+            ORDER BY project_id
+            """,
+            asset_ids,
+        ).fetchall()
+
     used: set[str] = set()
-    for project in projects:
+    for row in rows:
+        project_id = str(row["project_id"])
         try:
-            evidence = _preset_evidence(project)  # type: ignore[arg-type]
+            project = library.load_project(project_id)
+        except (TypeError, ValueError):
+            continue
+        if project is None:
+            continue
+        try:
+            if preset_for_project(project) is None:
+                continue
+            evidence = _preset_evidence(project)
             if evidence is None:
                 continue
             snapshots = _source_snapshots(evidence)
-        except (ProductionPresetConflictError, TypeError, ValueError):
+        except (ProductionPresetError, TypeError, ValueError):
             continue
         for snapshot in snapshots:
             source_project_id = snapshot.get("source_project_id")
-            if isinstance(source_project_id, str):
+            asset_id = snapshot.get("asset_id")
+            if (
+                isinstance(source_project_id, str)
+                and isinstance(asset_id, str)
+                and source_project_id in by_asset.get(asset_id, set())
+            ):
                 used.add(source_project_id)
     return used
 
@@ -360,7 +401,7 @@ def install_daily_production_routes(
         production_by_id = {project.project_id: project for project in production_projects}
         source_items = presets.list_sources(limit=500)
         source_ids = {str(item["source_project_id"]) for item in source_items}
-        used_source_ids = _used_source_project_ids(production_projects)
+        used_source_ids = _used_source_project_ids(library, source_items)
         publish_risks = _active_publish_risks(library)
 
         queue = review.list_queue(limit=500, include_auto=False)
