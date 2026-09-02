@@ -55,7 +55,7 @@ This route does not create or mutate publishing rows. It reads the existing PR27
 - `render_job_id`;
 - `output_sha256`.
 
-The limit is applied **after** exact-final filtering. Newer attempts for another Project or for an older/different final of the same Project therefore cannot hide the current final's durable publication state.
+The limit is applied **after** exact-final filtering and safety ordering. Exact-final attempts are conservatively ordered `outcome_unknown > running > succeeded > prepared > failed`, while newer attempts retain priority within the same state. Newer attempts for another Project, another final, or a less safety-significant request for the same exact final therefore cannot hide a retry-blocking remote outcome behind a small response limit.
 
 The response repeats the exact `project_id`, `render_job_id`, and `output_sha256`. The served phone bundle validates all three against the current canonical Project summary before using the projection.
 
@@ -127,7 +127,7 @@ outcome_unknown
 > failed
 ```
 
-This prevents a historical successful receipt from hiding a second attempt whose remote outcome is still unknown or whose execution may still be running.
+The backend projection uses the same safety order before applying its result limit, and the served phone bundle independently preserves the same priority when selecting the state to render. This prevents a historical successful receipt or newer local attempt from hiding another attempt whose remote outcome is unknown or whose execution may still be running.
 
 Multiple `prepared` or multiple `running` attempts for one exact final are treated as inconsistent routine state and block one-tap execution. Advanced inspection is required instead of guessing which attempt is safe.
 
