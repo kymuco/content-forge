@@ -30,10 +30,12 @@ from .publishing import (
 )
 
 _PROVIDER_ID = "youtube"
-_PROVIDER_VERSION = "youtube_data_api_v3_pr28_v1"
+_PROVIDER_VERSION_BASE = "youtube_data_api_v3_pr28_v1"
 _MAX_UPLOAD_BYTES = 256_000_000_000
 _MAX_UPLOAD_SECONDS = 12 * 60 * 60
 _LONG_UPLOAD_THRESHOLD_SECONDS = 15 * 60
+_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+_NOTIFY_SUBSCRIBERS = False
 _YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 _YOUTUBE_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_OAUTH_SCOPES = (_YOUTUBE_UPLOAD_SCOPE, _YOUTUBE_READ_SCOPE)
@@ -49,6 +51,7 @@ class YouTubePublishingConfig(FrozenModel):
 
     token_path: str = Field(min_length=1, max_length=4096)
     channel_id: str = Field(min_length=3, max_length=128)
+    category_id: str = Field(default="22", min_length=1, max_length=16)
     max_retries: int = Field(default=5, ge=0, le=10)
 
     @field_validator("token_path")
@@ -73,6 +76,19 @@ class YouTubePublishingConfig(FrozenModel):
         if any(character.isspace() or ord(character) < 32 for character in normalized):
             raise ValueError("YouTube channel_id must be a canonical non-whitespace identifier")
         return normalized
+
+    @field_validator("category_id")
+    @classmethod
+    def validate_category_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or not normalized.isascii() or not normalized.isdigit():
+            raise ValueError("YouTube category_id must be a decimal category identifier")
+        return normalized
+
+
+def _provider_version(config: YouTubePublishingConfig) -> str:
+    notify = "1" if _NOTIFY_SUBSCRIBERS else "0"
+    return f"{_PROVIDER_VERSION_BASE}:category={config.category_id}:notify={notify}"
 
 
 def _utc_now() -> datetime:
@@ -212,7 +228,7 @@ def _media_upload(path: Path) -> object:
         return MediaFileUpload(
             str(path),
             mimetype="video/mp4",
-            chunksize=-1,
+            chunksize=_UPLOAD_CHUNK_BYTES,
             resumable=True,
         )
     except Exception as exc:
@@ -301,6 +317,30 @@ def _validate_youtube_metadata(request: ApprovedPublishRequest, *, now: datetime
         )
 
 
+def _validate_category(
+    service: Any,
+    config: YouTubePublishingConfig,
+    *,
+    retries: int,
+) -> None:
+    payload = _execute_preflight(
+        service.videoCategories().list(
+            part="snippet",
+            id=config.category_id,
+        ),
+        retries=retries,
+    )
+    items = payload.get("items")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise PublishingPreflightError("YouTube category could not be resolved exactly")
+    category = items[0]
+    snippet = category.get("snippet")
+    if category.get("id") != config.category_id or not isinstance(snippet, dict):
+        raise PublishingPreflightError("YouTube category response did not match configured category")
+    if snippet.get("assignable") is not True:
+        raise PublishingPreflightError("YouTube category is not assignable to uploaded videos")
+
+
 def _validate_upload_capability(
     service: Any,
     request: ApprovedPublishRequest,
@@ -329,11 +369,16 @@ def _validate_upload_capability(
         )
 
 
-def _youtube_body(request: ApprovedPublishRequest) -> dict[str, object]:
+def _youtube_body(
+    request: ApprovedPublishRequest,
+    *,
+    category_id: str,
+) -> dict[str, object]:
     metadata = request.request.metadata
     snippet: dict[str, object] = {
         "title": metadata.title,
         "description": metadata.description,
+        "categoryId": category_id,
     }
     if metadata.tags:
         snippet["tags"] = list(metadata.tags)
@@ -358,6 +403,25 @@ def _canonical_video_id(value: object) -> str:
     return value
 
 
+def _verify_snippet(
+    snippet: dict[str, object],
+    request: ApprovedPublishRequest,
+    config: YouTubePublishingConfig,
+) -> None:
+    metadata = request.request.metadata
+    if snippet.get("channelId") != config.channel_id:
+        raise PublishingResponseError("YouTube video belongs to a different channel")
+    if snippet.get("title") != metadata.title:
+        raise PublishingResponseError("YouTube video title does not match approved metadata")
+    if snippet.get("description") != metadata.description:
+        raise PublishingResponseError("YouTube video description does not match approved metadata")
+    remote_tags = snippet.get("tags", [])
+    if not isinstance(remote_tags, list) or tuple(remote_tags) != metadata.tags:
+        raise PublishingResponseError("YouTube video tags do not match approved metadata")
+    if snippet.get("categoryId") != config.category_id:
+        raise PublishingResponseError("YouTube video category does not match configured provider policy")
+
+
 @dataclass(frozen=True)
 class _PreparedUpload:
     service: Any
@@ -380,6 +444,7 @@ class YouTubePublishingProvider:
         clock: Clock | None = None,
     ) -> None:
         self.config = config
+        self._version = _provider_version(config)
         self._credentials_loader = (
             _load_credentials if credentials_loader is None else credentials_loader
         )
@@ -410,7 +475,7 @@ class YouTubePublishingProvider:
             if not isinstance(items, list) or len(items) != 1:
                 return PublishingProviderHealth(
                     provider_id=_PROVIDER_ID,
-                    provider_version=_PROVIDER_VERSION,
+                    provider_version=self._version,
                     available=False,
                     reason="YouTube authorization did not resolve exactly one channel",
                 )
@@ -419,14 +484,14 @@ class YouTubePublishingProvider:
             if channel_id != self.config.channel_id:
                 return PublishingProviderHealth(
                     provider_id=_PROVIDER_ID,
-                    provider_version=_PROVIDER_VERSION,
+                    provider_version=self._version,
                     available=False,
                     reason="YouTube authenticated channel does not match configured destination",
                 )
             self._thread_state.service = service
             return PublishingProviderHealth(
                 provider_id=_PROVIDER_ID,
-                provider_version=_PROVIDER_VERSION,
+                provider_version=self._version,
                 available=True,
                 reason=None,
             )
@@ -434,7 +499,7 @@ class YouTubePublishingProvider:
             self._clear_execution_state()
             return PublishingProviderHealth(
                 provider_id=_PROVIDER_ID,
-                provider_version=_PROVIDER_VERSION,
+                provider_version=self._version,
                 available=False,
                 reason="YouTube publishing runtime is unavailable",
             )
@@ -476,19 +541,20 @@ class YouTubePublishingProvider:
         if size > _MAX_UPLOAD_BYTES:
             raise PublishingPreflightError("YouTube media file exceeds the 256 GB upload limit")
 
-        _validate_upload_capability(service, request, retries=self.config.max_retries)
-
         now = self._clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise PublishingPreflightError("YouTube provider clock must be timezone-aware")
         _validate_youtube_metadata(request, now=now.astimezone(timezone.utc))
+        _validate_upload_capability(service, request, retries=self.config.max_retries)
+        _validate_category(service, self.config, retries=self.config.max_retries)
 
         try:
             upload = self._media_upload_factory(media_path)
             insert_request = service.videos().insert(
                 part="snippet,status",
-                body=_youtube_body(request),
+                body=_youtube_body(request, category_id=self.config.category_id),
                 media_body=upload,
+                notifySubscribers=_NOTIFY_SUBSCRIBERS,
             )
         except PublishingPreflightError:
             raise
@@ -563,8 +629,7 @@ class YouTubePublishingProvider:
         status = video.get("status")
         if not isinstance(snippet, dict) or not isinstance(status, dict):
             raise PublishingResponseError("YouTube verification response lacks snippet/status")
-        if snippet.get("channelId") != self.config.channel_id:
-            raise PublishingResponseError("YouTube video belongs to a different channel")
+        _verify_snippet(snippet, request, self.config)
 
         metadata = request.request.metadata
         if metadata.scheduled_for is None:
@@ -594,7 +659,7 @@ class YouTubePublishingProvider:
             effective_at=effective_at,
             evidence=PublishInvocationEvidence(
                 provider_id=_PROVIDER_ID,
-                provider_version=_PROVIDER_VERSION,
+                provider_version=self._version,
                 request_sha256=expected_digest,
                 idempotency_key=idempotency_key,
                 output_sha256=request.request.artifact.output_sha256,
