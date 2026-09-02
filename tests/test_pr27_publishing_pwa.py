@@ -39,8 +39,10 @@ def test_pr27_pwa_shell_serves_separate_publish_approval_and_execution_controls(
         script = client.get("/app/publishing.js")
         assert script.status_code == 200
         assert script.headers["Cache-Control"] == "no-cache"
-        assert 'apiJson("publishing/candidates"' in script.text
-        assert 'apiJson("publishing/attempts"' in script.text
+        # Route literals are authority assertions; do not couple this regression to JS
+        # line wrapping around apiJson(...).
+        assert '"publishing/candidates"' in script.text
+        assert '"publishing/attempts"' in script.text
         assert "publishing/attempts/${encodeURIComponent(attemptId)}/execute" in script.text
         assert "Candidate invalidated because publishing inputs changed" in script.text
         assert "Remote execution has not started" in script.text
