@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from content_forge.application import AuthManager, AuthenticationError, AuthSession
+from content_forge.application.idempotency import normalize_idempotency_key
 from content_forge.application.production_presets import (
     ProductionPresetConflictError,
     ProductionPresetError,
@@ -27,6 +28,13 @@ class ProductionProjectCreateRequest(BaseModel):
     request_id: str = Field(min_length=36, max_length=36)
     preset_id: str = Field(min_length=1, max_length=64)
     source_project_ids: tuple[str, ...] = Field(min_length=1, max_length=64)
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str) -> str:
+        """Bind mobile retry identity to the same canonical UUID contract as Inbox."""
+
+        return normalize_idempotency_key(value)
 
 
 def _authorization_token(value: str | None) -> str:
