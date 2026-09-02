@@ -1,4 +1,4 @@
-"""Authenticated PR27 publishing approval and execution transport."""
+"""Authenticated PR27/PR29 publishing approval and execution transport."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from threading import Lock
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from content_forge.application import AuthManager, AuthenticationError, AuthSession
 from content_forge.application.publishing import (
@@ -18,6 +18,8 @@ from content_forge.application.publishing import (
 )
 from content_forge.core import EntityKind, require_entity_id
 from content_forge.providers import (
+    PublishContractVersion,
+    PublishDeclarations,
     PublishMetadata,
     PublishRequest,
     PublishTarget,
@@ -47,11 +49,23 @@ class PublishCandidateInput(BaseModel):
     render_job_id: str
     target: PublishTarget
     metadata: PublishMetadata
+    contract_version: PublishContractVersion = "pr27_publish_contract_v1"
+    declarations: PublishDeclarations | None = None
 
     @field_validator("render_job_id")
     @classmethod
     def validate_render_job_id(cls, value: str) -> str:
         return require_entity_id(value, EntityKind.JOB)
+
+    @model_validator(mode="after")
+    def validate_contract_shape(self):
+        if self.contract_version == "pr27_publish_contract_v1":
+            if self.declarations is not None:
+                raise ValueError("v1 publish candidates cannot contain publication declarations")
+            return self
+        if self.declarations is None:
+            raise ValueError("v2 publish candidates require explicit publication declarations")
+        return self
 
 
 class PublishApprovalInput(BaseModel):
@@ -127,7 +141,7 @@ def install_publishing_routes(
     provider: PublishingProvider | None = None,
     ffprobe_path: str = "ffprobe",
 ) -> PublishingService:
-    """Install PR27 routes without making a publishing provider mandatory."""
+    """Install publishing routes without making a publishing provider mandatory."""
 
     service = PublishingService(
         library,
@@ -147,7 +161,7 @@ def install_publishing_routes(
             reconciled = True
 
     @app.middleware("http")
-    async def pr27_publishing_transport_boundary(request: Request, call_next):
+    async def publishing_transport_boundary(request: Request, call_next):
         route_path = _route_relative_path(request)
         if not (
             route_path == "/api/v1/publishing"
@@ -213,6 +227,7 @@ def install_publishing_routes(
         return {
             "provider_configured": provider is not None,
             "remote_execution_enabled": provider is not None,
+            "preferred_contract_version": "pr29_publish_contract_v2",
         }
 
     @app.post("/api/v1/publishing/candidates")
@@ -225,6 +240,8 @@ def install_publishing_routes(
                 payload.render_job_id,
                 target=payload.target,
                 metadata=payload.metadata,
+                contract_version=payload.contract_version,
+                declarations=payload.declarations,
             )
         except Exception as exc:
             raise _publishing_http_error(exc) from exc

@@ -28,6 +28,49 @@
       || !approvalNote || !attemptInput || !loadAttemptButton || !executeButton
       || !attemptView || !status) return;
 
+  function addRequiredDeclarationSelect(id, labelText, helpText) {
+    let select = document.getElementById(id);
+    if (select) return select;
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    select = document.createElement("select");
+    select.id = id;
+    select.required = true;
+    const choose = document.createElement("option");
+    choose.value = "";
+    choose.textContent = "Choose…";
+    choose.selected = true;
+    const no = document.createElement("option");
+    no.value = "no";
+    no.textContent = "No";
+    const yes = document.createElement("option");
+    yes.value = "yes";
+    yes.textContent = "Yes";
+    select.append(choose, no, yes);
+    label.appendChild(select);
+    if (helpText) {
+      const help = document.createElement("span");
+      help.className = "muted compact-text";
+      help.textContent = helpText;
+      label.appendChild(help);
+    }
+    const scheduleLabel = scheduleInput.closest("label");
+    if (scheduleLabel) scheduleLabel.insertAdjacentElement("afterend", label);
+    else form.appendChild(label);
+    return select;
+  }
+
+  const syntheticInput = addRequiredDeclarationSelect(
+    "publishing-synthetic-media",
+    "Realistic altered or synthetic media?",
+    "Choose Yes only when realistic content was meaningfully altered or synthetically generated."
+  );
+  const childDirectedInput = addRequiredDeclarationSelect(
+    "publishing-child-directed",
+    "Made for kids / child-directed?",
+    "This is an explicit publication declaration, not an inferred audience guess."
+  );
+
   let currentCandidate = null;
   let providerConfigured = false;
   let loadedAttemptId = null;
@@ -103,6 +146,13 @@
     return instant.toISOString();
   }
 
+  function declarationValue(input, label) {
+    if (input.value !== "yes" && input.value !== "no") {
+      throw new Error(`${label} must be explicitly answered Yes or No.`);
+    }
+    return input.value === "yes";
+  }
+
   function candidatePayload() {
     const renderJobId = renderJobInput.value.trim();
     const providerId = providerInput.value.trim();
@@ -123,6 +173,14 @@
       render_job_id: renderJobId,
       target: { provider_id: providerId, destination_id: destinationId },
       metadata,
+      contract_version: "pr29_publish_contract_v2",
+      declarations: {
+        child_directed: declarationValue(childDirectedInput, "Made-for-kids declaration"),
+        contains_realistic_altered_or_synthetic_media: declarationValue(
+          syntheticInput,
+          "Altered/synthetic-media declaration"
+        ),
+      },
     };
   }
 
@@ -143,6 +201,14 @@
     attemptView.replaceChildren();
   }
 
+  function declarationSummary(request) {
+    const declarations = request && request.declarations ? request.declarations : null;
+    if (!declarations) return "legacy v1 declarations: not present";
+    const kids = declarations.child_directed === true ? "yes" : "no";
+    const synthetic = declarations.contains_realistic_altered_or_synthetic_media === true ? "yes" : "no";
+    return `made for kids: ${kids} · realistic altered/synthetic: ${synthetic}`;
+  }
+
   function drawCandidate(candidate) {
     candidateView.replaceChildren();
     const request = candidate.request || {};
@@ -152,12 +218,14 @@
     const card = document.createElement("article");
     card.className = "review-card";
     card.appendChild(text("strong", "Exact publish candidate"));
+    card.appendChild(text("p", `contract: ${request.contract_version || "pr27_publish_contract_v1"}`, "mono wrap compact-text"));
     card.appendChild(text("p", `request SHA-256: ${candidate.request_sha256}`, "mono wrap compact-text"));
     card.appendChild(text("p", `idempotency: ${candidate.idempotency_key}`, "mono wrap compact-text"));
     card.appendChild(text("p", `final artifact: ${artifact.output_sha256 || ""}`, "mono wrap compact-text"));
     card.appendChild(text("p", `render job: ${artifact.render_job_id || ""}`, "mono wrap compact-text"));
     card.appendChild(text("p", `destination: ${target.provider_id || ""} / ${target.destination_id || ""}`, "compact-text"));
     card.appendChild(text("p", `visibility: ${metadata.visibility || ""}${metadata.scheduled_for ? ` · scheduled ${metadata.scheduled_for}` : " · publish now"}`, "compact-text"));
+    card.appendChild(text("p", declarationSummary(request), "compact-text"));
     card.appendChild(text("p", metadata.title || "", "compact-text"));
     if (metadata.description) card.appendChild(text("p", metadata.description, "muted compact-text wrap"));
     if (Array.isArray(metadata.tags) && metadata.tags.length) {
@@ -189,6 +257,8 @@
     heading.appendChild(left);
     heading.appendChild(text("span", attempt.state || "unknown", stateBadgeClass(attempt.state)));
     card.appendChild(heading);
+    card.appendChild(text("p", `contract: ${request.contract_version || "pr27_publish_contract_v1"}`, "mono wrap compact-text"));
+    card.appendChild(text("p", declarationSummary(request), "compact-text"));
     card.appendChild(text("p", `destination: ${target.provider_id || ""} / ${target.destination_id || ""}`, "compact-text"));
     card.appendChild(text("p", `idempotency: ${payload.idempotency_key || ""}`, "mono wrap compact-text"));
     if (attempt.state === "prepared") {
@@ -245,7 +315,7 @@
       providerBadge.textContent = providerConfigured ? "Provider ready" : "Approval only";
       providerBadge.className = providerConfigured ? "badge success" : "badge neutral";
       drawCandidate(candidate);
-      setStatus("Candidate built. Review its exact digest before approving.", "success");
+      setStatus("Candidate built. Review its exact digest and declarations before approving.", "success");
     } catch (error) {
       currentCandidate = null;
       candidateView.replaceChildren();
@@ -271,7 +341,7 @@
         jsonRequest("POST", payload)
       );
       drawAttempt(approved);
-      setStatus("Exact publish request approved and stored. Remote execution has not started.", "success");
+      setStatus("Exact publish request and declarations approved and stored. Remote execution has not started.", "success");
     } catch (error) {
       setStatus(error.message || "Publish approval failed.", "error");
     } finally {

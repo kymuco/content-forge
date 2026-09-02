@@ -54,7 +54,7 @@ def test_pr27_pwa_shell_serves_separate_publish_approval_and_execution_controls(
         worker = client.get("/app/sw.js")
         assert worker.status_code == 200
         assert "${CACHE_PREFIX}v14" in worker.text
-        assert "${CACHE_PREFIX}v15" in worker.text
+        assert "${CACHE_PREFIX}v16" in worker.text
         assert 'appUrl("publishing.js")' in worker.text
     finally:
         app.state.runtime_lease.close()

@@ -30,7 +30,7 @@ If preflight succeeds but the durable `prepared → running` transition loses a 
 
 ## Provider identity and immutable PR28 policy
 
-The concrete provider identity is:
+The concrete PR28 provider identity is:
 
 - provider ID: `youtube`;
 - provider version: `youtube_data_api_v3_pr28_v1:category=22:notify=0`;
@@ -41,7 +41,7 @@ PR28 fixes two YouTube-specific values as immutable adapter policy:
 - upload category `22` (`People & Blogs`);
 - `notifySubscribers=false`.
 
-They are intentionally **not runtime configuration**. Neither value exists in the PR27 human-approved request, so allowing an operator to change them after approval would permit the same approval digest to produce different remote semantics. A later PR can add category or notification behavior only by extending/versioning the approved publish contract.
+They are intentionally **not runtime configuration**. Neither value exists in the PR27 human-approved request, so allowing an operator to change them after approval would permit the same approval digest to produce different remote semantics. A later version can add category or notification behavior only by extending/versioning the approved publish contract.
 
 `health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token resolves to exactly the configured channel. A successful health check pins that service on the current execution thread so later preflight/upload uses the credential context verified immediately before the remote boundary.
 
@@ -189,9 +189,9 @@ The YouTube Data API / YouTube Help currently document that:
 
 That last rule is external platform governance, not something Content Forge can or should bypass. An upload can succeed while public visibility remains unavailable until the Google/YouTube API project satisfies the applicable audit requirements.
 
-YouTube also exposes upload semantics such as `status.selfDeclaredMadeForKids` and `status.containsSyntheticMedia`. PR28 intentionally does **not** inject local defaults for those fields. They can affect the meaning/compliance state of the publication and therefore should become explicit, human-approved publish semantics in a future versioned contract rather than mutable provider-local configuration hidden outside the PR27 request digest.
+YouTube also exposes upload semantics such as `status.selfDeclaredMadeForKids` and `status.containsSyntheticMedia`. PR28 intentionally did **not** inject local defaults for those fields because they can affect the meaning/compliance state of the publication and were not part of the PR27 approval digest.
 
-Until that contract exists, the operator remains responsible for satisfying applicable YouTube audience and altered/synthetic-media disclosure requirements through platform settings/workflow where needed.
+PR29 adds those choices through `pr29_publish_contract_v2`: both declarations are explicit human-approved semantics, participate in the semantic digest/idempotency identity, are mapped to the YouTube `status` object, and are verified after upload. Historical v1 attempts remain unchanged and do not receive invented declaration defaults. See `docs/pr29-versioned-publication-declarations.md`.
 
 ## Idempotency and crash safety
 
@@ -206,4 +206,4 @@ Therefore:
 
 ## Non-goals
 
-PR28 does not add analytics ingest, thumbnail upload, playlists, captions, category selection, made-for-kids publish semantics, synthetic-media disclosure publish semantics, monetization settings, subscriber-notification controls, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
+PR28 historically did not add analytics ingest, thumbnail upload, playlists, captions, category selection, made-for-kids publish semantics, synthetic-media disclosure publish semantics, monetization settings, subscriber-notification controls, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure. PR29 subsequently adds only the two versioned publication declarations; the remaining PR28 non-goals stay out of scope.

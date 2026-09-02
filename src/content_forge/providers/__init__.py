@@ -47,6 +47,8 @@ from .publishing import (
     ApprovedPublishRequest,
     PublishApproval,
     PublishArtifactRef,
+    PublishContractVersion,
+    PublishDeclarations,
     PublishDisposition,
     PublishInvocationEvidence,
     PublishMetadata,
@@ -85,11 +87,8 @@ from .tts import (
     tts_cache_key,
     tts_config_digest,
 )
-from .youtube import (
-    YOUTUBE_OAUTH_SCOPES,
-    YouTubePublishingConfig,
-    YouTubePublishingProvider,
-)
+from .youtube import YOUTUBE_OAUTH_SCOPES, YouTubePublishingConfig
+from .youtube_v2 import YouTubePublishingProvider
 
 __all__ = [
     "ApprovedPublishRequest",
@@ -124,6 +123,8 @@ __all__ = [
     "PaddleOCRProvider",
     "PublishApproval",
     "PublishArtifactRef",
+    "PublishContractVersion",
+    "PublishDeclarations",
     "PublishDisposition",
     "PublishInvocationEvidence",
     "PublishMetadata",

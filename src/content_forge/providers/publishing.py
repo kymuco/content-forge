@@ -1,4 +1,4 @@
-"""PR27 platform-agnostic publishing provider and approval contracts."""
+"""PR27/PR29 platform-agnostic publishing provider and approval contracts."""
 
 from __future__ import annotations
 
@@ -17,7 +17,12 @@ from content_forge.core.models import FrozenModel, SHA256
 if TYPE_CHECKING:
     from content_forge.orchestration.models import RenderArtifactManifest
 
-_PUBLISH_CONTRACT_VERSION = "pr27_publish_contract_v1"
+_PUBLISH_CONTRACT_V1 = "pr27_publish_contract_v1"
+_PUBLISH_CONTRACT_V2 = "pr29_publish_contract_v2"
+PublishContractVersion = Literal[
+    "pr27_publish_contract_v1",
+    "pr29_publish_contract_v2",
+]
 PublishVisibility = Literal["private", "unlisted", "public"]
 PublishDisposition = Literal["published", "scheduled"]
 
@@ -39,7 +44,7 @@ class PublishingExecutionError(PublishingProviderError):
 
 
 class PublishingResponseError(PublishingProviderError):
-    """A provider response violated the PR27 result contract."""
+    """A provider response violated the publishing result contract."""
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -129,18 +134,37 @@ class PublishMetadata(FrozenModel):
         return None if value is None else _aware_utc(value)
 
 
+class PublishDeclarations(FrozenModel):
+    """Explicit human publication declarations that may affect platform policy."""
+
+    child_directed: bool = Field(strict=True)
+    contains_realistic_altered_or_synthetic_media: bool = Field(strict=True)
+
+
 class PublishRequest(FrozenModel):
     """One exact, persistable publish intent with no local paths or credentials."""
 
+    contract_version: PublishContractVersion = _PUBLISH_CONTRACT_V1
     artifact: PublishArtifactRef
     target: PublishTarget
     metadata: PublishMetadata
+    declarations: PublishDeclarations | None = None
+
+    @model_validator(mode="after")
+    def validate_contract_shape(self):
+        if self.contract_version == _PUBLISH_CONTRACT_V1:
+            if self.declarations is not None:
+                raise ValueError("v1 publish requests cannot contain publication declarations")
+            return self
+        if self.declarations is None:
+            raise ValueError("v2 publish requests require explicit publication declarations")
+        return self
 
 
 class PublishApproval(FrozenModel):
     """Explicit human approval for exactly one semantic publish request."""
 
-    contract_version: Literal["pr27_publish_contract_v1"] = _PUBLISH_CONTRACT_VERSION
+    contract_version: PublishContractVersion = _PUBLISH_CONTRACT_V1
     request_sha256: SHA256
     approved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     note: str | None = Field(default=None, max_length=4096)
@@ -164,6 +188,8 @@ class ApprovedPublishRequest(FrozenModel):
 
     @model_validator(mode="after")
     def approval_matches_request(self):
+        if self.approval.contract_version != self.request.contract_version:
+            raise ValueError("publish approval contract version does not match request")
         expected = semantic_publish_request_digest(self.request)
         if self.approval.request_sha256 != expected:
             raise ValueError("publish approval does not match the exact request")
@@ -178,7 +204,7 @@ class PublishingProviderHealth(FrozenModel):
 
 
 class PublishInvocationEvidence(FrozenModel):
-    contract_version: Literal["pr27_publish_contract_v1"] = _PUBLISH_CONTRACT_VERSION
+    contract_version: PublishContractVersion = _PUBLISH_CONTRACT_V1
     provider_id: str = Field(min_length=1, max_length=128)
     provider_version: str = Field(min_length=1, max_length=128)
     request_sha256: SHA256
@@ -237,7 +263,7 @@ class PublishResult(FrozenModel):
 
 @runtime_checkable
 class PublishingProvider(Protocol):
-    """Narrow remote-publishing boundary; concrete platform adapters start after PR27."""
+    """Narrow remote-publishing boundary; concrete platform adapters remain replaceable."""
 
     def health(self) -> PublishingProviderHealth: ...
 
@@ -291,14 +317,19 @@ def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef
 
 
 def semantic_publish_request_digest(request: PublishRequest) -> str:
-    """Hash exact machine-independent publish semantics."""
+    """Hash exact machine-independent publish semantics with frozen v1 compatibility."""
 
-    payload = {
-        "contract_version": _PUBLISH_CONTRACT_VERSION,
+    payload: dict[str, object] = {
+        "contract_version": request.contract_version,
         "artifact": request.artifact.model_dump(mode="json"),
         "target": request.target.model_dump(mode="json"),
         "metadata": request.metadata.model_dump(mode="json"),
     }
+    if request.contract_version == _PUBLISH_CONTRACT_V2:
+        declarations = request.declarations
+        if declarations is None:
+            raise ValueError("v2 publish request lacks publication declarations")
+        payload["declarations"] = declarations.model_dump(mode="json")
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -322,6 +353,7 @@ def approve_publish_request(
     note: str | None = None,
 ) -> ApprovedPublishRequest:
     approval = PublishApproval(
+        contract_version=request.contract_version,
         request_sha256=semantic_publish_request_digest(request),
         approved_at=datetime.now(timezone.utc) if approved_at is None else approved_at,
         note=note,
@@ -333,6 +365,8 @@ __all__ = [
     "ApprovedPublishRequest",
     "PublishApproval",
     "PublishArtifactRef",
+    "PublishContractVersion",
+    "PublishDeclarations",
     "PublishDisposition",
     "PublishInvocationEvidence",
     "PublishMetadata",
