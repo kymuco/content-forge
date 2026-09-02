@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import stat
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import local
-from typing import Any
+from time import sleep
+from typing import Any, BinaryIO
 
 from pydantic import Field, field_validator
 
@@ -37,14 +40,17 @@ _MAX_UPLOAD_BYTES = 256_000_000_000
 _MAX_UPLOAD_SECONDS = 12 * 60 * 60
 _LONG_UPLOAD_THRESHOLD_SECONDS = 15 * 60
 _UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+_PROCESSING_POLL_ATTEMPTS = 30
+_PROCESSING_POLL_SECONDS = 2.0
 _YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 _YOUTUBE_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_OAUTH_SCOPES = (_YOUTUBE_UPLOAD_SCOPE, _YOUTUBE_READ_SCOPE)
 
 CredentialsLoader = Callable[[Path], object]
 ServiceFactory = Callable[[object], Any]
-MediaUploadFactory = Callable[[Path], object]
+MediaUploadFactory = Callable[[BinaryIO], object]
 Clock = Callable[[], datetime]
+Sleeper = Callable[[float], None]
 
 
 class YouTubePublishingConfig(FrozenModel):
@@ -204,16 +210,16 @@ def _build_service(credentials: object) -> Any:
         raise PublishingUnavailableError("YouTube Data API client initialization failed") from exc
 
 
-def _media_upload(path: Path) -> object:
+def _media_upload(handle: BinaryIO) -> object:
     try:
-        from googleapiclient.http import MediaFileUpload
+        from googleapiclient.http import MediaIoBaseUpload
     except Exception as exc:  # pragma: no cover - optional dependency environment
         raise PublishingPreflightError(
             "google-api-python-client media upload support is unavailable"
         ) from exc
     try:
-        return MediaFileUpload(
-            str(path),
+        return MediaIoBaseUpload(
+            handle,
             mimetype="video/mp4",
             chunksize=_UPLOAD_CHUNK_BYTES,
             resumable=True,
@@ -348,6 +354,42 @@ def _validate_upload_capability(
         )
 
 
+def _snapshot_media(
+    media_path: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+) -> BinaryIO:
+    """Copy and authenticate immutable upload bytes before the remote boundary."""
+
+    try:
+        snapshot = tempfile.TemporaryFile(mode="w+b", dir=media_path.parent)
+    except OSError as exc:
+        raise PublishingPreflightError("YouTube upload snapshot could not be created") from exc
+
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with media_path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                snapshot.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+        if total != expected_size or digest.hexdigest() != expected_sha256:
+            raise PublishingPreflightError(
+                "YouTube upload snapshot differs from approved artifact evidence"
+            )
+        snapshot.flush()
+        snapshot.seek(0)
+        return snapshot
+    except PublishingPreflightError:
+        snapshot.close()
+        raise
+    except Exception as exc:
+        snapshot.close()
+        raise PublishingPreflightError("YouTube upload snapshot could not be authenticated") from exc
+
+
 def _youtube_body(request: ApprovedPublishRequest) -> dict[str, object]:
     metadata = request.request.metadata
     snippet: dict[str, object] = {
@@ -378,6 +420,50 @@ def _canonical_video_id(value: object) -> str:
     return value
 
 
+def _verified_video(service: Any, video_id: str, *, retries: int) -> dict[str, object]:
+    verified = _execute(
+        service.videos().list(
+            part="snippet,status",
+            id=video_id,
+            maxResults=1,
+        ),
+        retries=retries,
+    )
+    items = verified.get("items")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise PublishingResponseError("YouTube uploaded video could not be verified")
+    video = items[0]
+    if video.get("id") != video_id:
+        raise PublishingResponseError("YouTube verification returned a different video ID")
+    return video
+
+
+def _await_processed_video(
+    service: Any,
+    video_id: str,
+    *,
+    retries: int,
+    sleeper: Sleeper,
+) -> dict[str, object]:
+    for attempt in range(_PROCESSING_POLL_ATTEMPTS):
+        video = _verified_video(service, video_id, retries=retries)
+        status = video.get("status")
+        if not isinstance(status, dict):
+            raise PublishingResponseError("YouTube verification response lacks status")
+        upload_status = status.get("uploadStatus")
+        if upload_status == "processed":
+            return video
+        if upload_status in {"failed", "rejected", "deleted"}:
+            raise PublishingResponseError("YouTube video processing failed after upload")
+        if upload_status != "uploaded":
+            raise PublishingResponseError("YouTube video returned an unknown upload status")
+        if attempt + 1 < _PROCESSING_POLL_ATTEMPTS:
+            sleeper(_PROCESSING_POLL_SECONDS)
+    raise PublishingResponseError(
+        "YouTube video processing did not complete within the bounded verification window"
+    )
+
+
 def _verify_snippet(
     snippet: dict[str, object],
     request: ApprovedPublishRequest,
@@ -397,14 +483,6 @@ def _verify_snippet(
         raise PublishingResponseError("YouTube video category does not match PR28 provider policy")
 
 
-def _verify_upload_status(status: dict[str, object]) -> None:
-    upload_status = status.get("uploadStatus")
-    if upload_status not in {"uploaded", "processed"}:
-        raise PublishingResponseError(
-            "YouTube video upload status is not an accepted or processed upload"
-        )
-
-
 @dataclass(frozen=True)
 class _PreparedUpload:
     service: Any
@@ -412,6 +490,7 @@ class _PreparedUpload:
     request_sha256: str
     idempotency_key: str
     media_path: Path
+    media_snapshot: BinaryIO
 
 
 class YouTubePublishingProvider:
@@ -425,6 +504,7 @@ class YouTubePublishingProvider:
         service_factory: ServiceFactory | None = None,
         media_upload_factory: MediaUploadFactory | None = None,
         clock: Clock | None = None,
+        sleeper: Sleeper | None = None,
     ) -> None:
         self.config = config
         self._credentials_loader = (
@@ -435,9 +515,16 @@ class YouTubePublishingProvider:
             _media_upload if media_upload_factory is None else media_upload_factory
         )
         self._clock = _utc_now if clock is None else clock
+        self._sleeper = sleep if sleeper is None else sleeper
         self._thread_state = local()
 
     def _clear_execution_state(self) -> None:
+        prepared = getattr(self._thread_state, "prepared", None)
+        if isinstance(prepared, _PreparedUpload):
+            try:
+                prepared.media_snapshot.close()
+            except Exception:
+                pass
         for attribute in ("service", "prepared"):
             if hasattr(self._thread_state, attribute):
                 delattr(self._thread_state, attribute)
@@ -530,8 +617,13 @@ class YouTubePublishingProvider:
         _validate_upload_capability(service, request, retries=self.config.max_retries)
         _validate_category(service, retries=self.config.max_retries)
 
+        snapshot = _snapshot_media(
+            media_path,
+            expected_size=request.request.artifact.bytes_written,
+            expected_sha256=request.request.artifact.output_sha256,
+        )
         try:
-            upload = self._media_upload_factory(media_path)
+            upload = self._media_upload_factory(snapshot)
             insert_request = service.videos().insert(
                 part="snippet,status",
                 body=_youtube_body(request),
@@ -539,8 +631,10 @@ class YouTubePublishingProvider:
                 notifySubscribers=_NOTIFY_SUBSCRIBERS,
             )
         except PublishingPreflightError:
+            snapshot.close()
             raise
         except Exception as exc:
+            snapshot.close()
             raise PublishingPreflightError(
                 "YouTube upload request could not be prepared"
             ) from exc
@@ -551,6 +645,7 @@ class YouTubePublishingProvider:
             request_sha256=semantic_publish_request_digest(request.request),
             idempotency_key=idempotency_key,
             media_path=media_path,
+            media_snapshot=snapshot,
         )
         del self._thread_state.service
 
@@ -561,7 +656,7 @@ class YouTubePublishingProvider:
         media_path: Path,
         idempotency_key: str,
     ) -> PublishResult:
-        """Cross the remote boundary with a prebuilt resumable request, then verify it."""
+        """Cross the remote boundary with pre-authenticated snapshot bytes, then verify it."""
 
         prepared = getattr(self._thread_state, "prepared", None)
         if hasattr(self._thread_state, "prepared"):
@@ -576,43 +671,38 @@ class YouTubePublishingProvider:
             or prepared.idempotency_key != idempotency_key
             or prepared.media_path != media_path
         ):
+            prepared.media_snapshot.close()
             raise PublishingResponseError(
                 "YouTube prepared upload does not match the exact approved execution"
             )
 
         try:
-            response: object = None
-            while response is None:
-                _progress, response = prepared.insert_request.next_chunk(
-                    num_retries=self.config.max_retries
-                )
-        except Exception as exc:
-            raise PublishingExecutionError("YouTube resumable upload failed") from exc
+            try:
+                response: object = None
+                while response is None:
+                    _progress, response = prepared.insert_request.next_chunk(
+                        num_retries=self.config.max_retries
+                    )
+            except Exception as exc:
+                raise PublishingExecutionError("YouTube resumable upload failed") from exc
+        finally:
+            prepared.media_snapshot.close()
 
         if not isinstance(response, dict):
             raise PublishingResponseError("YouTube upload returned a non-object response")
         video_id = _canonical_video_id(response.get("id"))
 
-        verified = _execute(
-            prepared.service.videos().list(
-                part="snippet,status",
-                id=video_id,
-                maxResults=1,
-            ),
+        video = _await_processed_video(
+            prepared.service,
+            video_id,
             retries=self.config.max_retries,
+            sleeper=self._sleeper,
         )
-        items = verified.get("items")
-        if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
-            raise PublishingResponseError("YouTube uploaded video could not be verified")
-        video = items[0]
-        if video.get("id") != video_id:
-            raise PublishingResponseError("YouTube verification returned a different video ID")
         snippet = video.get("snippet")
         status = video.get("status")
         if not isinstance(snippet, dict) or not isinstance(status, dict):
             raise PublishingResponseError("YouTube verification response lacks snippet/status")
         _verify_snippet(snippet, request, self.config)
-        _verify_upload_status(status)
 
         metadata = request.request.metadata
         if metadata.scheduled_for is None:
