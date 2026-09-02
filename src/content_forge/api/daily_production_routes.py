@@ -1,0 +1,635 @@
+"""PR35 daily mobile attention projection over existing production authorities."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
+
+from content_forge.application import (
+    AuthManager,
+    AuthenticationError,
+    AuthSession,
+    InboxService,
+)
+from content_forge.application.production_presets import (
+    ProductionPresetError,
+    ProductionPresetService,
+    _preset_evidence,
+    _source_snapshots,
+    preset_for_project,
+)
+from content_forge.application.review import ReviewError, ReviewService
+from content_forge.providers import PublishRequest, PublishingProvider
+from content_forge.storage import LocalLibrary, StorageConflictError
+
+from .project_publishing_routes import _attempt_payload, _project_attempt_ids
+
+_GROUP_ORDER = ("failed", "attention", "safe_work", "working", "inbox", "finished")
+_RENDER_OPERATION_PRIORITY = {"render_final": 0, "render_preview": 1}
+_ACTIVE_PUBLISH_PRIORITY = {"prepared": 1, "running": 2, "outcome_unknown": 3}
+
+
+class SafeWorkRequest(BaseModel):
+    """Bound the synchronous compute one phone action may request."""
+
+    model_config = ConfigDict(extra="forbid")
+    render_limit: int = Field(default=4, ge=1, le=12)
+
+
+def _authorization_token(value: str | None) -> str:
+    if value is None or not value.startswith("Bearer "):
+        raise AuthenticationError("bearer token required")
+    token = value[7:].strip()
+    if not token:
+        raise AuthenticationError("bearer token required")
+    return token
+
+
+def _open_tasks(summary: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    raw = summary.get("tasks")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        item
+        for item in raw
+        if isinstance(item, Mapping) and item.get("status") == "open"
+    )
+
+
+def _blocking_tasks(summary: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    return tuple(item for item in _open_tasks(summary) if item.get("blocking") is True)
+
+
+def _preview_safe(summary: Mapping[str, object]) -> bool:
+    if summary.get("state") != "needs_review":
+        return False
+    blockers = _blocking_tasks(summary)
+    if len(blockers) != 1 or blockers[0].get("task_type") != "preview_approval":
+        return False
+    preview = summary.get("preview")
+    return isinstance(preview, Mapping) and preview.get("status") == "not_rendered"
+
+
+def _used_source_project_ids(
+    library: LocalLibrary,
+    source_items: tuple[dict[str, object], ...],
+) -> set[str]:
+    """Find all valid PR32 uses of the currently visible source assets across history."""
+
+    by_asset: dict[str, set[str]] = {}
+    for source in source_items:
+        source_project_id = source.get("source_project_id")
+        asset_id = source.get("asset_id")
+        if isinstance(source_project_id, str) and isinstance(asset_id, str):
+            by_asset.setdefault(asset_id, set()).add(source_project_id)
+    if not by_asset:
+        return set()
+
+    asset_ids = sorted(by_asset)
+    placeholders = ",".join("?" for _ in asset_ids)
+    with library.database.connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT project_id
+            FROM project_assets
+            WHERE asset_id IN ({placeholders})
+            ORDER BY project_id
+            """,
+            asset_ids,
+        ).fetchall()
+
+    used: set[str] = set()
+    for row in rows:
+        project_id = str(row["project_id"])
+        try:
+            project = library.load_project(project_id)
+        except (TypeError, ValueError):
+            continue
+        if project is None:
+            continue
+        try:
+            if preset_for_project(project) is None:
+                continue
+            evidence = _preset_evidence(project)
+            if evidence is None:
+                continue
+            snapshots = _source_snapshots(evidence)
+        except (ProductionPresetError, TypeError, ValueError):
+            continue
+        for snapshot in snapshots:
+            source_project_id = snapshot.get("source_project_id")
+            asset_id = snapshot.get("asset_id")
+            if (
+                isinstance(source_project_id, str)
+                and isinstance(asset_id, str)
+                and source_project_id in by_asset.get(asset_id, set())
+            ):
+                used.add(source_project_id)
+    return used
+
+
+def _is_source_project(presets: ProductionPresetService, project_id: str) -> bool:
+    """Check canonical source identity directly rather than through a bounded catalog."""
+
+    try:
+        presets._source(project_id)
+    except (ProductionPresetError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _ready_summaries(queue: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    raw = queue.get("ready_projects")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _ready_project_ids(queue: Mapping[str, object]) -> set[str]:
+    project_ids: set[str] = set()
+    for summary in _ready_summaries(queue):
+        project_id = summary.get("project_id")
+        if isinstance(project_id, str):
+            project_ids.add(project_id)
+    return project_ids
+
+
+def _queue_project_ids(queue: Mapping[str, object]) -> tuple[str, ...]:
+    raw = queue.get("items")
+    if not isinstance(raw, list):
+        return ()
+    project_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        project_id = item.get("project_id")
+        if not isinstance(project_id, str) or project_id in seen:
+            continue
+        seen.add(project_id)
+        project_ids.append(project_id)
+    return tuple(project_ids)
+
+
+def _active_publish_risks(library: LocalLibrary) -> dict[str, str]:
+    """Project active/uncertain remote side effects outside recent-project limits."""
+
+    # Initializing the repository here is read-only with respect to publishing authority;
+    # it only guarantees the additive PR27 schema exists before the safety projection.
+    library.publishing
+    with library.database.connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT a.state, a.request_sha256, o.request_json
+            FROM publish_attempts AS a
+            JOIN publish_operations AS o
+              ON o.request_sha256 = a.request_sha256
+            WHERE a.state IN ('prepared', 'running', 'outcome_unknown')
+            ORDER BY a.created_at, a.attempt_number, a.attempt_id
+            """
+        ).fetchall()
+
+    risks: dict[str, str] = {}
+    for row in rows:
+        state = str(row["state"])
+        priority = _ACTIVE_PUBLISH_PRIORITY.get(state)
+        if priority is None:
+            raise StorageConflictError("active publishing projection has invalid state")
+        try:
+            request = PublishRequest.model_validate_json(str(row["request_json"]))
+        except Exception as exc:
+            raise StorageConflictError("active publishing operation is invalid") from exc
+        project_id = request.artifact.project_id
+        previous = risks.get(project_id)
+        if previous is None or priority > _ACTIVE_PUBLISH_PRIORITY[previous]:
+            risks[project_id] = state
+    return risks
+
+
+def _project_publish_projection(
+    library: LocalLibrary,
+    summary: Mapping[str, object],
+) -> tuple[str | None, dict[str, object] | None]:
+    final = summary.get("final")
+    project_id = summary.get("project_id")
+    if not isinstance(final, Mapping) or not isinstance(project_id, str):
+        return None, None
+    job_id = final.get("job_id")
+    output_sha256 = final.get("output_sha256")
+    if not isinstance(job_id, str) or not isinstance(output_sha256, str):
+        raise StorageConflictError("DONE project has incomplete final identity")
+    attempt_ids = _project_attempt_ids(
+        library,
+        project_id,
+        job_id,
+        output_sha256,
+        limit=100,
+    )
+    if not attempt_ids:
+        return None, None
+    payloads = [_attempt_payload(library, attempt_id) for attempt_id in attempt_ids]
+    states: list[str] = []
+    for payload in payloads:
+        attempt = payload.get("attempt")
+        if not isinstance(attempt, Mapping):
+            raise StorageConflictError("exact final publishing attempt is malformed")
+        state = attempt.get("state")
+        if not isinstance(state, str) or not state:
+            raise StorageConflictError("exact final publishing attempt has no state")
+        states.append(state)
+    if "outcome_unknown" in states:
+        return "outcome_unknown", payloads[0]
+    if states.count("running") > 1 or states.count("prepared") > 1:
+        raise StorageConflictError("exact final has multiple active publish attempts")
+    return states[0], payloads[0]
+
+
+def _project_card(
+    summary: Mapping[str, object],
+    *,
+    ready_ids: set[str],
+    library: LocalLibrary,
+    active_publish_state: str | None = None,
+) -> dict[str, object]:
+    project_id = summary.get("project_id")
+    state = summary.get("state")
+    if not isinstance(project_id, str) or not isinstance(state, str):
+        raise ValueError("project summary identity is malformed")
+
+    group = "failed"
+    reason = "Project state needs inspection"
+    safe_operation: str | None = None
+    publish_state: str | None = None
+
+    # Remote side-effect risk outranks the current local lifecycle. This deliberately
+    # catches an older exact final whose publication is still prepared/running/unknown
+    # even if later recovery moved the Project away from DONE.
+    if active_publish_state is not None:
+        publish_state = active_publish_state
+        if active_publish_state == "outcome_unknown":
+            group = "failed"
+            reason = "Remote publishing outcome is unknown for a stored final"
+        elif active_publish_state == "running":
+            group = "working"
+            reason = "Publishing may be in progress for a stored final"
+        elif active_publish_state == "prepared":
+            group = "attention"
+            reason = "Approved publish request awaits explicit execution"
+        else:
+            raise StorageConflictError("active publishing projection has invalid state")
+    elif state == "inbox" or summary.get("review_initialized") is not True:
+        group = "safe_work"
+        reason = "Project can be prepared automatically"
+        safe_operation = "bootstrap"
+    elif state == "needs_review":
+        blockers = _blocking_tasks(summary)
+        preview = summary.get("preview")
+        if any(item.get("attention") == "manual" for item in blockers):
+            group = "attention"
+            reason = "Manual setup is required"
+        elif any(item.get("task_type") != "preview_approval" for item in blockers):
+            group = "attention"
+            reason = "A human decision is blocking preview"
+        elif _preview_safe(summary):
+            group = "safe_work"
+            reason = "Preview can render automatically"
+            safe_operation = "render_preview"
+        elif isinstance(preview, Mapping) and preview.get("status") == "rendering":
+            group = "working"
+            reason = "Preview is rendering"
+        elif isinstance(preview, Mapping) and preview.get("status") == "ready":
+            group = "attention"
+            reason = "Preview is ready for approval"
+        elif blockers:
+            group = "attention"
+            reason = "Review is required"
+        else:
+            group = "failed"
+            reason = "Review state has no actionable preview authority"
+    elif state == "ready":
+        if project_id in ready_ids:
+            group = "safe_work"
+            reason = "Approved project can render final automatically"
+            safe_operation = "render_final"
+        else:
+            group = "failed"
+            reason = "READY project is missing current final-render authority"
+    elif state in {"rendering", "qc"}:
+        group = "working"
+        reason = "Final render or QC is in progress"
+    elif state == "done":
+        try:
+            publish_state, _payload = _project_publish_projection(library, summary)
+        except (StorageConflictError, TypeError, ValueError):
+            group = "failed"
+            reason = "Publishing history for this final needs inspection"
+        else:
+            if publish_state == "outcome_unknown":
+                group = "failed"
+                reason = "Remote publishing outcome is unknown"
+            elif publish_state == "running":
+                group = "working"
+                reason = "Publishing may be in progress"
+            elif publish_state == "prepared":
+                group = "attention"
+                reason = "Approved publish request awaits explicit execution"
+            elif publish_state == "failed":
+                group = "failed"
+                reason = "Previous publish attempt failed safely"
+            else:
+                group = "finished"
+                reason = "Published successfully" if publish_state == "succeeded" else "Final is complete"
+
+    return {
+        "kind": "project",
+        "group": group,
+        "reason": reason,
+        "safe_operation": safe_operation,
+        "publish_state": publish_state,
+        "project": dict(summary),
+    }
+
+
+def _safe_intake_payload(intake: object) -> dict[str, object]:
+    raw = intake.model_dump(mode="json")  # type: ignore[attr-defined]
+    keys = (
+        "intake_id",
+        "kind",
+        "state",
+        "project_id",
+        "asset_id",
+        "original_name",
+        "filename",
+        "source_url",
+        "creator_hint",
+        "content_kind_hint",
+        "error_code",
+        "created_at",
+        "updated_at",
+    )
+    return {key: raw.get(key) for key in keys if key in raw}
+
+
+def install_daily_production_routes(
+    app: FastAPI,
+    *,
+    auth: AuthManager,
+    library: LocalLibrary,
+    inbox: InboxService,
+    review: ReviewService,
+    presets: ProductionPresetService,
+    provider: PublishingProvider | None,
+) -> None:
+    """Install PR35 projections without creating a second workflow authority."""
+
+    def bearer_token(authorization: str | None = Header(default=None)) -> str:
+        try:
+            return _authorization_token(authorization)
+        except AuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def require_session(token: str = Depends(bearer_token)) -> AuthSession:
+        try:
+            return auth.authenticate(token)
+        except AuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def snapshot(limit: int) -> dict[str, object]:
+        production_projects = presets.list_projects(limit=min(500, max(limit * 4, 100)))
+        production_by_id = {project.project_id: project for project in production_projects}
+        source_items = presets.list_sources(limit=500)
+        source_ids = {str(item["source_project_id"]) for item in source_items}
+        used_source_ids = _used_source_project_ids(library, source_items)
+        publish_risks = _active_publish_risks(library)
+
+        queue = review.list_queue(limit=500, include_auto=False)
+        ready_ids = _ready_project_ids(queue)
+
+        summaries: dict[str, Mapping[str, object]] = {}
+        unavailable_publish_projects: set[str] = set()
+        for project_id in _queue_project_ids(queue):
+            if project_id in source_ids:
+                continue
+            try:
+                summaries[project_id] = review.project_summary(review.get_project(project_id))
+            except ReviewError:
+                continue
+        for summary in _ready_summaries(queue):
+            project_id = summary.get("project_id")
+            if isinstance(project_id, str) and project_id not in source_ids:
+                summaries[project_id] = summary
+        for project_id, project in production_by_id.items():
+            summaries[project_id] = review.project_summary(project)
+        for project_id in publish_risks:
+            if project_id in summaries:
+                continue
+            try:
+                summaries[project_id] = review.project_summary(review.get_project(project_id))
+            except ReviewError:
+                unavailable_publish_projects.add(project_id)
+
+        cards: list[dict[str, object]] = []
+        for summary in summaries.values():
+            project_id = summary.get("project_id")
+            active_publish_state = (
+                publish_risks.get(project_id) if isinstance(project_id, str) else None
+            )
+            try:
+                cards.append(
+                    _project_card(
+                        summary,
+                        ready_ids=ready_ids,
+                        library=library,
+                        active_publish_state=active_publish_state,
+                    )
+                )
+            except (StorageConflictError, TypeError, ValueError):
+                cards.append(
+                    {
+                        "kind": "project",
+                        "group": "failed",
+                        "reason": "Project summary is inconsistent",
+                        "safe_operation": None,
+                        "publish_state": active_publish_state,
+                        "project": {"project_id": project_id} if isinstance(project_id, str) else {},
+                    }
+                )
+
+        for project_id in sorted(unavailable_publish_projects):
+            cards.append(
+                {
+                    "kind": "project",
+                    "group": "failed",
+                    "reason": "Publishing ledger references an unavailable Project",
+                    "safe_operation": None,
+                    "publish_state": publish_risks[project_id],
+                    "project": {"project_id": project_id},
+                }
+            )
+
+        for source in source_items:
+            source_project_id = str(source["source_project_id"])
+            if source_project_id in used_source_ids or source_project_id in publish_risks:
+                continue
+            cards.append(
+                {
+                    "kind": "source",
+                    "group": "inbox",
+                    "reason": "Unused source is ready for Create video",
+                    "safe_operation": None,
+                    "source": source,
+                }
+            )
+
+        represented_projects = set(summaries) | source_ids | set(publish_risks)
+        for intake_item in inbox.list_intakes(limit=500):
+            raw = _safe_intake_payload(intake_item)
+            state = raw.get("state")
+            project_id = raw.get("project_id")
+            if state == "failed":
+                cards.append(
+                    {
+                        "kind": "intake",
+                        "group": "failed",
+                        "reason": "Capture failed before production",
+                        "safe_operation": None,
+                        "intake": raw,
+                    }
+                )
+            elif isinstance(project_id, str) and project_id not in represented_projects:
+                cards.append(
+                    {
+                        "kind": "intake",
+                        "group": "attention",
+                        "reason": "Captured item needs project setup",
+                        "safe_operation": None,
+                        "intake": raw,
+                    }
+                )
+                represented_projects.add(project_id)
+
+        cards.sort(
+            key=lambda item: (
+                _GROUP_ORDER.index(str(item.get("group")))
+                if item.get("group") in _GROUP_ORDER
+                else len(_GROUP_ORDER),
+                str(
+                    item.get("project", {}).get("project_id", "")
+                    if isinstance(item.get("project"), Mapping)
+                    else item.get("source", {}).get("source_project_id", "")
+                    if isinstance(item.get("source"), Mapping)
+                    else item.get("intake", {}).get("intake_id", "")
+                    if isinstance(item.get("intake"), Mapping)
+                    else ""
+                ),
+            )
+        )
+        bounded = cards[:limit]
+        counts = {
+            group: sum(1 for item in cards if item.get("group") == group)
+            for group in _GROUP_ORDER
+        }
+        return {
+            "items": bounded,
+            "counts": counts,
+            "total": len(cards),
+            "truncated": len(cards) > len(bounded),
+            "provider_configured": provider is not None,
+        }
+
+    @app.get("/api/v1/production/attention")
+    def attention_queue(
+        limit: int = Query(default=100, ge=1, le=500),
+        _session: AuthSession = Depends(require_session),
+    ) -> dict[str, object]:
+        return snapshot(limit)
+
+    @app.post("/api/v1/production/safe-work")
+    def run_safe_work(
+        payload: SafeWorkRequest,
+        _session: AuthSession = Depends(require_session),
+    ) -> dict[str, object]:
+        # Raw source identity and active remote side effects are checked directly rather
+        # than through bounded daily catalogs. Neither may become automatic local work.
+        publish_risk_ids = set(_active_publish_risks(library))
+        prepared = 0
+        prepare_failed = 0
+        for project in presets.list_projects(limit=500):
+            if (
+                bool(project.metadata.get("pr10_review_initialized"))
+                or project.project_id in publish_risk_ids
+            ):
+                continue
+            try:
+                review.bootstrap_project(project.project_id)
+                prepared += 1
+            except (ReviewError, TypeError, ValueError):
+                prepare_failed += 1
+
+        queue = review.list_queue(limit=500, include_auto=False)
+        candidates: list[tuple[str, str]] = []
+        for summary in _ready_summaries(queue):
+            project_id = summary.get("project_id")
+            if (
+                isinstance(project_id, str)
+                and project_id not in publish_risk_ids
+                and not _is_source_project(presets, project_id)
+            ):
+                candidates.append(("render_final", project_id))
+        for project_id in _queue_project_ids(queue):
+            if project_id in publish_risk_ids or _is_source_project(presets, project_id):
+                continue
+            try:
+                summary = review.project_summary(review.get_project(project_id))
+            except ReviewError:
+                continue
+            if _preview_safe(summary):
+                candidates.append(("render_preview", project_id))
+
+        unique: dict[tuple[str, str], None] = {}
+        for candidate in candidates:
+            unique.setdefault(candidate, None)
+        ordered = sorted(
+            unique,
+            key=lambda item: (_RENDER_OPERATION_PRIORITY[item[0]], item[1]),
+        )
+
+        results: list[dict[str, object]] = []
+        for operation, project_id in ordered[: payload.render_limit]:
+            try:
+                if operation == "render_final":
+                    review.render_final(project_id)
+                else:
+                    review.render_preview(project_id)
+                results.append(
+                    {
+                        "project_id": project_id,
+                        "operation": operation,
+                        "outcome": "succeeded",
+                    }
+                )
+            except (ReviewError, TypeError, ValueError) as exc:
+                results.append(
+                    {
+                        "project_id": project_id,
+                        "operation": operation,
+                        "outcome": "failed",
+                        "error_code": type(exc).__name__,
+                    }
+                )
+
+        return {
+            "prepared": prepared,
+            "prepare_failed": prepare_failed,
+            "render_limit": payload.render_limit,
+            "render_candidates": len(ordered),
+            "rendered": len(results),
+            "remaining_render_candidates": max(0, len(ordered) - len(results)),
+            "results": results,
+            "attention": snapshot(100),
+        }
+
+
+__all__ = ["SafeWorkRequest", "install_daily_production_routes"]

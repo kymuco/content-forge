@@ -14,6 +14,8 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .daily_production_pwa_route import install_daily_production_pwa_route
+from .daily_production_routes import install_daily_production_routes
 from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
 from .production_preset_routes import install_production_preset_routes
@@ -53,7 +55,7 @@ def create_app(
             ffmpeg_path=ffmpeg_path,
             ffprobe_path=ffprobe_path,
         )
-        install_production_preset_routes(
+        presets = install_production_preset_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,
@@ -109,6 +111,15 @@ def create_app(
             library=app.state.library,
             provider=publishing_provider,
         )
+        install_daily_production_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            inbox=app.state.inbox,
+            review=review,
+            presets=presets,
+            provider=publishing_provider,
+        )
         install_publishing_pwa_route(app)
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is
         # therefore the safe crash-recovery point for PR10 render/preview claims: no old
@@ -122,6 +133,7 @@ def create_app(
             max_upload_bytes=max_upload_bytes,
             share_body_limit=max_upload_bytes + MULTIPART_OVERHEAD_BUDGET,
         )
+        install_daily_production_pwa_route(app)
     except BaseException:
         app.state.runtime_lease.close()
         raise
