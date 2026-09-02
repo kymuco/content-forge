@@ -17,6 +17,31 @@ _BASE_FINAL_COMPILE = _FinalReviewService._compile_plan
 _BASE_PROJECT_SUMMARY = _FinalReviewService.project_summary
 
 
+def _json_project_update(project: Project, **updates: object) -> Project:
+    """Deep-thaw canonical state before applying a fully revalidated Project update.
+
+    FrozenModel intentionally stores nested JSON containers as immutable values. The
+    generic ``validated_copy`` helper uses Python-mode round-trip dumping, which preserves
+    those nested containers and is therefore unsuitable once PR32 adds structured preset
+    evidence under Project.metadata. Rebuild from JSON-mode instead; this is still a full
+    Pydantic validation boundary, not a trusted/model-copy escape hatch.
+    """
+
+    payload = project.model_dump(mode="json")
+    for key, value in updates.items():
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            payload[key] = model_dump(mode="json")
+        elif isinstance(value, tuple):
+            payload[key] = [
+                item.model_dump(mode="json") if callable(getattr(item, "model_dump", None)) else item
+                for item in value
+            ]
+        else:
+            payload[key] = value
+    return Project.model_validate(payload)
+
+
 def _preset_bootstrap_project(self: _base.ReviewService, project_id: str) -> Project:
     current = self.get_project(project_id)
     try:
@@ -56,13 +81,19 @@ def _preset_bootstrap_project(self: _base.ReviewService, project_id: str) -> Pro
             if preset.image_only and asset.media_type is not MediaType.IMAGE:
                 raise ReviewConflictError("image-only production preset contains video media")
             if asset.media_type is MediaType.VIDEO and (
-                asset.duration_seconds is None or asset.duration_seconds <= 0
+                asset.duration_seconds is None
+                or asset.duration_seconds <= 0
+                or asset.has_audio is None
             ):
-                raise ReviewConflictError("production preset video duration is unavailable")
+                raise ReviewConflictError("production preset video probe metadata is incomplete")
 
         tasks = list(project.review_tasks)
         existing_types = {task.task_type for task in tasks}
-        metadata = dict(project.metadata)
+        project_json = project.model_dump(mode="json")
+        raw_metadata = project_json.get("metadata")
+        if not isinstance(raw_metadata, dict):
+            raise ReviewConflictError("production preset project metadata is malformed")
+        metadata = dict(raw_metadata)
         variants = list(project.variants)
         output_profiles = list(project.output_profiles)
         if not variants:
@@ -145,15 +176,14 @@ def _preset_bootstrap_project(self: _base.ReviewService, project_id: str) -> Pro
 
         metadata["pr10_review_initialized"] = True
         metadata["review_renderable"] = True
-        return project.validated_copy(
-            update={
-                "state": ProjectState.NEEDS_REVIEW,
-                "variants": tuple(variants),
-                "output_profiles": tuple(output_profiles),
-                "review_tasks": tuple(tasks),
-                "metadata": metadata,
-                "updated_at": _base._utc_now(),
-            }
+        return _json_project_update(
+            project,
+            state=ProjectState.NEEDS_REVIEW.value,
+            variants=tuple(variants),
+            output_profiles=tuple(output_profiles),
+            review_tasks=tuple(tasks),
+            metadata=metadata,
+            updated_at=_base._utc_now().isoformat(),
         )
 
     return self._mutate_project(project_id, bootstrap)
