@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ from .publishing import (
 
 _PROVIDER_ID = "youtube"
 _PROVIDER_VERSION = "youtube_data_api_v3_pr28_v1"
-_MAX_UPLOAD_BYTES = 256 * 1024 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 256_000_000_000
 _YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 _YOUTUBE_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_OAUTH_SCOPES = (_YOUTUBE_UPLOAD_SCOPE, _YOUTUBE_READ_SCOPE)
@@ -84,6 +85,21 @@ def _safe_token_permissions(path: Path) -> bool:
     return mode & 0o077 == 0
 
 
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _load_credentials(token_path: Path) -> object:
     try:
         from google.auth.transport.requests import Request
@@ -130,31 +146,34 @@ def _write_refreshed_token(path: Path, payload: str) -> None:
 
     if not path.parent.is_dir():
         raise PublishingUnavailableError("YouTube OAuth token directory is missing")
-    temp = path.with_name(f".{path.name}.refresh-{os.getpid()}")
+    temp = path.with_name(
+        f".{path.name}.refresh-{os.getpid()}-{secrets.token_hex(8)}.tmp"
+    )
+    fd: int | None = None
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            try:
-                temp.unlink()
-            except OSError:
-                pass
-            raise
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp, path)
         if os.name != "nt":
             os.chmod(path, 0o600)
-    except PublishingUnavailableError:
-        raise
+        _fsync_directory(path.parent)
     except Exception as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             temp.unlink()
         except OSError:
             pass
-        raise PublishingUnavailableError("YouTube OAuth token refresh could not be persisted") from exc
+        raise PublishingUnavailableError(
+            "YouTube OAuth token refresh could not be persisted"
+        ) from exc
 
 
 def _build_service(credentials: object) -> Any:
@@ -227,7 +246,11 @@ def _validate_youtube_metadata(request: ApprovedPublishRequest, *, now: datetime
         raise PublishingExecutionError(
             "YouTube title must be at most 100 characters and cannot contain angle brackets"
         )
-    if len(metadata.description.encode("utf-8")) > 5000 or "<" in metadata.description or ">" in metadata.description:
+    if (
+        len(metadata.description.encode("utf-8")) > 5000
+        or "<" in metadata.description
+        or ">" in metadata.description
+    ):
         raise PublishingExecutionError(
             "YouTube description must be at most 5000 UTF-8 bytes and cannot contain angle brackets"
         )
@@ -284,9 +307,13 @@ class YouTubePublishingProvider:
         clock: Clock | None = None,
     ) -> None:
         self.config = config
-        self._credentials_loader = _load_credentials if credentials_loader is None else credentials_loader
+        self._credentials_loader = (
+            _load_credentials if credentials_loader is None else credentials_loader
+        )
         self._service_factory = _build_service if service_factory is None else service_factory
-        self._media_upload_factory = _media_upload if media_upload_factory is None else media_upload_factory
+        self._media_upload_factory = (
+            _media_upload if media_upload_factory is None else media_upload_factory
+        )
         self._clock = _utc_now if clock is None else clock
         self._thread_state = local()
 
@@ -365,7 +392,7 @@ class YouTubePublishingProvider:
                 "YouTube media file size differs from approved artifact evidence"
             )
         if size > _MAX_UPLOAD_BYTES:
-            raise PublishingExecutionError("YouTube media file exceeds the 256 GiB upload limit")
+            raise PublishingExecutionError("YouTube media file exceeds the 256 GB upload limit")
         now = self._clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise PublishingExecutionError("YouTube provider clock must be timezone-aware")
@@ -458,7 +485,7 @@ class YouTubePublishingProvider:
         return PublishResult(
             disposition=disposition,
             remote_id=video_id,
-            remote_url=f"https://www.youtube.com/watch/{video_id}",
+            remote_url=f"https://youtu.be/{video_id}",
             effective_at=effective_at,
             evidence=PublishInvocationEvidence(
                 provider_id=_PROVIDER_ID,
