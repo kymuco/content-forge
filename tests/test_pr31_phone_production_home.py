@@ -70,11 +70,13 @@ def test_phone_home_reuses_existing_authority_without_a_parallel_product_state()
         assert f'"{panel_id}"' in controller
     assert 'advancedVisible = false' in controller
 
-    # Installed PWAs must upgrade to the new product shell instead of remaining on v16,
-    # while retaining v16 as an explicit predecessor so historical upgrade contracts hold.
+    # PR31's v17 namespace remains explicit historical upgrade authority even when a later
+    # product PR advances the active shell. The current worker must retain both v16 and
+    # v17 as named predecessors and evict them when installing the newer namespace.
     assert 'const PR29_CACHE_NAME = `${CACHE_PREFIX}v16`' in service_worker
-    assert 'const CACHE_NAME = `${CACHE_PREFIX}v17`' in service_worker
+    assert 'const PR31_CACHE_NAME = `${CACHE_PREFIX}v17`' in service_worker
     assert 'key === PR29_CACHE_NAME' in service_worker
+    assert 'key === PR31_CACHE_NAME' in service_worker
     assert 'appUrl("production-home.js")' in service_worker
 
 
