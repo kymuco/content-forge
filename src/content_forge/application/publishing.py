@@ -188,11 +188,27 @@ class PublishingService:
                 "publish target provider does not match provider health identity"
             )
 
+        idempotency_key = publish_idempotency_key(approved.request)
+        preflight = getattr(provider, "preflight", None)
+        if callable(preflight):
+            try:
+                preflight(
+                    approved,
+                    media_path=media_path,
+                    idempotency_key=idempotency_key,
+                )
+            except Exception as exc:
+                self.library.publishing.mark_failed(
+                    attempt.attempt_id,
+                    code="provider_preflight_failed",
+                    message="publishing provider rejected the approved request before remote execution",
+                )
+                raise PublishingExecutionError("publishing provider preflight failed") from exc
+
         running = self.library.publishing.mark_running(attempt.attempt_id, health)
         pinned_health = running.provider_health
         if pinned_health is None:  # defensive: repository state contract requires this.
             raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
-        idempotency_key = publish_idempotency_key(approved.request)
         try:
             result = provider.publish(
                 approved,
