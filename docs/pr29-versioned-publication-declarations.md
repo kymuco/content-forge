@@ -21,7 +21,7 @@ PublishDeclarations
 └── contains_realistic_altered_or_synthetic_media: bool
 ```
 
-The booleans are intentionally required. There is no provider-local default and the PWA does not silently select `false`.
+The booleans are intentionally required. There is no provider-local default and the PWA does not silently select `false`. The declaration model uses strict boolean validation, so JSON strings or integers such as `"false"`, `0`, and `1` cannot be coerced into human-approved declaration values.
 
 ## Why this is a versioned contract
 
