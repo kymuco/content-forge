@@ -55,6 +55,16 @@ def test_pr33_crop_editor_is_bounded_and_stays_on_existing_crop_contract() -> No
     assert 'await resolveProjectTask(task, { crops })' in script
 
 
+def test_pr33_crop_controls_remain_phone_first() -> None:
+    styles = static_path("styles.css").read_text(encoding="utf-8")
+
+    selector = '#project-flow-panel .stack.compact>.row'
+    assert selector in styles
+    assert 'grid-template-columns:repeat(2,minmax(0,1fr))' in styles
+    assert '@media(min-width:540px)' in styles
+    assert 'grid-template-columns:repeat(4,minmax(0,1fr))' in styles
+
+
 def test_pr33_pr32_source_order_remains_read_only_in_project_flow() -> None:
     script = static_path("production-home.js").read_text(encoding="utf-8")
 
@@ -73,6 +83,7 @@ def test_pr33_terminal_projects_never_offer_false_review_mutations() -> None:
     script = static_path("production-home.js").read_text(encoding="utf-8")
 
     assert 'let activeProjectState = null' in script
+    assert 'activeProjectState = state.toUpperCase()' in script
     assert 'function projectIsTerminal()' in script
     assert 'activeProjectState === "RENDERING"' in script
     assert 'activeProjectState === "QC"' in script
