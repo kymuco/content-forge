@@ -72,6 +72,29 @@ def _asset(name: str, media_type: str, *, cache_control: str = "no-cache") -> Fi
     return _harden(response, cache_control=cache_control)  # type: ignore[return-value]
 
 
+def _production_home_script() -> str:
+    """Compose PR34 UI hooks into the proven PR33 phone controller deterministically."""
+
+    source = static_path("production-home.js").read_text(encoding="utf-8")
+    rendered_marker = "    projectFlowBody.appendChild(renderFinalStage(project));\n"
+    closed_marker = "    setHidden(projectFlowPanel, true);\n    setHidden(panel, false);\n"
+    if source.count(rendered_marker) != 1 or source.count(closed_marker) != 1:
+        raise RuntimeError("production-home PR34 composition marker mismatch")
+    source = source.replace(
+        rendered_marker,
+        rendered_marker
+        + "    window.dispatchEvent(new CustomEvent(\"content-forge:project-flow-rendered\", { detail: { project } }));\n",
+        1,
+    )
+    source = source.replace(
+        closed_marker,
+        "    window.dispatchEvent(new CustomEvent(\"content-forge:project-flow-closed\"));\n"
+        + closed_marker,
+        1,
+    )
+    return source
+
+
 def install_pwa_routes(
     app: FastAPI,
     *,
@@ -168,8 +191,12 @@ def install_pwa_routes(
         return _asset("app.js", "text/javascript; charset=utf-8")
 
     @app.get("/app/production-home.js", include_in_schema=False)
-    def pwa_production_home_js() -> FileResponse:
-        return _asset("production-home.js", "text/javascript; charset=utf-8")
+    def pwa_production_home_js() -> Response:
+        response = Response(
+            _production_home_script(),
+            media_type="text/javascript; charset=utf-8",
+        )
+        return _harden(response, cache_control="no-cache")
 
     @app.get("/app/sw.js", include_in_schema=False)
     def pwa_service_worker() -> FileResponse:

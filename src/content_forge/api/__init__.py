@@ -18,6 +18,7 @@ from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
 from .production_preset_routes import install_production_preset_routes
 from .production_profile_routes import install_production_profile_routes
+from .project_publishing_routes import install_project_publishing_routes
 from .publishing_pwa_route import install_publishing_pwa_route
 from .publishing_routes import install_publishing_routes
 from .review_prepare_routes import install_review_prepare_route
@@ -101,6 +102,12 @@ def create_app(
             library=app.state.library,
             provider=publishing_provider,
             ffprobe_path=ffprobe_path,
+        )
+        install_project_publishing_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            provider=publishing_provider,
         )
         install_publishing_pwa_route(app)
         # The PR8 RuntimeLease is already held exclusively by _create_api_app(). This is

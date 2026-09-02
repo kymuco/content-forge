@@ -8,6 +8,7 @@ from pathlib import Path
 from .publishing import (
     ApprovedPublishRequest,
     PublishResult,
+    PublishTarget,
     PublishingPreflightError,
     PublishingProviderHealth,
     PublishingResponseError,
@@ -72,6 +73,11 @@ def _verify_declarations(
 
 class YouTubePublishingProvider(_PR28YouTubePublishingProvider):
     """PR28 runtime plus exact PR29 publication declarations."""
+
+    def configured_target(self) -> PublishTarget:
+        """Expose only the credential-free configured channel identity to phone UX."""
+
+        return PublishTarget(provider_id="youtube", destination_id=self.config.channel_id)
 
     def health(self) -> PublishingProviderHealth:
         health = super().health()
