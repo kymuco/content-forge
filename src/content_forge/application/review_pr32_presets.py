@@ -200,6 +200,7 @@ def _preset_project_summary(self: _FinalReviewService, project: Project) -> dict
     if preset is not None:
         summary["production_preset_id"] = preset.preset_id
         summary["production_preset_label"] = preset.label
+        summary["production_source_count"] = len(project.source_refs)
     return summary
 
 
