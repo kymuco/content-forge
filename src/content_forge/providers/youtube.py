@@ -32,6 +32,8 @@ from .publishing import (
 _PROVIDER_ID = "youtube"
 _PROVIDER_VERSION = "youtube_data_api_v3_pr28_v1"
 _MAX_UPLOAD_BYTES = 256_000_000_000
+_MAX_UPLOAD_SECONDS = 12 * 60 * 60
+_LONG_UPLOAD_THRESHOLD_SECONDS = 15 * 60
 _YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 _YOUTUBE_READ_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
 YOUTUBE_OAUTH_SCOPES = (_YOUTUBE_UPLOAD_SCOPE, _YOUTUBE_READ_SCOPE)
@@ -229,6 +231,20 @@ def _execute(request: Any, *, retries: int) -> dict[str, object]:
     return payload
 
 
+def _execute_preflight(request: Any, *, retries: int) -> dict[str, object]:
+    """Execute a read-only API request while preserving retryable preflight semantics."""
+
+    try:
+        payload = request.execute(num_retries=retries)
+    except Exception as exc:
+        raise PublishingPreflightError("YouTube capability preflight request failed") from exc
+    if not isinstance(payload, dict):
+        raise PublishingPreflightError(
+            "YouTube capability preflight returned a non-object response"
+        )
+    return payload
+
+
 def _parse_datetime(value: object, *, label: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise PublishingResponseError(f"YouTube {label} is missing")
@@ -282,6 +298,34 @@ def _validate_youtube_metadata(request: ApprovedPublishRequest, *, now: datetime
     if scheduled_for <= now:
         raise PublishingPreflightError(
             "YouTube scheduled publishing time must be in the future"
+        )
+
+
+def _validate_upload_capability(
+    service: Any,
+    request: ApprovedPublishRequest,
+    *,
+    retries: int,
+) -> None:
+    duration = request.request.artifact.duration_seconds
+    if duration > _MAX_UPLOAD_SECONDS:
+        raise PublishingPreflightError("YouTube video exceeds the 12-hour upload limit")
+    if duration <= _LONG_UPLOAD_THRESHOLD_SECONDS:
+        return
+
+    payload = _execute_preflight(
+        service.channels().list(part="status", mine=True, maxResults=2),
+        retries=retries,
+    )
+    items = payload.get("items")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise PublishingPreflightError(
+            "YouTube long-upload capability could not be resolved exactly"
+        )
+    status = items[0].get("status")
+    if not isinstance(status, dict) or status.get("longUploadsStatus") != "allowed":
+        raise PublishingPreflightError(
+            "YouTube channel is not currently allowed to upload videos longer than 15 minutes"
         )
 
 
@@ -402,7 +446,7 @@ class YouTubePublishingProvider:
         media_path: Path,
         idempotency_key: str,
     ) -> None:
-        """Finish local validation/request construction before remote execution begins."""
+        """Finish safe validation/request construction before remote upload begins."""
 
         service = getattr(self._thread_state, "service", None)
         if service is None:
@@ -431,6 +475,8 @@ class YouTubePublishingProvider:
             )
         if size > _MAX_UPLOAD_BYTES:
             raise PublishingPreflightError("YouTube media file exceeds the 256 GB upload limit")
+
+        _validate_upload_capability(service, request, retries=self.config.max_retries)
 
         now = self._clock()
         if now.tzinfo is None or now.utcoffset() is None:
