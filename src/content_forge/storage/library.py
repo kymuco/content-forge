@@ -13,6 +13,7 @@ from .library_index_hardening import ProductionLibraryIndex
 from .paths import RuntimePaths
 
 if TYPE_CHECKING:
+    from .analytics import AnalyticsRepository
     from .publishing_hardening import PublishingRepository
 
 
@@ -25,6 +26,7 @@ class LocalLibrary:
         self.assets = AssetStore(self.paths, self.database)
         self._index: ProductionLibraryIndex | None = None
         self._publishing: PublishingRepository | None = None
+        self._analytics: AnalyticsRepository | None = None
 
     @property
     def index(self) -> ProductionLibraryIndex:
@@ -43,6 +45,16 @@ class LocalLibrary:
 
             self._publishing = PublishingRepository(self.database).initialize()
         return self._publishing
+
+    @property
+    def analytics(self) -> AnalyticsRepository:
+        """Open PR36 analytics history only when measurement features are used."""
+
+        if self._analytics is None:
+            from .analytics import AnalyticsRepository
+
+            self._analytics = AnalyticsRepository(self.database, self.publishing).initialize()
+        return self._analytics
 
     def save_project(self, project: Project) -> Project:
         return self.database.save_project(project)
