@@ -87,6 +87,25 @@ def test_pr32_preset_catalog_is_human_facing_and_bounded(tmp_path) -> None:
         app.state.runtime_lease.close()
 
 
+def test_pr32_malformed_request_uuid_is_rejected_at_api_validation_boundary(tmp_path) -> None:
+    app = create_app(root=tmp_path)
+    client = TestClient(app)
+    try:
+        token = _paired_token(client)
+        response = client.post(
+            "/api/v1/production/projects",
+            headers={**LOOPBACK_HEADERS, "Authorization": f"Bearer {token}"},
+            json={
+                "request_id": "x" * 36,
+                "preset_id": "framed_clip",
+                "source_project_ids": ["cf_project_00000000000000000000000000000000"],
+            },
+        )
+        assert response.status_code == 422
+    finally:
+        app.state.runtime_lease.close()
+
+
 def test_pr32_create_request_is_idempotent_and_conflicting_reuse_fails_closed(tmp_path) -> None:
     app = create_app(root=tmp_path)
     try:
