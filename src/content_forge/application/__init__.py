@@ -1,5 +1,6 @@
 """Application services between transport clients and Content Forge core/runtime."""
 
+from .analytics import AnalyticsOrchestrationError, AnalyticsPublicationError, AnalyticsService
 from .auth import AuthManager, AuthenticationError, IssuedSession
 from .dialogue import (
     CharacterRecord,
@@ -164,6 +165,9 @@ from . import review_pr17_hardening as _review_pr17_hardening  # noqa: F401
 from .review_pr24_hardening import ReviewService
 
 __all__ = [
+    "AnalyticsOrchestrationError",
+    "AnalyticsPublicationError",
+    "AnalyticsService",
     "ApplicationRepository",
     "AuthManager",
     "AuthenticationError",
