@@ -14,14 +14,17 @@ PR28 adds a YouTube Data API v3 adapter only. It does not add analytics, a secon
 → explicit human approval
 → durable `prepared` attempt
 → provider health/channel verification
-→ side-effect-free YouTube preflight
+→ side-effect-free YouTube preflight/read checks
+→ authenticated immutable upload snapshot
+→ prebuilt resumable `videos.insert` request
 → durable `running` remote boundary
-→ resumable `videos.insert`
-→ remote `videos.list` verification
+→ `next_chunk()` remote upload
+→ bounded processing verification
+→ exact remote metadata/status verification
 → authenticated `PublishResult`
 → durable `succeeded`
 
-Anything rejected before `running` is a known preflight failure. If uncertainty begins after the upload call starts, PR27 records `outcome_unknown` rather than automatically creating a potentially duplicate video.
+Anything rejected before `running` is a known preflight failure. If uncertainty begins after the upload starts, PR27 records `outcome_unknown` rather than automatically creating a potentially duplicate video.
 
 ## Provider identity and immutable PR28 policy
 
@@ -60,12 +63,24 @@ YouTube preflight checks:
 - YouTube tag-budget accounting;
 - scheduled publication only for approved `public` visibility;
 - whole-second schedule precision;
-- schedule time strictly in the future;
-- successful local construction of `MediaFileUpload` and the `videos.insert` request object.
+- schedule time strictly in the future.
 
-The capability/category lookups are read-only and cannot create a video. The actual publication boundary begins only after the durable transition to `running`, when `next_chunk()` is invoked on the already-built resumable request.
+### Authenticated upload snapshot
 
-This distinction is intentional: local request-construction failures, invalid platform capability, and invalid metadata remain retryable `failed`; only uncertainty after a video upload may have begun becomes `outcome_unknown`.
+The pathname authenticated by the render layer cannot safely be handed to a remote uploader later: another process could replace or rewrite the file between artifact verification and `MediaIoBaseUpload` reading it.
+
+PR28 therefore copies the candidate media into a private temporary file **before** `running` while simultaneously computing SHA-256 and byte count. The snapshot must match both `PublishArtifactRef.output_sha256` and `bytes_written`. Only that already-authenticated, seekable snapshot handle is supplied to the Google upload object.
+
+Consequences:
+
+- same-sized replacement of the source file is detected during snapshot authentication if it happens before/during the copy;
+- replacement after preflight cannot change the bytes uploaded, because the uploader reads the snapshot rather than reopening the source pathname;
+- snapshot/hash failure remains a retryable preflight `failed` outcome;
+- the snapshot handle is closed after the remote upload attempt, including exceptional paths.
+
+After the snapshot exists, preflight locally constructs `MediaIoBaseUpload` and the `videos.insert` request object. The actual publication side effect begins only after the durable transition to `running`, when `next_chunk()` is invoked.
+
+This distinction is intentional: local request-construction failures, invalid platform capability, invalid metadata, and artifact-byte mismatches remain retryable `failed`; only uncertainty after a video upload may have begun becomes `outcome_unknown`.
 
 The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do not leak into other future providers.
 
@@ -73,7 +88,7 @@ The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do 
 
 PR28 uses the Google API Python client's resumable path:
 
-- `MediaFileUpload(..., resumable=True)` with 8 MiB chunks;
+- `MediaIoBaseUpload(<authenticated snapshot handle>, resumable=True)` with 8 MiB chunks;
 - `videos.insert(part="snippet,status", ...)` request construction during preflight;
 - `snippet.categoryId = "22"` as immutable PR28 policy;
 - `notifySubscribers=false` as immutable PR28 policy;
@@ -96,9 +111,21 @@ For a scheduled public request, YouTube requires a private video plus an exact f
 
 PR28 therefore accepts scheduling only when the approved semantic visibility is `public`. The remote object must verify as private with the exact approved `publishAt` before Content Forge stores a `scheduled` result.
 
-## Remote verification
+## Processing and remote verification
 
-A successful `videos.insert` response is not enough durable evidence. After upload, PR28 calls `videos.list(part="snippet,status", id=<video_id>)` and verifies:
+A successful `videos.insert` response only proves that YouTube accepted the upload transaction; it is not sufficient durable evidence that YouTube successfully processed the video.
+
+PR28 polls `videos.list(part="snippet,status", id=<video_id>)` in a bounded verification window:
+
+- `status.uploadStatus == "processed"` permits final metadata/privacy verification;
+- `failed`, `rejected`, or `deleted` fail closed;
+- `uploaded` means processing is still pending and is polled again;
+- any undocumented/malformed status fails closed;
+- if the bounded window ends while status is still `uploaded`, no success receipt is produced.
+
+Because this verification happens after the remote upload boundary, a terminal failure or still-pending outcome propagates through `PublishingService` as `outcome_unknown`; automatic replacement upload remains blocked until an operator reconciles the remote state.
+
+Once `processed`, PR28 verifies:
 
 - exact video ID;
 - exact configured channel ID;
@@ -106,7 +133,6 @@ A successful `videos.insert` response is not enough durable evidence. After uplo
 - exact approved description;
 - exact approved tags;
 - fixed category `22`;
-- `status.uploadStatus` is `uploaded` or `processed`, never `failed`/`rejected`/`deleted`;
 - requested privacy for unscheduled uploads;
 - `private` plus exact `publishAt` for scheduled uploads.
 
@@ -170,7 +196,8 @@ The YouTube Data API / YouTube Help currently document that:
 - videos longer than 15 minutes require channel long-upload eligibility/enablement;
 - uploaded videos require valid category metadata;
 - `status.publishAt` applies only while a video is private and before it has been published;
-- `status.uploadStatus` distinguishes uploaded/processed content from failed or rejected uploads;
+- `status.uploadStatus` can be `uploaded`, `processed`, `failed`, `rejected`, or `deleted`;
+- YouTube exposes processing progress specifically for polling while an uploaded video is being processed;
 - uploads from API projects created after July 28, 2020 that have not passed YouTube's API audit are restricted to private viewing.
 
 That last rule is external platform governance, not something Content Forge can or should bypass. An upload can succeed while public visibility remains unavailable until the Google/YouTube API project satisfies the applicable audit requirements.
