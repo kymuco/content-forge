@@ -43,6 +43,20 @@
       </div>
       <p id="onboarding-status" class="status"></p>
     </section>
+    <section id="production-home-panel" class="panel hidden">
+      <div class="panel-heading">
+        <div><p class="eyebrow">PRODUCTION</p><h2>Make videos</h2></div>
+        <span id="production-home-count" class="badge neutral">0</span>
+      </div>
+      <p class="muted">Your phone is the control surface. Pick up a recent project, make only the decisions that need you, and let the desktop worker do the heavy work.</p>
+      <div id="production-home-summary" class="row" aria-label="Production summary"></div>
+      <div class="row">
+        <button id="production-home-add" class="primary" type="button">+ Add media</button>
+        <button id="production-home-advanced" class="ghost" type="button" aria-expanded="false">Advanced</button>
+      </div>
+      <div id="production-home-projects" class="review-list" aria-live="polite"></div>
+      <p id="production-home-status" class="status"></p>
+    </section>
     <section id="capture-panel" class="panel hidden">
       <div class="panel-heading"><div><p class="eyebrow">CAPTURE</p><h2>Send to Inbox</h2></div><span id="queue-badge" class="badge neutral">Queue 0</span></div>
       <label class="file-picker"><span>Choose media</span><input id="file-input" type="file" accept="image/*,video/*,audio/*" multiple></label>
@@ -240,6 +254,7 @@
   <script src="shared.js"></script>
   <script src="app.js"></script>
   <script src="review.js"></script>
+  <script src="production-home.js"></script>
   <script src="dialogue.js"></script>
   <script src="voice-cast.js"></script>
   <script src="voiced-story.js"></script>
