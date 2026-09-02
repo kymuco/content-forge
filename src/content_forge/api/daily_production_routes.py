@@ -94,6 +94,39 @@ def _source_project_ids(presets: ProductionPresetService) -> set[str]:
     }
 
 
+def _ready_summaries(queue: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    raw = queue.get("ready_projects")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _ready_project_ids(queue: Mapping[str, object]) -> set[str]:
+    project_ids: set[str] = set()
+    for summary in _ready_summaries(queue):
+        project_id = summary.get("project_id")
+        if isinstance(project_id, str):
+            project_ids.add(project_id)
+    return project_ids
+
+
+def _queue_project_ids(queue: Mapping[str, object]) -> tuple[str, ...]:
+    raw = queue.get("items")
+    if not isinstance(raw, list):
+        return ()
+    project_ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        project_id = item.get("project_id")
+        if not isinstance(project_id, str) or project_id in seen:
+            continue
+        seen.add(project_id)
+        project_ids.append(project_id)
+    return tuple(project_ids)
+
+
 def _project_publish_projection(
     library: LocalLibrary,
     summary: Mapping[str, object],
@@ -273,31 +306,22 @@ def install_daily_production_routes(
         used_source_ids = _used_source_project_ids(production_projects)
 
         queue = review.list_queue(limit=500, include_auto=False)
-        queue_items = queue.get("items")
-        ready_raw = queue.get("ready_projects")
-        ready_ids = {
-            item
-            for item in (ready_raw if isinstance(ready_raw, list) else [])
-            if isinstance(item, str)
-        }
+        ready_ids = _ready_project_ids(queue)
 
         summaries: dict[str, Mapping[str, object]] = {}
-        if isinstance(queue_items, list):
-            for item in queue_items:
-                if not isinstance(item, Mapping):
-                    continue
-                project_id = item.get("project_id")
-                if isinstance(project_id, str) and project_id not in source_ids:
-                    summaries[project_id] = item
-        for project_id, project in production_by_id.items():
-            summaries[project_id] = review.project_summary(project)
-        for project_id in ready_ids:
-            if project_id in source_ids or project_id in summaries:
+        for project_id in _queue_project_ids(queue):
+            if project_id in source_ids:
                 continue
             try:
                 summaries[project_id] = review.project_summary(review.get_project(project_id))
             except ReviewError:
                 continue
+        for summary in _ready_summaries(queue):
+            project_id = summary.get("project_id")
+            if isinstance(project_id, str) and project_id not in source_ids:
+                summaries[project_id] = summary
+        for project_id, project in production_by_id.items():
+            summaries[project_id] = review.project_summary(project)
 
         cards: list[dict[str, object]] = []
         for summary in summaries.values():
@@ -413,22 +437,20 @@ def install_daily_production_routes(
                 prepare_failed += 1
 
         queue = review.list_queue(limit=500, include_auto=False)
-        queue_items = queue.get("items")
-        ready_raw = queue.get("ready_projects")
         candidates: list[tuple[str, str]] = []
-        if isinstance(ready_raw, list):
-            candidates.extend(
-                ("render_final", project_id)
-                for project_id in ready_raw
-                if isinstance(project_id, str) and project_id not in source_ids
-            )
-        if isinstance(queue_items, list):
-            for item in queue_items:
-                if not isinstance(item, Mapping) or not _preview_safe(item):
-                    continue
-                project_id = item.get("project_id")
-                if isinstance(project_id, str) and project_id not in source_ids:
-                    candidates.append(("render_preview", project_id))
+        for summary in _ready_summaries(queue):
+            project_id = summary.get("project_id")
+            if isinstance(project_id, str) and project_id not in source_ids:
+                candidates.append(("render_final", project_id))
+        for project_id in _queue_project_ids(queue):
+            if project_id in source_ids:
+                continue
+            try:
+                summary = review.project_summary(review.get_project(project_id))
+            except ReviewError:
+                continue
+            if _preview_safe(summary):
+                candidates.append(("render_preview", project_id))
 
         unique: dict[tuple[str, str], None] = {}
         for candidate in candidates:
