@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -118,6 +118,16 @@ def install_production_preset_routes(
     @app.get("/api/v1/production/presets")
     def list_presets(_session: AuthSession = Depends(require_session)) -> dict[str, object]:
         return {"items": [item.payload() for item in service.list_presets()]}
+
+    @app.get("/api/v1/production/sources")
+    def list_sources(
+        limit: int = Query(default=100, ge=1, le=500),
+        _session: AuthSession = Depends(require_session),
+    ) -> dict[str, object]:
+        try:
+            return {"items": list(service.list_sources(limit=limit))}
+        except ProductionPresetError as exc:
+            raise _preset_http_error(exc) from exc
 
     @app.post("/api/v1/production/projects", status_code=status.HTTP_201_CREATED)
     def create_production_project(
