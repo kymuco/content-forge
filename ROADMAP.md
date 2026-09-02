@@ -4,13 +4,13 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 
 ## Current implementation status
 
-- PR1–PR34: **complete** in the intended post-merge repository state.
+- PR1–PR35: **complete in the intended post-merge repository state**.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
-- Milestone 7B — Daily Production Completion: **current product phase**.
-- Current implemented step: **PR34 — Final-to-publish phone handoff**.
-- Next product step: **PR35 — Mobile batch Inbox and attention queue**.
-- Analytics/experiments remain planned **after** the daily phone production loop is genuinely convenient.
+- Milestone 7B — Daily Production Completion: **complete in the intended post-PR35 state**.
+- Current implemented step: **PR35 — Mobile batch Inbox and attention queue**.
+- Next product phase: **Milestone 8 — Measurement, experiments, and evidence-driven improvement**.
+- Next planned implementation step: **PR36 — Analytics provider boundary**.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
 The engine is already durable through publication:
@@ -221,7 +221,7 @@ That finding changed priority, not architecture. Analytics remains planned; Dail
 
 ## Milestone 7B — Daily Production Completion
 
-Status: **current product phase**.
+Status: **complete in the intended post-PR35 state**.
 
 Goal: make routine short-form production possible from the phone without exposing internal subsystem topology. The desktop remains the worker; existing Project/Review/Render/Publishing contracts remain authoritative.
 
@@ -333,17 +333,34 @@ See [`docs/pr34-final-to-publish-phone-handoff.md`](docs/pr34-final-to-publish-p
 
 ### PR35 — Mobile batch Inbox and attention queue
 
-Planned.
+Status: **complete in the intended post-merge state**.
 
-- practical daily summary such as ready automatically / needs attention / rendering / failed;
-- batch deterministic preparation without babysitting individual projects;
-- attention queue grouped into small contextual decisions;
-- retry/recovery actions only where existing operation semantics say they are safe;
-- no hidden automatic acceptance of review authority.
+Delivered:
 
-Exit condition: multiple pieces of source material can move through the production pipeline with human attention spent only on actual blockers.
+- one authenticated read-only daily projection grouped as **Needs recovery / Needs you / Ready automatically / Working / New sources / Finished**;
+- grouping is derived from canonical Inbox, Project, Review, Render/QC, and Publishing state rather than persisted as a second workflow;
+- unused prepared visual sources appear as New sources, while canonical PR32 use removes them from that attention group without deleting or consuming the reusable source;
+- bounded `Run safe work` accepts only a render budget and never accepts project/task IDs or human decision values from the phone;
+- automatic bootstrap is limited to PR32-derived production Projects;
+- preview rendering is automatic only after every non-preview human blocker is closed and the sole blocking task is the existing `preview_approval` task;
+- final rendering is automatic only from the hardened Review `ready_projects` authority after exact preview approval;
+- raw Inbox source Projects are excluded from safe compute by canonical source identity even when they fall outside bounded source catalogs or appear in legacy Review data;
+- active/uncertain `prepared`, `running`, and `outcome_unknown` publication state is projected directly from the durable PR27 ledger without the ordinary recent-Project limit;
+- remote side-effect risk outranks current local Project lifecycle, with `outcome_unknown > running > prepared` for one Project;
+- Projects with active/uncertain remote publication state are excluded from automatic local safe work until reconciliation;
+- an active publishing ledger reference to an unavailable Project becomes a recovery card rather than disappearing;
+- per-project deterministic render failures are quarantined and expose only bounded error codes to the phone;
+- the phone queue opens the existing PR33 Project surface and PR32 Create video wizard rather than duplicating their authority;
+- publication status is reconciled through the existing PR27 surface before the phone ranks daily attention;
+- no hook/crop/manual setup/preview approval/publication declaration/publish approval/remote execute action is ever auto-accepted;
+- PR17 BatchCoordinator remains separate: PR35 does not create a second batch manifest/job/recovery lifecycle over Review;
+- installed PWA shell upgraded v20 → v21 while retaining v20 as an explicit PR34 predecessor.
 
-Milestone 7B exit condition:
+Exit condition achieved: multiple source/project items can coexist, deterministic desktop work can advance in a bounded batch, and human attention is focused on actual blockers without hiding uncertain remote side effects or introducing a second authority model.
+
+See [`docs/pr35-mobile-batch-attention-queue.md`](docs/pr35-mobile-batch-attention-queue.md) for the exact projection and safe-work contract.
+
+Milestone 7B exit condition achieved:
 
 ```text
 phone share/upload
@@ -354,6 +371,7 @@ phone share/upload
 -> desktop final render/QC
 -> inspect final on phone
 -> publish
+-> daily attention/recovery across multiple items
 ```
 
 for the common production paths, without requiring routine access to desktop UI, CLI commands, project IDs, render job IDs, template versions, or subsystem-specific engineering panels.
@@ -362,7 +380,7 @@ for the common production paths, without requiring routine access to desktop UI,
 
 ## Milestone 8 — Measurement, experiments, and evidence-driven improvement
 
-Status: **planned after Daily Production Completion**.
+Status: **next planned product phase**.
 
 The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge should first retain trustworthy observations from the user's own published work, then make bounded recommendations traceable to that evidence.
 
@@ -489,6 +507,8 @@ These items should not be implemented merely to make the feature list longer.
 16. Explicit wizard source selection/order is durable human authority and must remain traceable to exact asset/source provenance.
 17. Project-specific phone editability is derived from canonical lifecycle state; `RENDERING`, `QC`, and `DONE` never expose review mutations.
 18. Routine project publishing must be bound to the exact final `{project_id, render_job_id, output_sha256}` and bounded projections must preserve more safety-significant remote states before convenience ordering.
-19. Analytics observations are evidence, not authority to mutate production state.
-20. Recommendations remain proposals and must be traceable to retained evidence.
-21. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+19. Active or uncertain remote publication state must not disappear merely because the related Project falls outside an ordinary recent-history window.
+20. Bounded automatic work must consume only already-complete authority and must never infer or accept a human decision.
+21. Analytics observations are evidence, not authority to mutate production state.
+22. Recommendations remain proposals and must be traceable to retained evidence.
+23. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
