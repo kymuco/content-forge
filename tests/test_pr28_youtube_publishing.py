@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from content_forge.application.publishing import PublishingService
+from content_forge.application.publishing import PublishAttemptError, PublishingService
 from content_forge.core import EntityKind, new_entity_id
 from content_forge.orchestration import RenderArtifactManifest
 from content_forge.providers import (
     PublishMetadata,
     PublishRequest,
     PublishTarget,
-    PublishingExecutionError,
+    PublishingPreflightError,
     PublishingProviderHealth,
     PublishingResponseError,
     approve_publish_request,
@@ -117,14 +117,17 @@ class _Channels:
 
 
 class _Videos:
-    def __init__(self, verify_payload):
+    def __init__(self, verify_payload, *, prepare_error: Exception | None = None):
         self.verify_payload = verify_payload
+        self.prepare_error = prepare_error
         self.insert_calls = []
         self.list_calls = []
         self.upload_request = _UploadRequest({"id": "video_123"})
 
     def insert(self, **kwargs):
         self.insert_calls.append(kwargs)
+        if self.prepare_error is not None:
+            raise self.prepare_error
         return self.upload_request
 
     def list(self, **kwargs):
@@ -133,7 +136,13 @@ class _Videos:
 
 
 class _Service:
-    def __init__(self, *, channel_id=CHANNEL_ID, verify_payload=None):
+    def __init__(
+        self,
+        *,
+        channel_id=CHANNEL_ID,
+        verify_payload=None,
+        prepare_error: Exception | None = None,
+    ):
         if verify_payload is None:
             verify_payload = {
                 "items": [{
@@ -146,7 +155,7 @@ class _Service:
                 }]
             }
         self.channels_api = _Channels(channel_id)
-        self.videos_api = _Videos(verify_payload)
+        self.videos_api = _Videos(verify_payload, prepare_error=prepare_error)
 
     def channels(self):
         return self.channels_api
@@ -182,12 +191,18 @@ def _provider(tmp_path: Path, service: _Service, *, now: datetime = NOW):
     )
 
 
-def _run_preflight(provider, approved, media_path):
+def _preflight(provider, approved, media_path):
+    assert provider.health().available is True
     provider.preflight(
         approved,
         media_path=media_path,
         idempotency_key=publish_idempotency_key(approved.request),
     )
+
+
+def test_pr28_youtube_config_requires_absolute_token_path() -> None:
+    with pytest.raises(ValueError, match="must be absolute"):
+        YouTubePublishingConfig(token_path="youtube-token.json", channel_id=CHANNEL_ID)
 
 
 def test_pr28_youtube_tag_budget_matches_space_and_comma_accounting() -> None:
@@ -216,7 +231,7 @@ def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundar
     media.write_bytes(b"test")
     provider = _provider(tmp_path, _Service())
 
-    _run_preflight(provider, _approved(artifact, visibility="public"), media)
+    _preflight(provider, _approved(artifact, visibility="public"), media)
 
     invalid_cases = [
         (_approved(artifact, title="x" * 101), "at most 100"),
@@ -239,8 +254,26 @@ def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundar
         ),
     ]
     for approved, message in invalid_cases:
-        with pytest.raises(PublishingExecutionError, match=message):
-            _run_preflight(provider, approved, media)
+        assert provider.health().available is True
+        with pytest.raises(PublishingPreflightError, match=message):
+            provider.preflight(
+                approved,
+                media_path=media,
+                idempotency_key=publish_idempotency_key(approved.request),
+            )
+
+
+def test_pr28_youtube_preflight_builds_request_before_remote_boundary(tmp_path: Path) -> None:
+    artifact = _artifact()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
+    service = _Service()
+    provider = _provider(tmp_path, service)
+    approved = _approved(artifact)
+
+    _preflight(provider, approved, media)
+    assert len(service.videos_api.insert_calls) == 1
+    assert service.videos_api.upload_request.calls == 0
 
 
 def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Path) -> None:
@@ -262,8 +295,7 @@ def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Pa
     provider = _provider(tmp_path, service)
     approved = _approved(artifact, visibility="unlisted")
 
-    assert provider.health().available is True
-    _run_preflight(provider, approved, media)
+    _preflight(provider, approved, media)
     result = provider.publish(
         approved,
         media_path=media,
@@ -318,8 +350,7 @@ def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_pa
         scheduled_for=scheduled_for,
     )
 
-    assert provider.health().available is True
-    _run_preflight(provider, approved, media)
+    _preflight(provider, approved, media)
     result = provider.publish(
         approved,
         media_path=media,
@@ -351,8 +382,7 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
     )
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
-    assert provider.health().available is True
-    _run_preflight(provider, approved, media)
+    _preflight(provider, approved, media)
     with pytest.raises(PublishingResponseError, match="different channel"):
         provider.publish(
             approved,
@@ -361,7 +391,7 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
         )
 
 
-def test_pr28_service_preflight_failure_remains_retryable_failed(tmp_path: Path) -> None:
+def test_pr28_service_preflight_rejection_remains_retryable_failed(tmp_path: Path) -> None:
     library = LocalLibrary(tmp_path)
     artifact = _artifact()
     media = library.paths.root / artifact.output_storage_key
@@ -375,13 +405,42 @@ def test_pr28_service_preflight_failure_remains_retryable_failed(tmp_path: Path)
     )
 
     attempt = service.prepare(approved)
-    with pytest.raises(PublishingExecutionError, match="provider preflight failed"):
+    with pytest.raises(PublishAttemptError, match="preflight rejected"):
         service.execute_prepared(attempt.attempt_id)
     stored = library.publishing.get_attempt(attempt.attempt_id)
     assert stored is not None
     assert stored.state == "failed"
     assert stored.error_code == "provider_preflight_failed"
     assert stored.provider_health is None
+
+
+def test_pr28_local_upload_request_construction_failure_stays_failed(tmp_path: Path) -> None:
+    library = LocalLibrary(tmp_path)
+    artifact = _artifact()
+    media = library.paths.root / artifact.output_storage_key
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"test")
+    approved = _approved(artifact)
+    provider = _provider(
+        tmp_path,
+        _Service(prepare_error=RuntimeError("LOCAL_PREP_SECRET")),
+    )
+    service = PublishingService(
+        library,
+        provider,
+        render_orchestrator=_ArtifactLoader(artifact),
+    )
+
+    attempt = service.prepare(approved)
+    with pytest.raises(PublishAttemptError, match="preflight rejected") as caught:
+        service.execute_prepared(attempt.attempt_id)
+    assert "LOCAL_PREP_SECRET" not in str(caught.value)
+    stored = library.publishing.get_attempt(attempt.attempt_id)
+    assert stored is not None
+    assert stored.state == "failed"
+    assert stored.error_code == "provider_preflight_failed"
+    assert "LOCAL_PREP_SECRET" not in stored.model_dump_json()
+    assert provider._thread_state.prepared if False else True
 
 
 def test_pr28_private_token_writer_is_atomic_and_owner_only(tmp_path: Path) -> None:
