@@ -167,6 +167,10 @@ def install_pwa_routes(
     def pwa_app_js() -> FileResponse:
         return _asset("app.js", "text/javascript; charset=utf-8")
 
+    @app.get("/app/production-home.js", include_in_schema=False)
+    def pwa_production_home_js() -> FileResponse:
+        return _asset("production-home.js", "text/javascript; charset=utf-8")
+
     @app.get("/app/sw.js", include_in_schema=False)
     def pwa_service_worker() -> FileResponse:
         response = _asset("sw.js", "text/javascript; charset=utf-8", cache_control="no-cache")
