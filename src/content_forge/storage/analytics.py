@@ -170,10 +170,25 @@ class AnalyticsRepository:
             ingested_at=datetime.fromisoformat(str(row["ingested_at"])),
         )
 
+    @staticmethod
+    def _canonical_observation(
+        observation: AnalyticsObservationBatch,
+    ) -> AnalyticsObservationBatch:
+        try:
+            canonical = AnalyticsObservationBatch.model_validate(
+                observation.model_dump(mode="python")
+            )
+        except Exception as exc:
+            raise StorageConflictError("analytics observation is invalid") from exc
+        if canonical != observation:
+            raise StorageConflictError("analytics observation is not canonical")
+        return canonical
+
     def record_observation(
         self,
         observation: AnalyticsObservationBatch,
     ) -> AnalyticsObservationRecord:
+        observation = self._canonical_observation(observation)
         expected = self.successful_publication(observation.query.publication.publish_attempt_id)
         if observation.query.publication != expected:
             raise StorageConflictError(
