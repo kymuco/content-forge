@@ -20,13 +20,14 @@ from content_forge.application.production_presets import (
     _source_snapshots,
 )
 from content_forge.application.review import ReviewError, ReviewService
-from content_forge.providers import PublishingProvider
+from content_forge.providers import PublishRequest, PublishingProvider
 from content_forge.storage import LocalLibrary, StorageConflictError
 
 from .project_publishing_routes import _attempt_payload, _project_attempt_ids
 
 _GROUP_ORDER = ("failed", "attention", "safe_work", "working", "inbox", "finished")
 _RENDER_OPERATION_PRIORITY = {"render_final": 0, "render_preview": 1}
+_ACTIVE_PUBLISH_PRIORITY = {"prepared": 1, "running": 2, "outcome_unknown": 3}
 
 
 class SafeWorkRequest(BaseModel):
@@ -127,6 +128,41 @@ def _queue_project_ids(queue: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(project_ids)
 
 
+def _active_publish_risks(library: LocalLibrary) -> dict[str, str]:
+    """Project active/uncertain remote side effects outside recent-project limits."""
+
+    # Initializing the repository here is read-only with respect to publishing authority;
+    # it only guarantees the additive PR27 schema exists before the safety projection.
+    library.publishing
+    with library.database.connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT a.state, a.request_sha256, o.request_json
+            FROM publish_attempts AS a
+            JOIN publish_operations AS o
+              ON o.request_sha256 = a.request_sha256
+            WHERE a.state IN ('prepared', 'running', 'outcome_unknown')
+            ORDER BY a.created_at, a.attempt_number, a.attempt_id
+            """
+        ).fetchall()
+
+    risks: dict[str, str] = {}
+    for row in rows:
+        state = str(row["state"])
+        priority = _ACTIVE_PUBLISH_PRIORITY.get(state)
+        if priority is None:
+            raise StorageConflictError("active publishing projection has invalid state")
+        try:
+            request = PublishRequest.model_validate_json(str(row["request_json"]))
+        except Exception as exc:
+            raise StorageConflictError("active publishing operation is invalid") from exc
+        project_id = request.artifact.project_id
+        previous = risks.get(project_id)
+        if previous is None or priority > _ACTIVE_PUBLISH_PRIORITY[previous]:
+            risks[project_id] = state
+    return risks
+
+
 def _project_publish_projection(
     library: LocalLibrary,
     summary: Mapping[str, object],
@@ -170,6 +206,7 @@ def _project_card(
     *,
     ready_ids: set[str],
     library: LocalLibrary,
+    active_publish_state: str | None = None,
 ) -> dict[str, object]:
     project_id = summary.get("project_id")
     state = summary.get("state")
@@ -181,7 +218,23 @@ def _project_card(
     safe_operation: str | None = None
     publish_state: str | None = None
 
-    if state == "inbox" or summary.get("review_initialized") is not True:
+    # Remote side-effect risk outranks the current local lifecycle. This deliberately
+    # catches an older exact final whose publication is still prepared/running/unknown
+    # even if later recovery moved the Project away from DONE.
+    if active_publish_state is not None:
+        publish_state = active_publish_state
+        if active_publish_state == "outcome_unknown":
+            group = "failed"
+            reason = "Remote publishing outcome is unknown for a stored final"
+        elif active_publish_state == "running":
+            group = "working"
+            reason = "Publishing may be in progress for a stored final"
+        elif active_publish_state == "prepared":
+            group = "attention"
+            reason = "Approved publish request awaits explicit execution"
+        else:
+            raise StorageConflictError("active publishing projection has invalid state")
+    elif state == "inbox" or summary.get("review_initialized") is not True:
         group = "safe_work"
         reason = "Project can be prepared automatically"
         safe_operation = "bootstrap"
@@ -304,11 +357,13 @@ def install_daily_production_routes(
         source_items = presets.list_sources(limit=500)
         source_ids = {str(item["source_project_id"]) for item in source_items}
         used_source_ids = _used_source_project_ids(production_projects)
+        publish_risks = _active_publish_risks(library)
 
         queue = review.list_queue(limit=500, include_auto=False)
         ready_ids = _ready_project_ids(queue)
 
         summaries: dict[str, Mapping[str, object]] = {}
+        unavailable_publish_projects: set[str] = set()
         for project_id in _queue_project_ids(queue):
             if project_id in source_ids:
                 continue
@@ -322,27 +377,56 @@ def install_daily_production_routes(
                 summaries[project_id] = summary
         for project_id, project in production_by_id.items():
             summaries[project_id] = review.project_summary(project)
+        for project_id in publish_risks:
+            if project_id in summaries:
+                continue
+            try:
+                summaries[project_id] = review.project_summary(review.get_project(project_id))
+            except ReviewError:
+                unavailable_publish_projects.add(project_id)
 
         cards: list[dict[str, object]] = []
         for summary in summaries.values():
+            project_id = summary.get("project_id")
+            active_publish_state = (
+                publish_risks.get(project_id) if isinstance(project_id, str) else None
+            )
             try:
-                cards.append(_project_card(summary, ready_ids=ready_ids, library=library))
+                cards.append(
+                    _project_card(
+                        summary,
+                        ready_ids=ready_ids,
+                        library=library,
+                        active_publish_state=active_publish_state,
+                    )
+                )
             except (StorageConflictError, TypeError, ValueError):
-                project_id = summary.get("project_id")
                 cards.append(
                     {
                         "kind": "project",
                         "group": "failed",
                         "reason": "Project summary is inconsistent",
                         "safe_operation": None,
-                        "publish_state": None,
+                        "publish_state": active_publish_state,
                         "project": {"project_id": project_id} if isinstance(project_id, str) else {},
                     }
                 )
 
+        for project_id in sorted(unavailable_publish_projects):
+            cards.append(
+                {
+                    "kind": "project",
+                    "group": "failed",
+                    "reason": "Publishing ledger references an unavailable Project",
+                    "safe_operation": None,
+                    "publish_state": publish_risks[project_id],
+                    "project": {"project_id": project_id},
+                }
+            )
+
         for source in source_items:
             source_project_id = str(source["source_project_id"])
-            if source_project_id in used_source_ids:
+            if source_project_id in used_source_ids or source_project_id in publish_risks:
                 continue
             cards.append(
                 {
@@ -354,7 +438,7 @@ def install_daily_production_routes(
                 }
             )
 
-        represented_projects = set(summaries) | source_ids
+        represented_projects = set(summaries) | source_ids | set(publish_risks)
         for intake_item in inbox.list_intakes(limit=500):
             raw = _safe_intake_payload(intake_item)
             state = raw.get("state")
