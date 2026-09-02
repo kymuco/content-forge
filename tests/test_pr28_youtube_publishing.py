@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -8,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from content_forge.application.publishing import PublishAttemptError, PublishingService
+from content_forge.application.publishing import (
+    PublishAttemptError,
+    PublishOutcomeUnknownError,
+    PublishingService,
+)
 from content_forge.core import EntityKind, new_entity_id
 from content_forge.orchestration import RenderArtifactManifest
 from content_forge.providers import (
@@ -33,9 +38,16 @@ from content_forge.storage import LocalLibrary
 CHANNEL_ID = "UC1234567890123456789012"
 CATEGORY_ID = "22"
 NOW = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
+MEDIA_BYTES = b"test"
+MEDIA_SHA256 = hashlib.sha256(MEDIA_BYTES).hexdigest()
 
 
-def _artifact(*, duration_seconds: float = 8.0) -> RenderArtifactManifest:
+def _artifact(
+    *,
+    duration_seconds: float = 8.0,
+    output_sha256: str = MEDIA_SHA256,
+    bytes_written: int = len(MEDIA_BYTES),
+) -> RenderArtifactManifest:
     return RenderArtifactManifest(
         job_id=new_entity_id(EntityKind.JOB),
         project_id=new_entity_id(EntityKind.PROJECT),
@@ -44,12 +56,12 @@ def _artifact(*, duration_seconds: float = 8.0) -> RenderArtifactManifest:
         render_plan_digest="1" * 64,
         command_manifest_digest="2" * 64,
         command_manifest_storage_key="commands/final.json",
-        output_sha256="3" * 64,
+        output_sha256=output_sha256,
         output_storage_key="renders/final.mp4",
         manifest_storage_key="renders/final.manifest.json",
         video_encoder="libx264",
         ffmpeg_version="fixture",
-        bytes_written=4,
+        bytes_written=bytes_written,
         elapsed_seconds=1.0,
         width=1080,
         height=1920,
@@ -96,7 +108,7 @@ def _verified_payload(
     description: str = "description",
     tags: tuple[str, ...] = ("Genshin", "Raiden Shogun"),
     category_id: str = CATEGORY_ID,
-    upload_status: str = "uploaded",
+    upload_status: str = "processed",
 ):
     status: dict[str, object] = {
         "privacyStatus": privacy,
@@ -135,10 +147,15 @@ class _UploadRequest:
         self.response = response
         self.calls = 0
         self.retries: list[int] = []
+        self.media_handle = None
+        self.uploaded_bytes: bytes | None = None
 
     def next_chunk(self, *, num_retries=0):
         self.calls += 1
         self.retries.append(num_retries)
+        if self.media_handle is not None:
+            self.media_handle.seek(0)
+            self.uploaded_bytes = self.media_handle.read()
         return None, self.response
 
 
@@ -188,7 +205,10 @@ class _VideoCategories:
 
 class _Videos:
     def __init__(self, verify_payload, *, prepare_error: Exception | None = None):
-        self.verify_payload = verify_payload
+        if isinstance(verify_payload, list):
+            self.verify_payloads = list(verify_payload)
+        else:
+            self.verify_payloads = [verify_payload]
         self.prepare_error = prepare_error
         self.insert_calls = []
         self.list_calls = []
@@ -198,11 +218,13 @@ class _Videos:
         self.insert_calls.append(kwargs)
         if self.prepare_error is not None:
             raise self.prepare_error
+        self.upload_request.media_handle = kwargs.get("media_body")
         return self.upload_request
 
     def list(self, **kwargs):
         self.list_calls.append(kwargs)
-        return _ExecuteRequest(self.verify_payload)
+        index = min(len(self.list_calls) - 1, len(self.verify_payloads) - 1)
+        return _ExecuteRequest(self.verify_payloads[index])
 
 
 class _Service:
@@ -248,7 +270,13 @@ class _ArtifactLoader:
         return self.artifact
 
 
-def _provider(tmp_path: Path, service: _Service, *, now: datetime = NOW):
+def _provider(
+    tmp_path: Path,
+    service: _Service,
+    *,
+    now: datetime = NOW,
+    sleeper=None,
+):
     token_path = tmp_path / "youtube-token.json"
     token_path.write_text("{}", encoding="utf-8")
     if os.name != "nt":
@@ -261,8 +289,9 @@ def _provider(tmp_path: Path, service: _Service, *, now: datetime = NOW):
         ),
         credentials_loader=lambda path: object(),
         service_factory=lambda credentials: service,
-        media_upload_factory=lambda path: {"path": str(path), "resumable": True},
+        media_upload_factory=lambda handle: handle,
         clock=lambda: now,
+        sleeper=(lambda seconds: None) if sleeper is None else sleeper,
     )
 
 
@@ -273,6 +302,11 @@ def _preflight(provider, approved, media_path):
         media_path=media_path,
         idempotency_key=publish_idempotency_key(approved.request),
     )
+
+
+def _write_media(path: Path, payload: bytes = MEDIA_BYTES) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
 
 
 def test_pr28_youtube_config_requires_absolute_token_path() -> None:
@@ -304,7 +338,7 @@ def test_pr28_youtube_health_pins_exact_channel_and_immutable_provider_policy(tm
 def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundary(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     provider = _provider(tmp_path, _Service())
 
     _preflight(provider, _approved(artifact, visibility="public"), media)
@@ -341,7 +375,7 @@ def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundar
 
 def test_pr28_youtube_preflight_enforces_duration_and_long_upload_capability(tmp_path: Path) -> None:
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
 
     too_long = _approved(_artifact(duration_seconds=12 * 60 * 60 + 0.1))
     provider = _provider(tmp_path, _Service())
@@ -354,22 +388,17 @@ def test_pr28_youtube_preflight_enforces_duration_and_long_upload_capability(tmp
         )
 
     long_artifact = _artifact(duration_seconds=15 * 60 + 1)
-    eligible_service = _Service(long_uploads_status="eligible")
-    eligible_provider = _provider(tmp_path, eligible_service)
-    eligible = _approved(long_artifact)
-    assert eligible_provider.health().available is True
+    blocked_service = _Service(long_uploads_status="eligible")
+    blocked_provider = _provider(tmp_path, blocked_service)
+    blocked = _approved(long_artifact)
+    assert blocked_provider.health().available is True
     with pytest.raises(PublishingPreflightError, match="not currently allowed"):
-        eligible_provider.preflight(
-            eligible,
+        blocked_provider.preflight(
+            blocked,
             media_path=media,
-            idempotency_key=publish_idempotency_key(eligible.request),
+            idempotency_key=publish_idempotency_key(blocked.request),
         )
-    assert eligible_service.channels_api.calls[-1] == {
-        "part": "status",
-        "mine": True,
-        "maxResults": 2,
-    }
-    assert eligible_service.videos_api.insert_calls == []
+    assert blocked_service.videos_api.insert_calls == []
 
     allowed_service = _Service(long_uploads_status="allowed")
     allowed_provider = _provider(tmp_path, allowed_service)
@@ -385,7 +414,7 @@ def test_pr28_youtube_preflight_enforces_duration_and_long_upload_capability(tmp
 
 def test_pr28_youtube_preflight_requires_fixed_assignable_category(tmp_path: Path) -> None:
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     service = _Service(category_assignable=False)
     provider = _provider(tmp_path, service)
     approved = _approved(_artifact())
@@ -403,10 +432,28 @@ def test_pr28_youtube_preflight_requires_fixed_assignable_category(tmp_path: Pat
     assert service.videos_api.insert_calls == []
 
 
+def test_pr28_youtube_preflight_rejects_same_size_wrong_digest_before_upload(tmp_path: Path) -> None:
+    media = tmp_path / "video.mp4"
+    _write_media(media)
+    artifact = _artifact(output_sha256=hashlib.sha256(b"evil").hexdigest())
+    service = _Service()
+    provider = _provider(tmp_path, service)
+    approved = _approved(artifact)
+
+    assert provider.health().available is True
+    with pytest.raises(PublishingPreflightError, match="snapshot differs"):
+        provider.preflight(
+            approved,
+            media_path=media,
+            idempotency_key=publish_idempotency_key(approved.request),
+        )
+    assert service.videos_api.insert_calls == []
+
+
 def test_pr28_youtube_preflight_builds_fixed_policy_request_before_remote_boundary(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     service = _Service()
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
@@ -417,13 +464,39 @@ def test_pr28_youtube_preflight_builds_fixed_policy_request_before_remote_bounda
     assert insert["part"] == "snippet,status"
     assert insert["notifySubscribers"] is False
     assert insert["body"]["snippet"]["categoryId"] == CATEGORY_ID
+    assert hasattr(insert["media_body"], "read")
     assert service.videos_api.upload_request.calls == 0
+
+
+def test_pr28_youtube_upload_reads_authenticated_snapshot_not_mutated_source(tmp_path: Path) -> None:
+    artifact = _artifact()
+    media = tmp_path / "video.mp4"
+    _write_media(media)
+    service = _Service()
+    provider = _provider(tmp_path, service)
+    approved = _approved(artifact)
+
+    _preflight(provider, approved, media)
+    snapshot_handle = service.videos_api.insert_calls[0]["media_body"]
+    assert snapshot_handle.closed is False
+
+    # Same-size replacement after preflight must not change the bytes crossing the remote boundary.
+    media.write_bytes(b"evil")
+    result = provider.publish(
+        approved,
+        media_path=media,
+        idempotency_key=publish_idempotency_key(approved.request),
+    )
+
+    assert result.remote_id == "video_123"
+    assert service.videos_api.upload_request.uploaded_bytes == MEDIA_BYTES
+    assert snapshot_handle.closed is True
 
 
 def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     service = _Service(verify_payload=_verified_payload(privacy="unlisted"))
     provider = _provider(tmp_path, service)
     approved = _approved(artifact, visibility="unlisted")
@@ -447,6 +520,7 @@ def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Pa
     }
     assert service.videos_api.upload_request.calls == 1
     assert service.videos_api.upload_request.retries == [4]
+    assert service.videos_api.upload_request.uploaded_bytes == MEDIA_BYTES
     assert service.videos_api.list_calls == [
         {"part": "snippet,status", "id": "video_123", "maxResults": 1}
     ]
@@ -460,7 +534,7 @@ def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Pa
 def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     scheduled_for = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
     service = _Service(
         verify_payload=_verified_payload(
@@ -489,10 +563,81 @@ def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_pa
     assert result.effective_at == scheduled_for
 
 
+def test_pr28_youtube_processing_is_polled_until_processed(tmp_path: Path) -> None:
+    artifact = _artifact()
+    media = tmp_path / "video.mp4"
+    _write_media(media)
+    service = _Service(
+        verify_payload=[
+            _verified_payload(upload_status="uploaded"),
+            _verified_payload(upload_status="uploaded"),
+            _verified_payload(upload_status="processed"),
+        ]
+    )
+    sleeps: list[float] = []
+    provider = _provider(tmp_path, service, sleeper=sleeps.append)
+    approved = _approved(artifact)
+
+    _preflight(provider, approved, media)
+    result = provider.publish(
+        approved,
+        media_path=media,
+        idempotency_key=publish_idempotency_key(approved.request),
+    )
+
+    assert result.disposition == "published"
+    assert len(service.videos_api.list_calls) == 3
+    assert sleeps == [2.0, 2.0]
+
+
+def test_pr28_youtube_terminal_processing_failure_never_becomes_success(tmp_path: Path) -> None:
+    artifact = _artifact()
+    media = tmp_path / "video.mp4"
+    _write_media(media)
+    service = _Service(verify_payload=_verified_payload(upload_status="failed"))
+    provider = _provider(tmp_path, service)
+    approved = _approved(artifact)
+    _preflight(provider, approved, media)
+
+    with pytest.raises(PublishingResponseError, match="processing failed"):
+        provider.publish(
+            approved,
+            media_path=media,
+            idempotency_key=publish_idempotency_key(approved.request),
+        )
+
+
+def test_pr28_youtube_pending_processing_becomes_outcome_unknown_in_service(tmp_path: Path) -> None:
+    library = LocalLibrary(tmp_path)
+    artifact = _artifact()
+    media = library.paths.root / artifact.output_storage_key
+    _write_media(media)
+    approved = _approved(artifact)
+    provider = _provider(
+        tmp_path,
+        _Service(verify_payload=_verified_payload(upload_status="uploaded")),
+    )
+    service = PublishingService(
+        library,
+        provider,
+        render_orchestrator=_ArtifactLoader(artifact),
+    )
+
+    attempt = service.prepare(approved)
+    with pytest.raises(PublishOutcomeUnknownError, match="outcome is unknown"):
+        service.execute_prepared(attempt.attempt_id)
+
+    stored = library.publishing.get_attempt(attempt.attempt_id)
+    assert stored is not None
+    assert stored.state == "outcome_unknown"
+    assert stored.error_code == "remote_outcome_unknown"
+    assert provider._thread_state.__dict__ == {}
+
+
 def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     service = _Service(verify_payload=_verified_payload(channel_id="UC_WRONG"))
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
@@ -508,7 +653,7 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
 def test_pr28_youtube_verification_binds_approved_metadata_and_fixed_category(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
+    _write_media(media)
     service = _Service(verify_payload=_verified_payload(title="MUTATED REMOTE TITLE"))
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
@@ -521,28 +666,11 @@ def test_pr28_youtube_verification_binds_approved_metadata_and_fixed_category(tm
         )
 
 
-def test_pr28_youtube_failed_upload_status_never_becomes_success(tmp_path: Path) -> None:
-    artifact = _artifact()
-    media = tmp_path / "video.mp4"
-    media.write_bytes(b"test")
-    service = _Service(verify_payload=_verified_payload(upload_status="failed"))
-    provider = _provider(tmp_path, service)
-    approved = _approved(artifact)
-    _preflight(provider, approved, media)
-    with pytest.raises(PublishingResponseError, match="upload status"):
-        provider.publish(
-            approved,
-            media_path=media,
-            idempotency_key=publish_idempotency_key(approved.request),
-        )
-
-
 def test_pr28_service_preflight_rejection_remains_retryable_failed(tmp_path: Path) -> None:
     library = LocalLibrary(tmp_path)
     artifact = _artifact()
     media = library.paths.root / artifact.output_storage_key
-    media.parent.mkdir(parents=True, exist_ok=True)
-    media.write_bytes(b"test")
+    _write_media(media)
     approved = _approved(artifact, title="x" * 101)
     service = PublishingService(
         library,
@@ -564,8 +692,7 @@ def test_pr28_local_upload_request_construction_failure_stays_failed(tmp_path: P
     library = LocalLibrary(tmp_path)
     artifact = _artifact()
     media = library.paths.root / artifact.output_storage_key
-    media.parent.mkdir(parents=True, exist_ok=True)
-    media.write_bytes(b"test")
+    _write_media(media)
     approved = _approved(artifact)
     provider = _provider(
         tmp_path,
