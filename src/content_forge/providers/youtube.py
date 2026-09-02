@@ -6,12 +6,13 @@ import os
 import secrets
 import stat
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import local
 from typing import Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator
 
 from content_forge.core.models import FrozenModel
 
@@ -20,6 +21,7 @@ from .publishing import (
     PublishInvocationEvidence,
     PublishResult,
     PublishingExecutionError,
+    PublishingPreflightError,
     PublishingProviderHealth,
     PublishingResponseError,
     PublishingUnavailableError,
@@ -47,42 +49,52 @@ class YouTubePublishingConfig(FrozenModel):
     channel_id: str = Field(min_length=3, max_length=128)
     max_retries: int = Field(default=5, ge=0, le=10)
 
-    @field_validator("token_path", "channel_id")
+    @field_validator("token_path")
     @classmethod
-    def reject_blank(cls, value: str, info) -> str:
+    def validate_token_path(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError(f"{info.field_name} must contain non-whitespace content")
-        return normalized
+            raise ValueError("token_path must contain non-whitespace content")
+        path = Path(normalized).expanduser()
+        if not path.is_absolute():
+            raise ValueError("YouTube token_path must be absolute local runtime state")
+        if path.name in {"", ".", ".."}:
+            raise ValueError("YouTube token_path must identify a file")
+        return str(path)
 
     @field_validator("channel_id")
     @classmethod
     def validate_channel_id(cls, value: str) -> str:
-        if any(character.isspace() or ord(character) < 32 for character in value):
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("channel_id must contain non-whitespace content")
+        if any(character.isspace() or ord(character) < 32 for character in normalized):
             raise ValueError("YouTube channel_id must be a canonical non-whitespace identifier")
-        return value
-
-    @model_validator(mode="after")
-    def token_file_is_not_repository_semantics(self):
-        if Path(self.token_path).name in {"", ".", ".."}:
-            raise ValueError("YouTube token_path must identify a file")
-        return self
+        return normalized
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _safe_token_permissions(path: Path) -> bool:
-    """Require owner-only token permissions on POSIX; Windows ACLs are not mode-based."""
+def _safe_token_file(path: Path) -> bool:
+    """Reject symlinks and require owner-only permissions/ownership on POSIX."""
 
+    if path.is_symlink() or not path.is_file():
+        return False
     if os.name == "nt":
         return True
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        info = path.stat()
+        mode = stat.S_IMODE(info.st_mode)
     except OSError:
         return False
-    return mode & 0o077 == 0
+    if mode & 0o077:
+        return False
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid) and info.st_uid != getuid():
+        return False
+    return True
 
 
 def _fsync_directory(path: Path) -> None:
@@ -109,11 +121,9 @@ def _load_credentials(token_path: Path) -> object:
             "YouTube publishing dependencies are not installed"
         ) from exc
 
-    if not token_path.is_file():
-        raise PublishingUnavailableError("YouTube OAuth token file is missing")
-    if not _safe_token_permissions(token_path):
+    if not _safe_token_file(token_path):
         raise PublishingUnavailableError(
-            "YouTube OAuth token file permissions are broader than owner-only"
+            "YouTube OAuth token must be a regular private local file"
         )
 
     try:
@@ -144,8 +154,8 @@ def _load_credentials(token_path: Path) -> object:
 def _write_refreshed_token(path: Path, payload: str) -> None:
     """Refresh an existing private token file without widening its permissions."""
 
-    if not path.parent.is_dir():
-        raise PublishingUnavailableError("YouTube OAuth token directory is missing")
+    if path.is_symlink() or not path.parent.is_dir():
+        raise PublishingUnavailableError("YouTube OAuth token path is unsafe")
     temp = path.with_name(
         f".{path.name}.refresh-{os.getpid()}-{secrets.token_hex(8)}.tmp"
     )
@@ -193,7 +203,7 @@ def _media_upload(path: Path) -> object:
     try:
         from googleapiclient.http import MediaFileUpload
     except Exception as exc:  # pragma: no cover - optional dependency environment
-        raise PublishingUnavailableError(
+        raise PublishingPreflightError(
             "google-api-python-client media upload support is unavailable"
         ) from exc
     try:
@@ -204,7 +214,9 @@ def _media_upload(path: Path) -> object:
             resumable=True,
         )
     except Exception as exc:
-        raise PublishingExecutionError("YouTube resumable media upload could not be prepared") from exc
+        raise PublishingPreflightError(
+            "YouTube resumable media upload could not be prepared"
+        ) from exc
 
 
 def _execute(request: Any, *, retries: int) -> dict[str, object]:
@@ -241,9 +253,8 @@ def _youtube_tag_budget(tags: tuple[str, ...]) -> int:
 
 def _validate_youtube_metadata(request: ApprovedPublishRequest, *, now: datetime) -> None:
     metadata = request.request.metadata
-    title = metadata.title
-    if len(title) > 100 or "<" in title or ">" in title:
-        raise PublishingExecutionError(
+    if len(metadata.title) > 100 or "<" in metadata.title or ">" in metadata.title:
+        raise PublishingPreflightError(
             "YouTube title must be at most 100 characters and cannot contain angle brackets"
         )
     if (
@@ -251,25 +262,25 @@ def _validate_youtube_metadata(request: ApprovedPublishRequest, *, now: datetime
         or "<" in metadata.description
         or ">" in metadata.description
     ):
-        raise PublishingExecutionError(
+        raise PublishingPreflightError(
             "YouTube description must be at most 5000 UTF-8 bytes and cannot contain angle brackets"
         )
     if _youtube_tag_budget(metadata.tags) > 500:
-        raise PublishingExecutionError("YouTube tags exceed the 500-character API budget")
+        raise PublishingPreflightError("YouTube tags exceed the 500-character API budget")
 
     scheduled_for = metadata.scheduled_for
     if scheduled_for is None:
         return
     if metadata.visibility != "public":
-        raise PublishingExecutionError(
+        raise PublishingPreflightError(
             "YouTube scheduled publishing requires approved public visibility"
         )
     if scheduled_for.microsecond != 0:
-        raise PublishingExecutionError(
+        raise PublishingPreflightError(
             "YouTube scheduled publishing requires whole-second precision"
         )
     if scheduled_for <= now:
-        raise PublishingExecutionError(
+        raise PublishingPreflightError(
             "YouTube scheduled publishing time must be in the future"
         )
 
@@ -282,16 +293,34 @@ def _youtube_body(request: ApprovedPublishRequest) -> dict[str, object]:
     }
     if metadata.tags:
         snippet["tags"] = list(metadata.tags)
-
-    status: dict[str, object]
     if metadata.scheduled_for is None:
-        status = {"privacyStatus": metadata.visibility}
+        status: dict[str, object] = {"privacyStatus": metadata.visibility}
     else:
         status = {
             "privacyStatus": "private",
             "publishAt": metadata.scheduled_for.isoformat().replace("+00:00", "Z"),
         }
     return {"snippet": snippet, "status": status}
+
+
+def _canonical_video_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise PublishingResponseError("YouTube upload response lacks a canonical video ID")
+    if len(value) > 128 or any(
+        not (character.isascii() and (character.isalnum() or character in "_-"))
+        for character in value
+    ):
+        raise PublishingResponseError("YouTube upload response contains an invalid video ID")
+    return value
+
+
+@dataclass(frozen=True)
+class _PreparedUpload:
+    service: Any
+    insert_request: Any
+    request_sha256: str
+    idempotency_key: str
+    media_path: Path
 
 
 class YouTubePublishingProvider:
@@ -317,14 +346,15 @@ class YouTubePublishingProvider:
         self._clock = _utc_now if clock is None else clock
         self._thread_state = local()
 
-    def _clear_verified_service(self) -> None:
-        if hasattr(self._thread_state, "service"):
-            del self._thread_state.service
+    def _clear_execution_state(self) -> None:
+        for attribute in ("service", "prepared"):
+            if hasattr(self._thread_state, attribute):
+                delattr(self._thread_state, attribute)
 
     def health(self) -> PublishingProviderHealth:
         """Verify local credentials and pin one authenticated channel before execution."""
 
-        self._clear_verified_service()
+        self._clear_execution_state()
         try:
             credentials = self._credentials_loader(Path(self.config.token_path))
             service = self._service_factory(credentials)
@@ -357,7 +387,7 @@ class YouTubePublishingProvider:
                 reason=None,
             )
         except Exception:
-            self._clear_verified_service()
+            self._clear_execution_state()
             return PublishingProviderHealth(
                 provider_id=_PROVIDER_ID,
                 provider_version=_PROVIDER_VERSION,
@@ -372,31 +402,63 @@ class YouTubePublishingProvider:
         media_path: Path,
         idempotency_key: str,
     ) -> None:
-        """Reject provider-specific invalid requests before the remote-side-effect boundary."""
+        """Finish local validation/request construction before remote execution begins."""
+
+        service = getattr(self._thread_state, "service", None)
+        if service is None:
+            raise PublishingPreflightError(
+                "YouTube preflight requires a successful provider health check"
+            )
+        if hasattr(self._thread_state, "prepared"):
+            del self._thread_state.prepared
 
         target = request.request.target
         if target.provider_id != _PROVIDER_ID:
-            raise PublishingExecutionError("publish target is not the YouTube provider")
+            raise PublishingPreflightError("publish target is not the YouTube provider")
         if target.destination_id != self.config.channel_id:
-            raise PublishingExecutionError(
+            raise PublishingPreflightError(
                 "publish target does not match the configured YouTube channel"
             )
         if idempotency_key != publish_idempotency_key(request.request):
-            raise PublishingExecutionError("YouTube publish idempotency identity mismatch")
+            raise PublishingPreflightError("YouTube publish idempotency identity mismatch")
         try:
             size = media_path.stat().st_size
         except OSError as exc:
-            raise PublishingExecutionError("YouTube media file is unavailable") from exc
+            raise PublishingPreflightError("YouTube media file is unavailable") from exc
         if size != request.request.artifact.bytes_written:
-            raise PublishingExecutionError(
+            raise PublishingPreflightError(
                 "YouTube media file size differs from approved artifact evidence"
             )
         if size > _MAX_UPLOAD_BYTES:
-            raise PublishingExecutionError("YouTube media file exceeds the 256 GB upload limit")
+            raise PublishingPreflightError("YouTube media file exceeds the 256 GB upload limit")
+
         now = self._clock()
         if now.tzinfo is None or now.utcoffset() is None:
-            raise PublishingExecutionError("YouTube provider clock must be timezone-aware")
+            raise PublishingPreflightError("YouTube provider clock must be timezone-aware")
         _validate_youtube_metadata(request, now=now.astimezone(timezone.utc))
+
+        try:
+            upload = self._media_upload_factory(media_path)
+            insert_request = service.videos().insert(
+                part="snippet,status",
+                body=_youtube_body(request),
+                media_body=upload,
+            )
+        except PublishingPreflightError:
+            raise
+        except Exception as exc:
+            raise PublishingPreflightError(
+                "YouTube upload request could not be prepared"
+            ) from exc
+
+        self._thread_state.prepared = _PreparedUpload(
+            service=service,
+            insert_request=insert_request,
+            request_sha256=semantic_publish_request_digest(request.request),
+            idempotency_key=idempotency_key,
+            media_path=media_path,
+        )
+        del self._thread_state.service
 
     def publish(
         self,
@@ -405,43 +467,40 @@ class YouTubePublishingProvider:
         media_path: Path,
         idempotency_key: str,
     ) -> PublishResult:
-        """Upload through YouTube's resumable protocol and verify the created video."""
+        """Cross the remote boundary with a prebuilt resumable request, then verify it."""
 
-        service = getattr(self._thread_state, "service", None)
-        self._clear_verified_service()
-        if service is None:
+        prepared = getattr(self._thread_state, "prepared", None)
+        if hasattr(self._thread_state, "prepared"):
+            del self._thread_state.prepared
+        if not isinstance(prepared, _PreparedUpload):
             raise PublishingUnavailableError(
-                "YouTube publish requires a successful provider health check on this execution thread"
+                "YouTube publish requires successful preflight on this execution thread"
+            )
+        expected_digest = semantic_publish_request_digest(request.request)
+        if (
+            prepared.request_sha256 != expected_digest
+            or prepared.idempotency_key != idempotency_key
+            or prepared.media_path != media_path
+        ):
+            raise PublishingResponseError(
+                "YouTube prepared upload does not match the exact approved execution"
             )
 
-        body = _youtube_body(request)
         try:
-            upload = self._media_upload_factory(media_path)
-            insert_request = service.videos().insert(
-                part="snippet,status",
-                body=body,
-                media_body=upload,
-            )
             response: object = None
             while response is None:
-                _progress, response = insert_request.next_chunk(
+                _progress, response = prepared.insert_request.next_chunk(
                     num_retries=self.config.max_retries
                 )
-        except (PublishingExecutionError, PublishingResponseError, PublishingUnavailableError):
-            raise
         except Exception as exc:
             raise PublishingExecutionError("YouTube resumable upload failed") from exc
 
         if not isinstance(response, dict):
             raise PublishingResponseError("YouTube upload returned a non-object response")
-        video_id = response.get("id")
-        if not isinstance(video_id, str) or not video_id or any(
-            character.isspace() or ord(character) < 32 for character in video_id
-        ):
-            raise PublishingResponseError("YouTube upload response lacks a canonical video ID")
+        video_id = _canonical_video_id(response.get("id"))
 
         verified = _execute(
-            service.videos().list(
+            prepared.service.videos().list(
                 part="snippet,status",
                 id=video_id,
                 maxResults=1,
@@ -490,7 +549,7 @@ class YouTubePublishingProvider:
             evidence=PublishInvocationEvidence(
                 provider_id=_PROVIDER_ID,
                 provider_version=_PROVIDER_VERSION,
-                request_sha256=semantic_publish_request_digest(request.request),
+                request_sha256=expected_digest,
                 idempotency_key=idempotency_key,
                 output_sha256=request.request.artifact.output_sha256,
                 destination_id=request.request.target.destination_id,
