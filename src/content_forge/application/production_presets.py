@@ -123,9 +123,6 @@ PRESETS = (
 )
 
 _PRESET_BY_ID = {item.preset_id: item for item in PRESETS}
-_PRESET_BY_TEMPLATE = {
-    (item.template_id, item.template_version): item for item in PRESETS
-}
 _REQUEST_LOCKS = tuple(threading.Lock() for _ in range(128))
 
 
@@ -144,6 +141,21 @@ def _lock_for_request(request_id: str) -> threading.Lock:
     return _REQUEST_LOCKS[int.from_bytes(digest[:4], "big") % len(_REQUEST_LOCKS)]
 
 
+def _preset_evidence(project: Project) -> dict[str, object] | None:
+    """Read nested evidence from the model's JSON form, not immutable internal containers."""
+
+    payload = project.model_dump(mode="json")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ProductionPresetConflictError("project metadata is malformed")
+    raw = metadata.get("production_preset_v1")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProductionPresetConflictError("production preset evidence is malformed")
+    return raw
+
+
 def preset_for_id(preset_id: str) -> ProductionPreset:
     try:
         return _PRESET_BY_ID[preset_id]
@@ -152,8 +164,8 @@ def preset_for_id(preset_id: str) -> ProductionPreset:
 
 
 def preset_for_project(project: Project) -> ProductionPreset | None:
-    raw = project.metadata.get("production_preset_v1")
-    if not isinstance(raw, dict):
+    raw = _preset_evidence(project)
+    if raw is None:
         return None
     preset_id = raw.get("preset_id")
     template_id = raw.get("template_id")
@@ -249,7 +261,7 @@ class ProductionPresetService:
         with _lock_for_request(normalized_request):
             existing = self.library.load_project(project_id)
             if existing is not None:
-                if existing.metadata.get("production_preset_v1") != evidence:
+                if _preset_evidence(existing) != evidence:
                     raise ProductionPresetConflictError(
                         "production request ID was reused with different preset/source input"
                     )
