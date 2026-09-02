@@ -61,10 +61,12 @@ def test_pr33_pr32_source_order_remains_read_only_in_project_flow() -> None:
     assert 'Order is locked from the explicit Create video selection.' in script
     assert 'PR33 does not add a second reorder path.' in script
     assert 'project.production_source_count' in script
-    # PR32 wizard still owns source reordering before project creation. PR33 must not add
-    # a new task resolver for source_order inside the project-specific editor.
-    assert 'case "source_order": return renderReadOnlyDecision(task)' not in script
-    assert 'case "source_order"' not in script
+    assert 'case "source_order": return "Source order"' in script
+    # The only source movement helpers remain the PR32 pre-creation wizard actions. The
+    # project flow intentionally exposes no reorder endpoint/task mutation of its own.
+    assert 'function moveSelectedSource(sourceId, delta)' in script
+    assert 'function moveProjectSource' not in script
+    assert 'resolveProjectTask(task, order)' not in script
 
 
 def test_pr33_installed_pwa_advances_from_pr32_shell() -> None:
