@@ -96,8 +96,12 @@ def _verified_payload(
     description: str = "description",
     tags: tuple[str, ...] = ("Genshin", "Raiden Shogun"),
     category_id: str = CATEGORY_ID,
+    upload_status: str = "uploaded",
 ):
-    status: dict[str, object] = {"privacyStatus": privacy}
+    status: dict[str, object] = {
+        "privacyStatus": privacy,
+        "uploadStatus": upload_status,
+    }
     if publish_at is not None:
         status["publishAt"] = publish_at
     return {
@@ -244,13 +248,7 @@ class _ArtifactLoader:
         return self.artifact
 
 
-def _provider(
-    tmp_path: Path,
-    service: _Service,
-    *,
-    now: datetime = NOW,
-    category_id: str = CATEGORY_ID,
-):
+def _provider(tmp_path: Path, service: _Service, *, now: datetime = NOW):
     token_path = tmp_path / "youtube-token.json"
     token_path.write_text("{}", encoding="utf-8")
     if os.name != "nt":
@@ -259,7 +257,6 @@ def _provider(
         YouTubePublishingConfig(
             token_path=str(token_path),
             channel_id=CHANNEL_ID,
-            category_id=category_id,
             max_retries=4,
         ),
         credentials_loader=lambda path: object(),
@@ -278,22 +275,16 @@ def _preflight(provider, approved, media_path):
     )
 
 
-def test_pr28_youtube_config_requires_absolute_token_path_and_decimal_category() -> None:
+def test_pr28_youtube_config_requires_absolute_token_path() -> None:
     with pytest.raises(ValueError, match="must be absolute"):
         YouTubePublishingConfig(token_path="youtube-token.json", channel_id=CHANNEL_ID)
-    with pytest.raises(ValueError, match="decimal category"):
-        YouTubePublishingConfig(
-            token_path="/local/youtube-token.json",
-            channel_id=CHANNEL_ID,
-            category_id="People & Blogs",
-        )
 
 
 def test_pr28_youtube_tag_budget_matches_space_and_comma_accounting() -> None:
     assert _youtube_tag_budget(("alpha", "two words")) == 5 + 1 + 9 + 2
 
 
-def test_pr28_youtube_health_pins_exact_channel_and_provider_policy(tmp_path: Path) -> None:
+def test_pr28_youtube_health_pins_exact_channel_and_immutable_provider_policy(tmp_path: Path) -> None:
     service = _Service()
     provider = _provider(tmp_path, service)
     assert provider.health() == PublishingProviderHealth(
@@ -303,6 +294,7 @@ def test_pr28_youtube_health_pins_exact_channel_and_provider_policy(tmp_path: Pa
         reason=None,
     )
     assert service.channels_api.calls == [{"part": "id", "mine": True, "maxResults": 2}]
+    assert not hasattr(provider.config, "category_id")
 
     mismatch = _provider(tmp_path, _Service(channel_id="UC_OTHER")).health()
     assert mismatch.available is False
@@ -391,7 +383,7 @@ def test_pr28_youtube_preflight_enforces_duration_and_long_upload_capability(tmp
     assert len(allowed_service.videos_api.insert_calls) == 1
 
 
-def test_pr28_youtube_preflight_requires_assignable_category(tmp_path: Path) -> None:
+def test_pr28_youtube_preflight_requires_fixed_assignable_category(tmp_path: Path) -> None:
     media = tmp_path / "video.mp4"
     media.write_bytes(b"test")
     service = _Service(category_assignable=False)
@@ -411,7 +403,7 @@ def test_pr28_youtube_preflight_requires_assignable_category(tmp_path: Path) -> 
     assert service.videos_api.insert_calls == []
 
 
-def test_pr28_youtube_preflight_builds_request_before_remote_boundary(tmp_path: Path) -> None:
+def test_pr28_youtube_preflight_builds_fixed_policy_request_before_remote_boundary(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
     media.write_bytes(b"test")
@@ -462,7 +454,7 @@ def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Pa
     assert result.remote_id == "video_123"
     assert result.remote_url == "https://youtu.be/video_123"
     assert result.effective_at == datetime(2026, 9, 2, 7, 5, tzinfo=timezone.utc)
-    assert result.evidence.provider_version.endswith(":category=22:notify=0")
+    assert result.evidence.provider_version == "youtube_data_api_v3_pr28_v1:category=22:notify=0"
 
 
 def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_path: Path) -> None:
@@ -501,9 +493,7 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
     artifact = _artifact()
     media = tmp_path / "video.mp4"
     media.write_bytes(b"test")
-    service = _Service(
-        verify_payload=_verified_payload(channel_id="UC_WRONG")
-    )
+    service = _Service(verify_payload=_verified_payload(channel_id="UC_WRONG"))
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
     _preflight(provider, approved, media)
@@ -515,17 +505,31 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
         )
 
 
-def test_pr28_youtube_verification_binds_approved_metadata_and_category(tmp_path: Path) -> None:
+def test_pr28_youtube_verification_binds_approved_metadata_and_fixed_category(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
     media.write_bytes(b"test")
-    service = _Service(
-        verify_payload=_verified_payload(title="MUTATED REMOTE TITLE")
-    )
+    service = _Service(verify_payload=_verified_payload(title="MUTATED REMOTE TITLE"))
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
     _preflight(provider, approved, media)
     with pytest.raises(PublishingResponseError, match="title does not match"):
+        provider.publish(
+            approved,
+            media_path=media,
+            idempotency_key=publish_idempotency_key(approved.request),
+        )
+
+
+def test_pr28_youtube_failed_upload_status_never_becomes_success(tmp_path: Path) -> None:
+    artifact = _artifact()
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
+    service = _Service(verify_payload=_verified_payload(upload_status="failed"))
+    provider = _provider(tmp_path, service)
+    approved = _approved(artifact)
+    _preflight(provider, approved, media)
+    with pytest.raises(PublishingResponseError, match="upload status"):
         provider.publish(
             approved,
             media_path=media,
