@@ -14,6 +14,8 @@ from content_forge.providers.analytics import (
     SuccessfulPublicationRef,
     semantic_analytics_observation_digest,
 )
+from content_forge.providers.publishing import ApprovedPublishRequest
+from content_forge.providers.publishing_validation import validate_publish_result
 
 from .database import LibraryDatabase, StorageConflictError, StorageSchemaError
 from .publishing import PublishingRepository
@@ -136,15 +138,30 @@ class AnalyticsRepository:
         return self
 
     def successful_publication(self, publish_attempt_id: str) -> SuccessfulPublicationRef:
+        """Re-authenticate one durable success before it becomes an analytics subject."""
+
         publish_attempt_id = require_entity_id(publish_attempt_id, EntityKind.PUBLISH)
         attempt = self.publishing.get_attempt(publish_attempt_id)
         if attempt is None:
             raise StorageConflictError("analytics subject publish attempt does not exist")
         if attempt.state != "succeeded" or attempt.result is None:
             raise StorageConflictError("analytics subject must be a succeeded publish attempt")
+        if attempt.provider_health is None:
+            raise StorageConflictError("successful publish attempt lacks provider health evidence")
         operation = self.publishing.get_operation(attempt.request_sha256)
         if operation is None:
             raise StorageConflictError("successful publish attempt references missing operation")
+        try:
+            approved = ApprovedPublishRequest(
+                request=operation.request,
+                approval=attempt.approval,
+            )
+            validate_publish_result(approved, attempt.provider_health, attempt.result)
+        except Exception as exc:
+            raise StorageConflictError(
+                "successful publication evidence does not match durable approved request"
+            ) from exc
+
         request = operation.request
         result = attempt.result
         return SuccessfulPublicationRef(
