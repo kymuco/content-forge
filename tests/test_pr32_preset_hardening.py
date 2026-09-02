@@ -6,8 +6,10 @@ import pytest
 
 from content_forge.api import create_app
 from content_forge.application.production_presets import (
+    ProductionPresetConflictError,
     ProductionPresetService,
     ProductionPresetValidationError,
+    preset_for_project,
 )
 from content_forge.core import Asset, AssetRef, MediaType, Project, ProjectState, SourceRecord
 
@@ -28,18 +30,22 @@ def _source_project(library, *, asset: Asset, source_record: SourceRecord | None
     return library.save_project(project)
 
 
+def _image_source(library, *, digit: str) -> Project:
+    return _source_project(
+        library,
+        asset=Asset(
+            sha256=digit * 64,
+            media_type=MediaType.IMAGE,
+            mime_type="image/png",
+            size_bytes=1,
+        ),
+    )
+
+
 def test_pr32_source_limit_is_applied_after_eligibility_filtering(tmp_path) -> None:
     app = create_app(root=tmp_path)
     try:
-        source = _source_project(
-            app.state.library,
-            asset=Asset(
-                sha256="1" * 64,
-                media_type=MediaType.IMAGE,
-                mime_type="image/png",
-                size_bytes=1,
-            ),
-        )
+        source = _image_source(app.state.library, digit="1")
         # Newer unrelated rows must not consume the caller's eligible-source limit.
         for _ in range(3):
             app.state.library.save_project(Project(content_kind="note", state=ProjectState.INBOX))
@@ -54,15 +60,7 @@ def test_pr32_source_limit_is_applied_after_eligibility_filtering(tmp_path) -> N
 def test_pr32_production_project_limit_is_applied_after_filtering(tmp_path) -> None:
     app = create_app(root=tmp_path)
     try:
-        source = _source_project(
-            app.state.library,
-            asset=Asset(
-                sha256="2" * 64,
-                media_type=MediaType.IMAGE,
-                mime_type="image/png",
-                size_bytes=1,
-            ),
-        )
+        source = _image_source(app.state.library, digit="2")
         service = ProductionPresetService(app.state.library)
         production = service.create_project(
             request_id=str(uuid.uuid4()),
@@ -74,6 +72,69 @@ def test_pr32_production_project_limit_is_applied_after_filtering(tmp_path) -> N
 
         projects = service.list_projects(limit=1)
         assert projects == (production,)
+    finally:
+        app.state.runtime_lease.close()
+
+
+def test_pr32_preset_evidence_is_scalar_canonical_and_survives_review_mutation(tmp_path) -> None:
+    app = create_app(root=tmp_path)
+    try:
+        source = _image_source(app.state.library, digit="5")
+        service = ProductionPresetService(app.state.library)
+        request_id = str(uuid.uuid4())
+        production = service.create_project(
+            request_id=request_id,
+            preset_id="framed_clip",
+            source_project_ids=(source.project_id,),
+        )
+        evidence = production.metadata["production_preset_v1"]
+        assert isinstance(evidence, str)
+        assert '"sources":[{"asset_id":"' in evidence
+        assert f'"source_project_id":"{source.project_id}"' in evidence
+
+        reloaded = app.state.library.load_project(production.project_id)
+        assert reloaded is not None
+        assert reloaded.metadata["production_preset_v1"] == evidence
+        replay = service.create_project(
+            request_id=request_id,
+            preset_id="framed_clip",
+            source_project_ids=(source.project_id,),
+        )
+        assert replay == reloaded
+
+        # This crosses the historical PR10/PR17 mutation stack that previously failed on
+        # nested FrozenDict metadata. Scalar evidence must remain byte-identical.
+        prepared = app.state.review.bootstrap_project(production.project_id)
+        assert prepared.state is ProjectState.NEEDS_REVIEW
+        assert prepared.metadata["production_preset_v1"] == evidence
+        assert preset_for_project(prepared) is not None
+    finally:
+        app.state.runtime_lease.close()
+
+
+def test_pr32_exact_source_snapshot_rejects_scene_tampering_and_quarantines_catalog(tmp_path) -> None:
+    app = create_app(root=tmp_path)
+    try:
+        first = _image_source(app.state.library, digit="6")
+        second = _image_source(app.state.library, digit="7")
+        service = ProductionPresetService(app.state.library)
+        production = service.create_project(
+            request_id=str(uuid.uuid4()),
+            preset_id="panel_story",
+            source_project_ids=(first.project_id, second.project_id),
+        )
+        payload = production.model_dump(mode="json")
+        scenes = payload["scenes"]
+        assert isinstance(scenes, list) and len(scenes) == 2
+        first_media = scenes[0]["media"]
+        scenes[0]["media"] = scenes[1]["media"]
+        scenes[1]["media"] = first_media
+        tampered = Project.model_validate(payload)
+        app.state.library.save_project(tampered)
+
+        with pytest.raises(ProductionPresetConflictError, match="scenes do not match"):
+            preset_for_project(tampered)
+        assert service.list_projects() == ()
     finally:
         app.state.runtime_lease.close()
 
