@@ -24,6 +24,8 @@
   ]);
 
   if (!panel || !projectList || !summary || !count || !status || !addButton || !advancedButton) return;
+  summary.classList.remove("row");
+  summary.classList.add("review-actions");
 
   let advancedVisible = false;
   let refreshGeneration = 0;
@@ -53,7 +55,13 @@
     if (onClick) {
       item.addEventListener("click", async () => {
         item.disabled = true;
-        try { await onClick(); } finally { item.disabled = false; }
+        try {
+          await onClick();
+        } catch (error) {
+          setStatus(error && error.message ? error.message : "Production action failed.", "error");
+        } finally {
+          item.disabled = false;
+        }
       });
     }
     return item;
@@ -175,10 +183,10 @@
 
   async function renderFinal(projectId) {
     setStatus("Rendering the final video on the desktop…");
-    const result = await apiJson(`projects/${encodeURIComponent(projectId)}/final`, { method: "POST" });
+    await apiJson(`projects/${encodeURIComponent(projectId)}/final`, { method: "POST" });
     refreshExistingSurfaces();
     await refreshHome();
-    setStatus(`Final video ready: ${result.width}×${result.height}.`, "success");
+    setStatus("Final video is ready.", "success");
   }
 
   async function attachFinal(card, endpoint) {
@@ -297,6 +305,7 @@
     if (generation !== refreshGeneration) return;
     setHidden(panel, !bearer);
     if (!bearer) {
+      advancedVisible = false;
       projectList.replaceChildren();
       summary.replaceChildren();
       count.textContent = "0";
