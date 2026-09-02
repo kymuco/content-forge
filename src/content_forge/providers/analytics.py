@@ -159,6 +159,12 @@ class AnalyticsQuery(FrozenModel):
             raise ValueError("analytics metric IDs must be unique")
         return tuple(sorted(values))
 
+    @model_validator(mode="after")
+    def validate_publication_window(self):
+        if self.window.start_at < self.publication.effective_at:
+            raise ValueError("analytics window cannot begin before publication effective time")
+        return self
+
 
 class AnalyticsProviderHealth(FrozenModel):
     provider_id: str = Field(min_length=1, max_length=128)
@@ -247,6 +253,8 @@ class AnalyticsObservationBatch(FrozenModel):
         requested = set(self.query.metric_ids)
         returned = {item.metric_id for item in self.metrics}
         missing = set(self.missing_metric_ids)
+        if self.observed_at < self.query.window.start_at:
+            raise ValueError("analytics observation cannot predate requested window")
         if returned & missing:
             raise ValueError("analytics metric cannot be both returned and missing")
         if returned | missing != requested:
@@ -299,10 +307,18 @@ def validate_analytics_observation(
     health: AnalyticsProviderHealth,
     observation: AnalyticsObservationBatch,
 ) -> None:
-    """Fail closed if provider identity or exact query evidence changed."""
+    """Fail closed if provider identity, model validity, or exact query evidence changed."""
 
     if not health.available:
         raise AnalyticsResponseError("unavailable provider cannot return analytics observations")
+    try:
+        canonical = AnalyticsObservationBatch.model_validate(
+            observation.model_dump(mode="python")
+        )
+    except Exception as exc:
+        raise AnalyticsResponseError("analytics provider returned invalid observation data") from exc
+    if canonical != observation:
+        raise AnalyticsResponseError("analytics provider response is not canonical")
     if observation.query != query:
         raise AnalyticsResponseError("analytics provider returned a different query")
     evidence = observation.evidence
