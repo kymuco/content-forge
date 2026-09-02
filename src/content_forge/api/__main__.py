@@ -8,6 +8,7 @@ from typing import Literal
 
 import uvicorn
 
+from content_forge.providers.publishing import PublishingProvider
 from content_forge.providers.tts import TTSProvider
 
 
@@ -42,13 +43,43 @@ def build_tts_provider(name: Literal["none", "qwen"]) -> TTSProvider | None:
     if name == "none":
         return None
     if name == "qwen":
-        # Keep the heavy optional dependency behind explicit CLI selection. Constructing
-        # the adapter is cheap and does not load/download model weights; PR20 health and
-        # synthesis retain authority over package/config/model availability.
         from content_forge.providers.qwen_tts import QwenTTSProvider
 
         return QwenTTSProvider()
     raise ValueError(f"unsupported TTS provider: {name}")
+
+
+def build_publishing_provider(
+    name: Literal["none", "youtube"],
+    *,
+    youtube_token_path: str | None,
+    youtube_channel_id: str | None,
+) -> PublishingProvider | None:
+    """Build one explicitly selected remote publisher without loading OAuth secrets eagerly."""
+
+    if name == "none":
+        if youtube_token_path is not None or youtube_channel_id is not None:
+            raise ValueError(
+                "YouTube runtime options require --publishing-provider youtube"
+            )
+        return None
+    if name == "youtube":
+        if not youtube_token_path:
+            raise ValueError("--youtube-token is required for YouTube publishing")
+        if not youtube_channel_id:
+            raise ValueError("--youtube-channel-id is required for YouTube publishing")
+        from content_forge.providers.youtube import (
+            YouTubePublishingConfig,
+            YouTubePublishingProvider,
+        )
+
+        return YouTubePublishingProvider(
+            YouTubePublishingConfig(
+                token_path=youtube_token_path,
+                channel_id=youtube_channel_id,
+            )
+        )
+    raise ValueError(f"unsupported publishing provider: {name}")
 
 
 def main() -> None:
@@ -71,6 +102,25 @@ def main() -> None:
             "Qwen3-TTS adapter and requires the tts extra"
         ),
     )
+    parser.add_argument(
+        "--publishing-provider",
+        choices=("none", "youtube"),
+        default="none",
+        help=(
+            "optional PR28 remote publishing runtime; youtube requires the youtube extra "
+            "plus an explicitly authorized local token and channel ID"
+        ),
+    )
+    parser.add_argument(
+        "--youtube-token",
+        default=None,
+        help="owner-only authorized-user OAuth token JSON created by content-forge-youtube-auth",
+    )
+    parser.add_argument(
+        "--youtube-channel-id",
+        default=None,
+        help="exact YouTube channel ID bound to the authorized publishing runtime",
+    )
     args = parser.parse_args()
     host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
     try:
@@ -80,15 +130,20 @@ def main() -> None:
             ssl_keyfile=args.ssl_keyfile,
         )
         tts_provider = build_tts_provider(args.tts_provider)
+        publishing_provider = build_publishing_provider(
+            args.publishing_provider,
+            youtube_token_path=args.youtube_token,
+            youtube_channel_id=args.youtube_channel_id,
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
-    # Instantiate the app so the explicitly selected optional provider can be injected.
-    # The default remains provider-free; selecting Qwen still does not load model weights
-    # until PR20 synthesis actually needs the runtime.
     from content_forge.api import create_app
 
-    app = create_app(tts_provider=tts_provider)
+    app = create_app(
+        tts_provider=tts_provider,
+        publishing_provider=publishing_provider,
+    )
     uvicorn.run(
         app,
         host=host,

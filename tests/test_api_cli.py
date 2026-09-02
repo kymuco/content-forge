@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from content_forge.api.__main__ import build_tts_provider, validate_transport
+from content_forge.api.__main__ import (
+    build_publishing_provider,
+    build_tts_provider,
+    validate_transport,
+)
 from content_forge.providers.qwen_tts import QwenTTSProvider
+from content_forge.providers.youtube import YouTubePublishingProvider
 
 
 def test_plain_http_is_loopback_only() -> None:
@@ -36,3 +41,40 @@ def test_cli_tts_selection_is_explicit_and_qwen_stays_lazy() -> None:
     provider = build_tts_provider("qwen")
     assert isinstance(provider, QwenTTSProvider)
     assert provider._runtime is None
+
+
+def test_cli_youtube_publishing_selection_is_explicit_and_credentials_stay_lazy() -> None:
+    assert build_publishing_provider(
+        "none",
+        youtube_token_path=None,
+        youtube_channel_id=None,
+    ) is None
+
+    with pytest.raises(ValueError, match="--youtube-token"):
+        build_publishing_provider(
+            "youtube",
+            youtube_token_path=None,
+            youtube_channel_id="UC123",
+        )
+    with pytest.raises(ValueError, match="--youtube-channel-id"):
+        build_publishing_provider(
+            "youtube",
+            youtube_token_path="/local/youtube-token.json",
+            youtube_channel_id=None,
+        )
+    with pytest.raises(ValueError, match="require --publishing-provider youtube"):
+        build_publishing_provider(
+            "none",
+            youtube_token_path="/local/youtube-token.json",
+            youtube_channel_id="UC123",
+        )
+
+    provider = build_publishing_provider(
+        "youtube",
+        youtube_token_path="/local/youtube-token.json",
+        youtube_channel_id="UC123",
+    )
+    assert isinstance(provider, YouTubePublishingProvider)
+    assert provider.config.token_path == "/local/youtube-token.json"
+    assert provider.config.channel_id == "UC123"
+    assert not hasattr(provider.config, "category_id")

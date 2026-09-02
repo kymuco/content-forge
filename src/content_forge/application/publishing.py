@@ -11,6 +11,7 @@ from content_forge.providers import (
     PublishRequest,
     PublishTarget,
     PublishingExecutionError,
+    PublishingPreflightProvider,
     PublishingProvider,
     PublishingResponseError,
     PublishingUnavailableError,
@@ -20,6 +21,7 @@ from content_forge.providers import (
     semantic_publish_request_digest,
     validate_publish_result,
 )
+from content_forge.providers.publishing import _PublishingPreflightCleanupProvider
 from content_forge.storage import LocalLibrary, PublishAttemptRecord, StorageConflictError
 
 
@@ -37,6 +39,20 @@ class PublishAttemptError(PublishOrchestrationError):
 
 class PublishOutcomeUnknownError(PublishOrchestrationError):
     """Remote publishing began but no authenticated durable outcome is known."""
+
+
+def _discard_preflight_state(provider: PublishingProvider) -> None:
+    """Best-effort release of provider-local state while the remote boundary is still closed."""
+
+    if not isinstance(provider, _PublishingPreflightCleanupProvider):
+        return
+    try:
+        provider._clear_execution_state()
+    except Exception:
+        # Cleanup must never replace the ledger transition failure that prevented
+        # remote execution. Concrete providers are responsible for making this hook
+        # idempotent and internally defensive.
+        pass
 
 
 class PublishingService:
@@ -102,8 +118,6 @@ class PublishingService:
 
     def _media_path(self, artifact: RenderArtifactManifest) -> Path:
         path = self.library.paths.root / artifact.output_storage_key
-        # load_artifact() already authenticated this exact path and bytes. This check only
-        # protects an injected/test orchestrator from handing us a nonexistent runtime path.
         if not path.is_file():
             raise PublishArtifactError("authenticated final artifact path is missing")
         return path
@@ -188,11 +202,38 @@ class PublishingService:
                 "publish target provider does not match provider health identity"
             )
 
-        running = self.library.publishing.mark_running(attempt.attempt_id, health)
-        pinned_health = running.provider_health
-        if pinned_health is None:  # defensive: repository state contract requires this.
-            raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         idempotency_key = publish_idempotency_key(approved.request)
+        preflight_completed = False
+        if isinstance(provider, PublishingPreflightProvider):
+            try:
+                provider.preflight(
+                    approved,
+                    media_path=media_path,
+                    idempotency_key=idempotency_key,
+                )
+                preflight_completed = True
+            except Exception as exc:
+                self.library.publishing.mark_failed(
+                    attempt.attempt_id,
+                    code="provider_preflight_failed",
+                    message="publishing provider rejected the approved request before remote execution",
+                )
+                raise PublishAttemptError(
+                    "publishing provider preflight rejected approved request"
+                ) from exc
+
+        try:
+            running = self.library.publishing.mark_running(attempt.attempt_id, health)
+        except Exception:
+            if preflight_completed:
+                _discard_preflight_state(provider)
+            raise
+
+        pinned_health = running.provider_health
+        if pinned_health is None:
+            if preflight_completed:
+                _discard_preflight_state(provider)
+            raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         try:
             result = provider.publish(
                 approved,
@@ -202,9 +243,6 @@ class PublishingService:
             validate_publish_result(approved, pinned_health, result)
             return self.library.publishing.mark_succeeded(running.attempt_id, result)
         except Exception as exc:
-            # Once the provider call has begun, a local exception cannot prove that the
-            # remote side effect did not happen. Provider-controlled exception text is
-            # deliberately excluded from durable evidence and public error messages.
             try:
                 self.library.publishing.mark_outcome_unknown(
                     running.attempt_id,
