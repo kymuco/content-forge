@@ -4,14 +4,16 @@ This roadmap is organized as small reviewable pull requests. The architecture sh
 
 ## Current implementation status
 
-- PR1–PR30: **complete** in the intended post-merge repository state.
-- Current product step: **PR31 — Analytics provider boundary**.
+- PR1–PR31: **complete** in the intended post-merge repository state.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
-- Milestone 7B — Measurement, experiments, and evidence-driven improvement: **next**.
+- Milestone 7B — Daily Production Completion: **current product phase**.
+- Current implemented step: **PR31 — Phone production home and daily-use flow**.
+- Next product step: **PR32 — Phone create-video wizard and human-facing presets**.
+- Analytics/experiments remain planned **after** the daily phone production loop is genuinely convenient.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
-The current product loop is already durable through publication:
+The engine is already durable through publication:
 
 ```text
 Source
@@ -24,22 +26,21 @@ Source
 -> YouTube
 ```
 
-The next roadmap phase closes the feedback loop:
+The immediate product goal is to make that engine disappear behind the original phone-first workflow:
 
 ```text
-Source
--> Prepare
--> Review
--> Render
--> Publish
--> Measure
--> Compare
--> Recommend
--> Next production decision
-   ^_____________________|
+Find/share on phone
+-> Production Home
+-> choose/start a video
+-> answer only the decisions that need judgment
+-> preview on phone
+-> approve
+-> desktop renders/QCs
+-> final on phone
+-> publish
 ```
 
-The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge should first retain trustworthy observations from the user's own published work, then make bounded recommendations that are traceable to that evidence.
+The desktop remains the local source of truth and compute worker. The phone is the normal daily control surface. Internal subsystem panels remain available for advanced/debugging work, but routine production should not require knowledge of project IDs, render job IDs, provider internals, or repository architecture.
 
 ---
 
@@ -85,7 +86,7 @@ Durable render attempts, immutable plan snapshots, preview/final identity, verif
 
 ## Milestone 2 — Phone-first production workflow
 
-Status: **complete**.
+Status: **complete at the infrastructure/review layer**.
 
 ### PR8 — Authenticated local FastAPI, durable Inbox ingest, and media preparation
 
@@ -98,6 +99,8 @@ Installable phone-first PWA, Android share target, Inbox UI, upload recovery, an
 ### PR10 — Review queue and proxy preview
 
 Explicit review authority, fast previews, approve/reject/edit loop, phone controls, and final-production lifecycle.
+
+Milestone 2 proved the phone transport and review architecture. Milestone 7B now completes the product ergonomics over that already-proven authority instead of introducing a second mobile architecture.
 
 ---
 
@@ -178,19 +181,13 @@ Replaceable per-line TTS boundary, pinned Qwen integration, semantic cache ident
 
 ### PR21 — Persistent Voice Cast registry
 
-Status: **complete**.
-
 Persistent reusable cast identity, character-to-cast bindings, immutable cast revisions, project-local overrides, preview synthesis, and exact reference-audio integrity.
 
 ### PR22 — Voiced story review UI and timed text
 
-Status: **complete**.
-
 Panel-centric voiced-story review, listen/regenerate controls, verified audio-derived scene timing, phrase-level editorial timed text, reversible materialization, and render guards.
 
 ### PR23 — Voiced scene audio mix and camera choreography
-
-Status: **complete**.
 
 Dialogue/presentation QC, music/ambience ducking, reversible camera choreography, focus intent, preview lifecycle invalidation, and real FFmpeg integration.
 
@@ -204,19 +201,13 @@ Status: **complete**.
 
 ### PR24 — Long-form output profiles
 
-Status: **complete**.
-
 16:9 1080p/1440p output through the existing timeline/render architecture, chapter metadata, authenticated render reuse, and exact cross-project shared voiced-scene references.
 
 ### PR25 — Project / series / channel production profiles
 
-Status: **complete**.
-
 Revisioned reusable production defaults for branding, templates/skins, cast, languages, credit policy, output profiles, music/reaction libraries, with explicit reversible Project binding.
 
 ### PR26 — Production library search and tagging
-
-Status: **complete**.
 
 Indexed bounded tags, Unicode-safe search/prefix search, virtual collections, duplicate lookup, source-reuse history, used/unused filters, authenticated API, and PWA library surface.
 
@@ -230,19 +221,13 @@ Publishing remains optional. Rendering/export is always usable without a publish
 
 ### PR27 — Publishing provider boundary and export-to-publish handoff
 
-Status: **complete**.
-
 Platform-agnostic credential-free `PublishRequest`, exact human approval, semantic/idempotency identity, durable publish ledger, replaceable provider boundary, explicit remote side-effect boundary, and fail-closed `outcome_unknown` semantics.
 
 ### PR28 — YouTube Data API publishing adapter
 
-Status: **complete**.
-
 Installed-app OAuth, exact channel binding, authenticated immutable media snapshot, resumable YouTube upload/scheduling, processing verification, exact remote metadata verification, provider-local secret boundary, and optional YouTube runtime.
 
 ### PR29 — Versioned publication declarations contract v2
-
-Status: **complete**.
 
 Backward-compatible v1 digest preservation plus strict human-approved child-directed and realistic altered/synthetic-media declarations. V2 declarations participate in exact approval/idempotency identity, map to YouTube publication status, and are verified after upload.
 
@@ -254,116 +239,172 @@ Milestone exit condition achieved: an authenticated final render can become one 
 
 Status: **complete**.
 
-Delivered:
+PR30 reconciled the repository with the implementation through PR29. At that moment analytics was selected as the next architecture step. Before implementing it, the project was re-evaluated against the original `phone-first-workflow`, `v0.1-spec`, and actual daily-use goal. The runtime already exceeded the originally planned production capabilities, while the remaining bottleneck was operator friction in the PWA.
 
-- reconciled README/ROADMAP with the actual merged PR1–PR29 implementation state;
-- marked Milestones 5 and 6 complete;
-- split Milestone 7 into completed publishing work and the next measurement/learning phase;
-- made PR31 the next product implementation step;
-- moved convenience integrations below the evidence feedback loop rather than treating them as blockers;
-- reconciled provider documentation so the already-implemented publishing boundary is no longer described as future work.
-
-PR30 changes documentation only; it introduces no runtime, schema, provider implementation, API, PWA, storage, or rendering behavior.
+That product finding changes priority, not architecture: analytics stays planned, but daily phone production is completed first.
 
 ---
 
-## Milestone 7B — Measurement, experiments, and evidence-driven improvement
+## Milestone 7B — Daily Production Completion
 
-Status: **next**.
+Status: **current product phase**.
 
-This is the next primary product phase.
+Goal: make routine short-form production possible from the phone without exposing internal subsystem topology. The desktop remains the worker; existing Project/Review/Render/Publishing contracts remain authoritative.
 
-### PR31 — Analytics provider boundary
+### PR31 — Phone production home and daily-use flow
 
-Current planned product step.
+Status: **complete in the intended post-merge state**.
 
 Deliverables:
 
-- replaceable `AnalyticsProvider` protocol independent from publishing providers;
-- typed metric/observation contracts with explicit provider/version evidence;
-- exact link from an observation to a durable successful `PublishResult` / remote publication identity;
-- observation time and metric window semantics separated from ingestion time;
-- no credentials, filesystem paths, or provider sessions in semantic analytics records;
-- additive durable storage designed for repeated observations rather than overwriting one mutable current value;
-- explicit unavailable/partial/provider-error behavior;
-- provider-free Content Forge remains fully usable.
+- primary project-centric Production Home in the existing PWA;
+- human-readable recent/active project cards rather than internal IDs;
+- bounded Inbox / Attention / Rendering / Ready projection from existing state;
+- `Start video` reuses existing review bootstrap authority;
+- `Continue` reuses the existing phone review surface;
+- `Render final` reuses the exact approved-preview final-render boundary;
+- `Watch final` uses the authenticated final artifact endpoint;
+- advanced Dialogue / Voice Cast / Voiced Story / Scene Presentation / Profiles / Library / Publishing surfaces remain available behind `Advanced`;
+- installed PWA shell upgrades to the new Home without creating a second product state machine.
 
-Exit condition: Content Forge can represent trustworthy performance observations without coupling the core model to YouTube-specific metric names or OAuth behavior.
+The first supported everyday happy path is deliberately the already-proven `hook_overlay` flow. PR31 does not pretend that every registered template already has equally ergonomic phone controls.
 
-### PR32 — YouTube Analytics adapter
+### PR32 — Phone create-video wizard and human-facing presets
+
+Planned next.
+
+Deliverables:
+
+- after Share/Upload, choose a human-facing production preset rather than a template/version identifier;
+- first useful presets based on already-implemented capabilities, such as `Hook Short`, `Clean Clip`, `Framed Clip`, `Art Story`, and `Panel Story` where their current contracts support a safe path;
+- map presets to existing template/workflow/profile authority rather than duplicating renderer semantics;
+- show only choices relevant to the selected preset;
+- explicit fallback to Advanced/manual setup when a source cannot satisfy a preset.
+
+Exit condition: a normal source can become an intentionally chosen video format from the phone without knowing Content Forge template IDs.
+
+### PR33 — Project-specific edit, preview, and final happy path
 
 Planned.
 
 Deliverables:
 
-- optional YouTube Analytics/Data API implementation behind PR31;
-- account/channel identity bound to the already configured publication destination;
-- ingest only for exact known published remote video IDs unless explicitly importing historical channel data in a later feature;
-- normalize supported views/watch/engagement/subscriber/restriction metrics into PR31 observations while retaining raw provider evidence where useful;
-- bounded pagination/rate handling and controlled partial availability;
-- OAuth scopes remain local provider configuration, not analytics identity.
+- one project-focused phone surface instead of scrolling a global engineering queue;
+- bounded controls for the selected format: hook/text, crop/focus, order, music/defaults, and other already-modeled decisions only where relevant;
+- generate and watch the authenticated low-resolution preview inline;
+- approve/reject/edit without losing project context;
+- final-render progress/result surfaced on the same project flow;
+- no general-purpose NLE timeline UI.
 
-Exit condition: a Content Forge YouTube publication can acquire authenticated performance observations through a replaceable adapter.
+Exit condition: the common Short path can be completed end-to-end from one coherent project flow on the phone.
 
-### PR33 — Durable performance history and observation windows
-
-Planned.
-
-Deliverables:
-
-- append-only or otherwise history-preserving observation snapshots;
-- explicit comparable windows such as early/24h/7d/30d where provider data permits;
-- distinguish provisional from mature measurements;
-- no silent replacement of historical values with the latest fetch;
-- deterministic derived summaries over retained observations;
-- missing-data and late-data behavior remains explicit.
-
-Exit condition: the system can answer how a publication evolved over time, not merely what its counters say now.
-
-### PR34 — Experiment identity and publication attribution
+### PR34 — Final-to-publish phone handoff
 
 Planned.
 
 Deliverables:
 
-- versioned experiment definitions over production decisions already represented by Content Forge;
-- exact attribution from accepted variant/template/hook/language/presentation choices to final render and publish receipt;
-- experiment arms are immutable evidence, not mutable labels attached after results are known;
-- no automatic causal claims from uncontrolled comparisons;
-- support ordinary production history even when no experiment was declared.
+- carry the exact final render identity into the existing publishing candidate flow automatically;
+- no manual render job IDs in ordinary UI;
+- human-facing destination/profile selection from configured local publishing state;
+- retain exact publication declarations and separate human approval from remote execution;
+- final result/reconciliation state returned to the project flow.
 
-Exit condition: Content Forge can say exactly what production choice was being tested when a published result was produced.
+Exit condition: an approved final video can be published from the phone without exposing publishing ledger internals while retaining PR27–PR29 safety.
 
-### PR35 — Performance dashboard and comparison PWA
+### PR35 — Mobile batch Inbox and attention queue
 
 Planned.
 
 Deliverables:
+
+- practical daily summary such as ready automatically / needs attention / rendering / failed;
+- batch deterministic preparation without babysitting individual projects;
+- attention queue grouped into small contextual decisions;
+- retry/recovery actions only where existing operation semantics say they are safe;
+- no hidden automatic acceptance of review authority.
+
+Exit condition: multiple pieces of source material can move through the production pipeline with human attention spent only on actual blockers.
+
+Milestone 7B exit condition:
+
+```text
+phone share/upload
+-> choose a useful format
+-> make bounded project decisions
+-> preview
+-> approve
+-> desktop final render/QC
+-> inspect final on phone
+-> publish
+```
+
+for the common production paths, without requiring routine access to desktop UI, CLI commands, project IDs, render job IDs, or subsystem-specific engineering panels.
+
+---
+
+## Milestone 8 — Measurement, experiments, and evidence-driven improvement
+
+Status: **planned after Daily Production Completion**.
+
+The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge should first retain trustworthy observations from the user's own published work, then make bounded recommendations traceable to that evidence.
+
+### PR36 — Analytics provider boundary
+
+Planned.
+
+- replaceable `AnalyticsProvider` independent from publishing providers;
+- typed observations with provider/version evidence;
+- exact link to durable successful publication identity;
+- observation time/window semantics distinct from ingestion time;
+- additive history-oriented storage;
+- provider-free Content Forge remains usable.
+
+### PR37 — YouTube Analytics adapter
+
+Planned.
+
+- optional authenticated YouTube Analytics/Data implementation;
+- ingest exact known published video IDs first;
+- normalized supported performance metrics with retained provider evidence;
+- bounded partial/unavailable behavior.
+
+### PR38 — Durable performance history and observation windows
+
+Planned.
+
+- history-preserving observation snapshots;
+- explicit comparable windows where provider data permits;
+- provisional versus mature measurements;
+- deterministic summaries and explicit missing/late data.
+
+### PR39 — Experiment identity and publication attribution
+
+Planned.
+
+- immutable experiment definitions over already-represented production decisions;
+- exact attribution from production choice to render and publish receipt;
+- no automatic causal claims from uncontrolled comparisons.
+
+### PR40 — Performance dashboard and comparison PWA
+
+Planned.
 
 - publication timeline and metric-window views;
-- comparisons across templates, hooks, languages, profiles, formats, and declared experiment arms where evidence supports them;
-- source counts/sample sizes shown alongside aggregates;
-- missing/partial/stale analytics visibly distinguished from zero;
-- no hidden ranking objective that silently changes production decisions.
+- comparisons across supported production dimensions;
+- visible sample sizes and missing/partial/stale state;
+- no hidden ranking objective.
 
-Exit condition: the user can inspect what happened and compare relevant historical outputs without querying provider dashboards manually.
+### PR41 — Recommendation assistance from owned historical evidence
 
-### PR36 — Recommendation assistance from owned historical evidence
+Planned only after PR36–PR40 produce trustworthy evidence.
 
-Planned only after PR31–PR35 produce trustworthy evidence.
+- bounded recommendations from retained production/performance history;
+- traceable supporting observations;
+- uncertainty/sample-size limitations first-class;
+- proposals never mutate projects or publishing choices without human review.
 
-Deliverables:
-
-- bounded recommendations over the user's own retained production/performance history;
-- every recommendation cites the observations/comparisons that motivated it;
-- uncertainty/sample-size limitations are first-class;
-- proposals never mutate projects or publishing choices without normal human review;
-- optional LLM assistance may explain/summarize evidence but does not become metric authority;
-- avoid promises that a recommendation will improve reach, retention, revenue, or virality.
-
-Exit condition: Content Forge can propose the next production decision because of traceable owned evidence, while the human retains judgment authority.
-
-Milestone 7B target loop:
+Milestone 8 target loop:
 
 ```text
 exact production choice
@@ -377,11 +418,11 @@ exact production choice
 
 ---
 
-## Milestone 8 — Convenience integrations and operational reach
+## Later convenience integrations and operational reach
 
-These are useful but are intentionally not blockers for the measurement feedback loop.
+Useful, but not blockers for Daily Production Completion or the evidence loop.
 
-### PR37 — Source-specific import helpers
+### Source-specific import helpers
 
 Candidate scope:
 
@@ -390,11 +431,11 @@ Candidate scope:
 - no broad scraping architecture;
 - imported bytes still enter through canonical local asset/provenance boundaries.
 
-### PR38 — Private remote access profile
+### Private remote access profile
 
 Candidate scope:
 
-- documented and tested private-network access such as Tailscale-style deployment;
+- documented/tested private-network access such as Tailscale-style deployment;
 - retain TLS/auth/session boundaries;
 - no public-internet exposure by default;
 - no cloud dependency in the core production runtime.
@@ -403,9 +444,9 @@ Candidate scope:
 
 - second publishing platform adapter;
 - YouTube thumbnails/captions/playlists or additional approved publication semantics;
-- a durable long-running remote `processing` state if bounded YouTube processing proves too conservative in real long-form use;
+- durable long-running remote processing state if real long-form publishing proves the current bounded policy too conservative;
 - historical channel analytics import separate from Content Forge-owned publications;
-- more production formats/components driven by actual workflow demand.
+- more formats/components driven by actual workflow demand.
 
 These items should not be implemented merely to make the feature list longer.
 
@@ -425,6 +466,8 @@ These items should not be implemented merely to make the feature list longer.
 10. Publishing authority is separate from render correctness and project state.
 11. Credentials and machine-local paths stay outside semantic request/evidence identities unless the identity specifically describes local storage itself.
 12. Uncertain remote side effects fail closed; automatic duplicate publication is never preferred over explicit reconciliation.
-13. Analytics observations are evidence, not authority to mutate production state.
-14. Recommendations remain proposals and must be traceable to retained evidence.
-15. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+13. Daily-use UI is a projection of canonical Project/Review/Render/Publishing authority, not a second state machine.
+14. Routine phone UX should not expose internal IDs or subsystem topology when the workflow can derive them safely.
+15. Analytics observations are evidence, not authority to mutate production state.
+16. Recommendations remain proposals and must be traceable to retained evidence.
+17. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
