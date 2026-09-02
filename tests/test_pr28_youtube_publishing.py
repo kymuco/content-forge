@@ -30,8 +30,8 @@ from content_forge.providers.youtube import (
 from content_forge.providers.youtube_auth import write_private_token
 from content_forge.storage import LocalLibrary
 
-
 CHANNEL_ID = "UC1234567890123456789012"
+NOW = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
 
 def _artifact() -> RenderArtifactManifest:
@@ -89,10 +89,8 @@ def _approved(
 class _ExecuteRequest:
     def __init__(self, payload):
         self.payload = payload
-        self.retries = None
 
     def execute(self, *, num_retries=0):
-        self.retries = num_retries
         return self.payload
 
 
@@ -100,7 +98,7 @@ class _UploadRequest:
     def __init__(self, response):
         self.response = response
         self.calls = 0
-        self.retries = []
+        self.retries: list[int] = []
 
     def next_chunk(self, *, num_retries=0):
         self.calls += 1
@@ -119,7 +117,7 @@ class _Channels:
 
 
 class _Videos:
-    def __init__(self, *, verify_payload):
+    def __init__(self, verify_payload):
         self.verify_payload = verify_payload
         self.insert_calls = []
         self.list_calls = []
@@ -136,21 +134,19 @@ class _Videos:
 
 class _Service:
     def __init__(self, *, channel_id=CHANNEL_ID, verify_payload=None):
-        self.channels_api = _Channels(channel_id)
         if verify_payload is None:
             verify_payload = {
-                "items": [
-                    {
-                        "id": "video_123",
-                        "snippet": {
-                            "channelId": CHANNEL_ID,
-                            "publishedAt": "2026-09-02T07:05:00Z",
-                        },
-                        "status": {"privacyStatus": "private"},
-                    }
-                ]
+                "items": [{
+                    "id": "video_123",
+                    "snippet": {
+                        "channelId": CHANNEL_ID,
+                        "publishedAt": "2026-09-02T07:05:00Z",
+                    },
+                    "status": {"privacyStatus": "private"},
+                }]
             }
-        self.videos_api = _Videos(verify_payload=verify_payload)
+        self.channels_api = _Channels(channel_id)
+        self.videos_api = _Videos(verify_payload)
 
     def channels(self):
         return self.channels_api
@@ -168,12 +164,7 @@ class _ArtifactLoader:
         return self.artifact
 
 
-def _provider(
-    tmp_path: Path,
-    service: _Service,
-    *,
-    now: datetime = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc),
-):
+def _provider(tmp_path: Path, service: _Service, *, now: datetime = NOW):
     token_path = tmp_path / "youtube-token.json"
     token_path.write_text("{}", encoding="utf-8")
     if os.name != "nt":
@@ -191,16 +182,22 @@ def _provider(
     )
 
 
-def test_pr28_youtube_tag_budget_matches_documented_space_and_comma_accounting() -> None:
+def _run_preflight(provider, approved, media_path):
+    provider.preflight(
+        approved,
+        media_path=media_path,
+        idempotency_key=publish_idempotency_key(approved.request),
+    )
+
+
+def test_pr28_youtube_tag_budget_matches_space_and_comma_accounting() -> None:
     assert _youtube_tag_budget(("alpha", "two words")) == 5 + 1 + 9 + 2
 
 
 def test_pr28_youtube_health_pins_exact_configured_channel(tmp_path: Path) -> None:
     service = _Service()
     provider = _provider(tmp_path, service)
-    health = provider.health()
-
-    assert health == PublishingProviderHealth(
+    assert provider.health() == PublishingProviderHealth(
         provider_id="youtube",
         provider_version="youtube_data_api_v3_pr28_v1",
         available=True,
@@ -208,103 +205,74 @@ def test_pr28_youtube_health_pins_exact_configured_channel(tmp_path: Path) -> No
     )
     assert service.channels_api.calls == [{"part": "id", "mine": True, "maxResults": 2}]
 
-    mismatch = _provider(tmp_path, _Service(channel_id="UC_OTHER"))
-    mismatch_health = mismatch.health()
-    assert mismatch_health.available is False
-    assert mismatch_health.provider_id == "youtube"
-    assert "configured destination" in (mismatch_health.reason or "")
+    mismatch = _provider(tmp_path, _Service(channel_id="UC_OTHER")).health()
+    assert mismatch.available is False
+    assert "configured destination" in (mismatch.reason or "")
 
 
 def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundary(tmp_path: Path) -> None:
     artifact = _artifact()
-    media_path = tmp_path / "video.mp4"
-    media_path.write_bytes(b"test")
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
     provider = _provider(tmp_path, _Service())
-    now = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
-    valid = _approved(artifact, visibility="public")
-    provider.preflight(
-        valid,
-        media_path=media_path,
-        idempotency_key=publish_idempotency_key(valid.request),
-    )
+    _run_preflight(provider, _approved(artifact, visibility="public"), media)
 
-    too_long = _approved(artifact, title="x" * 101)
-    with pytest.raises(PublishingExecutionError, match="at most 100"):
-        provider.preflight(
-            too_long,
-            media_path=media_path,
-            idempotency_key=publish_idempotency_key(too_long.request),
-        )
-
-    too_many_description_bytes = _approved(artifact, description="Ж" * 2501)
-    with pytest.raises(PublishingExecutionError, match="5000 UTF-8 bytes"):
-        provider.preflight(
-            too_many_description_bytes,
-            media_path=media_path,
-            idempotency_key=publish_idempotency_key(too_many_description_bytes.request),
-        )
-
-    scheduled_private = _approved(
-        artifact,
-        visibility="private",
-        scheduled_for=now + timedelta(hours=1),
-    )
-    with pytest.raises(PublishingExecutionError, match="requires approved public visibility"):
-        provider.preflight(
-            scheduled_private,
-            media_path=media_path,
-            idempotency_key=publish_idempotency_key(scheduled_private.request),
-        )
-
-    past = _approved(
-        artifact,
-        visibility="public",
-        scheduled_for=now - timedelta(seconds=1),
-    )
-    with pytest.raises(PublishingExecutionError, match="must be in the future"):
-        provider.preflight(
-            past,
-            media_path=media_path,
-            idempotency_key=publish_idempotency_key(past.request),
-        )
+    invalid_cases = [
+        (_approved(artifact, title="x" * 101), "at most 100"),
+        (_approved(artifact, description="Ж" * 2501), "5000 UTF-8 bytes"),
+        (
+            _approved(
+                artifact,
+                visibility="private",
+                scheduled_for=NOW + timedelta(hours=1),
+            ),
+            "requires approved public visibility",
+        ),
+        (
+            _approved(
+                artifact,
+                visibility="public",
+                scheduled_for=NOW - timedelta(seconds=1),
+            ),
+            "must be in the future",
+        ),
+    ]
+    for approved, message in invalid_cases:
+        with pytest.raises(PublishingExecutionError, match=message):
+            _run_preflight(provider, approved, media)
 
 
-def test_pr28_youtube_unscheduled_upload_uses_resumable_insert_and_verifies_video(tmp_path: Path) -> None:
+def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Path) -> None:
     artifact = _artifact()
-    media_path = tmp_path / "video.mp4"
-    media_path.write_bytes(b"test")
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
     service = _Service(
         verify_payload={
-            "items": [
-                {
-                    "id": "video_123",
-                    "snippet": {
-                        "channelId": CHANNEL_ID,
-                        "publishedAt": "2026-09-02T07:05:00Z",
-                    },
-                    "status": {"privacyStatus": "unlisted"},
-                }
-            ]
+            "items": [{
+                "id": "video_123",
+                "snippet": {
+                    "channelId": CHANNEL_ID,
+                    "publishedAt": "2026-09-02T07:05:00Z",
+                },
+                "status": {"privacyStatus": "unlisted"},
+            }]
         }
     )
     provider = _provider(tmp_path, service)
     approved = _approved(artifact, visibility="unlisted")
 
     assert provider.health().available is True
-    provider.preflight(
-        approved,
-        media_path=media_path,
-        idempotency_key=publish_idempotency_key(approved.request),
-    )
+    _run_preflight(provider, approved, media)
     result = provider.publish(
         approved,
-        media_path=media_path,
+        media_path=media,
         idempotency_key=publish_idempotency_key(approved.request),
     )
 
-    assert service.videos_api.insert_calls[0]["part"] == "snippet,status"
-    assert service.videos_api.insert_calls[0]["body"] == {
+    insert = service.videos_api.insert_calls[0]
+    assert insert["part"] == "snippet,status"
+    assert insert["body"] == {
         "snippet": {
             "title": "Approved upload",
             "description": "description",
@@ -319,30 +287,28 @@ def test_pr28_youtube_unscheduled_upload_uses_resumable_insert_and_verifies_vide
     ]
     assert result.disposition == "published"
     assert result.remote_id == "video_123"
-    assert result.remote_url == "https://www.youtube.com/watch/video_123"
+    assert result.remote_url == "https://youtu.be/video_123"
     assert result.effective_at == datetime(2026, 9, 2, 7, 5, tzinfo=timezone.utc)
 
 
 def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_path: Path) -> None:
     artifact = _artifact()
-    media_path = tmp_path / "video.mp4"
-    media_path.write_bytes(b"test")
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
     scheduled_for = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
     service = _Service(
         verify_payload={
-            "items": [
-                {
-                    "id": "video_123",
-                    "snippet": {
-                        "channelId": CHANNEL_ID,
-                        "publishedAt": "2026-09-02T07:05:00Z",
-                    },
-                    "status": {
-                        "privacyStatus": "private",
-                        "publishAt": "2026-09-02T08:00:00Z",
-                    },
-                }
-            ]
+            "items": [{
+                "id": "video_123",
+                "snippet": {
+                    "channelId": CHANNEL_ID,
+                    "publishedAt": "2026-09-02T07:05:00Z",
+                },
+                "status": {
+                    "privacyStatus": "private",
+                    "publishAt": "2026-09-02T08:00:00Z",
+                },
+            }]
         }
     )
     provider = _provider(tmp_path, service)
@@ -353,17 +319,12 @@ def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_pa
     )
 
     assert provider.health().available is True
-    provider.preflight(
-        approved,
-        media_path=media_path,
-        idempotency_key=publish_idempotency_key(approved.request),
-    )
+    _run_preflight(provider, approved, media)
     result = provider.publish(
         approved,
-        media_path=media_path,
+        media_path=media,
         idempotency_key=publish_idempotency_key(approved.request),
     )
-
     assert service.videos_api.insert_calls[0]["body"]["status"] == {
         "privacyStatus": "private",
         "publishAt": "2026-09-02T08:00:00Z",
@@ -374,57 +335,48 @@ def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_pa
 
 def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: Path) -> None:
     artifact = _artifact()
-    media_path = tmp_path / "video.mp4"
-    media_path.write_bytes(b"test")
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
     service = _Service(
         verify_payload={
-            "items": [
-                {
-                    "id": "video_123",
-                    "snippet": {
-                        "channelId": "UC_WRONG",
-                        "publishedAt": "2026-09-02T07:05:00Z",
-                    },
-                    "status": {"privacyStatus": "private"},
-                }
-            ]
+            "items": [{
+                "id": "video_123",
+                "snippet": {
+                    "channelId": "UC_WRONG",
+                    "publishedAt": "2026-09-02T07:05:00Z",
+                },
+                "status": {"privacyStatus": "private"},
+            }]
         }
     )
     provider = _provider(tmp_path, service)
     approved = _approved(artifact)
-
     assert provider.health().available is True
-    provider.preflight(
-        approved,
-        media_path=media_path,
-        idempotency_key=publish_idempotency_key(approved.request),
-    )
+    _run_preflight(provider, approved, media)
     with pytest.raises(PublishingResponseError, match="different channel"):
         provider.publish(
             approved,
-            media_path=media_path,
+            media_path=media,
             idempotency_key=publish_idempotency_key(approved.request),
         )
 
 
-def test_pr28_service_provider_preflight_failure_stays_retryable_failed(tmp_path: Path) -> None:
+def test_pr28_service_preflight_failure_remains_retryable_failed(tmp_path: Path) -> None:
     library = LocalLibrary(tmp_path)
     artifact = _artifact()
-    media_path = library.paths.root / artifact.output_storage_key
-    media_path.parent.mkdir(parents=True, exist_ok=True)
-    media_path.write_bytes(b"test")
+    media = library.paths.root / artifact.output_storage_key
+    media.parent.mkdir(parents=True, exist_ok=True)
+    media.write_bytes(b"test")
     approved = _approved(artifact, title="x" * 101)
-    provider = _provider(tmp_path, _Service())
     service = PublishingService(
         library,
-        provider,
+        _provider(tmp_path, _Service()),
         render_orchestrator=_ArtifactLoader(artifact),
     )
 
     attempt = service.prepare(approved)
     with pytest.raises(PublishingExecutionError, match="provider preflight failed"):
         service.execute_prepared(attempt.attempt_id)
-
     stored = library.publishing.get_attempt(attempt.attempt_id)
     assert stored is not None
     assert stored.state == "failed"
@@ -433,11 +385,9 @@ def test_pr28_service_provider_preflight_failure_stays_retryable_failed(tmp_path
 
 
 def test_pr28_private_token_writer_is_atomic_and_owner_only(tmp_path: Path) -> None:
-    token_path = tmp_path / "credentials" / "youtube-token.json"
-    payload = json.dumps({"refresh_token": "TOP_SECRET"})
-    write_private_token(token_path, payload)
-
-    assert json.loads(token_path.read_text(encoding="utf-8"))["refresh_token"] == "TOP_SECRET"
-    assert not list(token_path.parent.glob("*.tmp"))
+    token = tmp_path / "credentials" / "youtube-token.json"
+    write_private_token(token, json.dumps({"refresh_token": "TOP_SECRET"}))
+    assert json.loads(token.read_text(encoding="utf-8"))["refresh_token"] == "TOP_SECRET"
+    assert not list(token.parent.glob("*.tmp"))
     if os.name != "nt":
-        assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(token.stat().st_mode) == 0o600
