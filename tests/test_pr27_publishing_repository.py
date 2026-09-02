@@ -18,8 +18,12 @@ from content_forge.providers import (
     publish_idempotency_key,
     semantic_publish_request_digest,
 )
-from content_forge.storage import LibraryDatabase, StorageConflictError, StorageSchemaError
-from content_forge.storage.publishing import PublishingRepository
+from content_forge.storage import (
+    LibraryDatabase,
+    PublishingRepository,
+    StorageConflictError,
+    StorageSchemaError,
+)
 
 
 def _approved(*, title: str = "Approved upload"):
@@ -141,7 +145,11 @@ def test_pr27_known_failure_allows_retry_with_same_remote_idempotency_key(tmp_pa
     repository = _repository(tmp_path)
     approved = _approved()
     first = repository.prepare_attempt(approved)
-    failed = repository.mark_failed(first.attempt_id, code="preflight_failed", message="no remote call made")
+    failed = repository.mark_failed(
+        first.attempt_id,
+        code="preflight_failed",
+        message="no remote call made",
+    )
     assert failed.state == "failed"
     assert failed.provider_health is None
 
@@ -151,6 +159,27 @@ def test_pr27_known_failure_allows_retry_with_same_remote_idempotency_key(tmp_pa
     operation = repository.get_operation(second.request_sha256)
     assert operation is not None
     assert operation.idempotency_key == publish_idempotency_key(approved.request)
+
+
+def test_pr27_running_attempt_can_never_be_downgraded_to_retryable_failed(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    approved = _approved()
+    attempt = repository.prepare_attempt(approved)
+    repository.mark_running(attempt.attempt_id, _health())
+
+    with pytest.raises(StorageConflictError, match="cannot transition to failed"):
+        repository.mark_failed(
+            attempt.attempt_id,
+            code="provider_failed",
+            message="must not become retryable",
+        )
+
+    still_running = repository.get_attempt(attempt.attempt_id)
+    assert still_running is not None
+    assert still_running.state == "running"
+    assert repository.reconcile_interrupted() == 1
+    unknown = repository.get_attempt(attempt.attempt_id)
+    assert unknown is not None and unknown.state == "outcome_unknown"
 
 
 def test_pr27_unknown_remote_outcome_blocks_retry_and_restart_reconciliation(tmp_path) -> None:
@@ -214,4 +243,7 @@ def test_pr27_state_machine_rejects_invalid_transitions_and_provider_identity(tm
     with pytest.raises(StorageConflictError, match="expected prepared"):
         repository.mark_running(attempt.attempt_id, _health())
     with pytest.raises(StorageConflictError, match="unknown publish attempt"):
-        repository.mark_succeeded(new_entity_id(EntityKind.PUBLISH), _result(approved, _health()))
+        repository.mark_succeeded(
+            new_entity_id(EntityKind.PUBLISH),
+            _result(approved, _health()),
+        )
