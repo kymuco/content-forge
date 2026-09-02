@@ -1,312 +1,147 @@
 # Roadmap
 
-This roadmap is intentionally organized as small reviewable pull requests. The architecture should become useful early and remain replaceable at the edges: providers, templates, components, and workflows can evolve without destabilizing the project model or renderer core.
+This roadmap is organized as small reviewable pull requests. The architecture should become useful early and remain replaceable at the edges: providers, templates, components, publishing adapters, and analytics integrations can evolve without destabilizing the canonical project model or renderer core.
 
 ## Current implementation status
 
-- PR1–PR20: **complete** in the intended post-merge repository state.
-- Current step: **PR21 — Voice Cast registry**.
-- Current milestone: **Milestone 5 — Voiced panels and persistent cast**.
-- The intended **v0.1 batch-production boundary is complete through PR17**.
+- PR1–PR29: **complete** in the intended post-merge repository state.
+- Current documentation step: **PR30 — Roadmap v2 / post-PR29 status reconciliation**.
+- Milestones 0–6: **complete**.
+- Milestone 7A — Publishing: **complete through the first production YouTube path**.
+- Next product step after PR30: **PR31 — Analytics provider boundary**.
+- The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
+
+The current product loop is already durable through publication:
+
+```text
+Source
+-> Ingest
+-> Project
+-> Review
+-> Render
+-> QC / export
+-> Human-approved publish request
+-> YouTube
+```
+
+The next roadmap phase closes the feedback loop:
+
+```text
+Source
+-> Prepare
+-> Review
+-> Render
+-> Publish
+-> Measure
+-> Compare
+-> Recommend
+-> Next production decision
+   ^_____________________|
+```
+
+The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge should first retain trustworthy observations from the user's own published work, then make bounded recommendations that are traceable to that evidence.
+
+---
 
 ## Milestone 0 — Foundation
 
+Status: **complete**.
+
 ### PR1 — Architecture, taxonomy, workflow, and v0.1 contract
 
-Status: **complete**
-
-Deliverables:
-
-- product vision and boundaries;
-- content-kind / template / workflow separation;
-- scene/timeline architecture;
-- phone-first ingest and review model;
-- provider boundaries for LLM/OCR/TTS/source integrations;
-- rendering responsibilities and QC model;
-- source provenance and repository hygiene rules;
-- concrete v0.1 vertical-slice specification;
-- staged implementation roadmap.
-
-Exit condition: implementation can begin without inventing fundamental concepts inside the first renderer PR.
+Established product boundaries, content-kind/template/workflow separation, scene/timeline architecture, provider boundaries, source provenance, repository hygiene, and the staged implementation plan.
 
 ---
 
 ## Milestone 1 — Core runtime and first useful vertical slice
 
+Status: **complete**.
+
 ### PR2 — Python package bootstrap and core domain contracts
 
-Build the minimal project skeleton and immutable/validated domain models.
-
-Deliverables:
-
-- `pyproject.toml`;
-- `src/content_forge/` package;
-- Pydantic models for `Project`, `AssetRef`, `SourceRecord`, `Variant`, `Scene`, `Overlay`, `AudioTrack`, `OutputProfile`, and `ReviewTask`;
-- stable IDs and schema version fields;
-- JSON/YAML serialization round trips;
-- pytest baseline and CI;
-- no rendering yet.
-
-Exit condition: a project manifest can be created, validated, saved, and loaded without loss.
+Validated canonical domain models, stable IDs/schema versions, serialization, tests, and CI.
 
 ### PR3 — Local asset store, hashing, SQLite metadata, and provenance
 
-Deliverables:
-
-- content-addressed local asset storage;
-- SHA-256 hashing and deduplication;
-- SQLite project/asset/job metadata;
-- source URL, platform, creator/artist, source title, acquisition time, credit and permission notes;
-- thumbnails/proxy metadata slots;
-- explicit separation between repository files and local runtime data;
-- tests for duplicate ingest and provenance retention.
-
-Exit condition: arbitrary local media can enter the library once and be referenced safely by multiple projects.
+Content-addressed local storage, SHA-256 identity/deduplication, project/asset/job metadata, source provenance, and repository/runtime separation.
 
 ### PR4 — Scene/timeline model and deterministic timeline compiler
 
-Deliverables:
-
-- ordered scene graph;
-- media placement, timing, crop/fit, simple motion, transitions, overlays, and audio timing;
-- deterministic conversion from project + template to a normalized render plan;
-- validation for overlaps, missing sources, negative/invalid durations, and output bounds;
-- snapshot tests for render plans.
-
-Exit condition: templates can produce a renderer-independent timeline plan.
+Canonical ordered scene graph plus deterministic renderer-independent compilation.
 
 ### PR5 — FFmpeg/ffprobe backend and capability probing
 
-Deliverables:
-
-- ffprobe metadata extraction;
-- FFmpeg command/filtergraph compiler;
-- scale/crop/pad/overlay/text/audio primitives;
-- NVENC capability detection with CPU fallback;
-- render cancellation and structured errors;
-- deterministic command manifests;
-- synthetic test fixtures only.
-
-Exit condition: a normalized render plan can render a basic image/video composition to MP4.
+Generic FFmpeg compiler/runner, ffprobe verification, capability detection, CPU/NVENC selection, structured errors, and synthetic integration coverage.
 
 ### PR6 — First template: `hook_overlay`
 
-This is the first complete content format and the first real output target.
-
-Deliverables:
-
-- `hook_overlay` template;
-- video/image source fit modes;
-- top-safe-zone headline placement;
-- font wrapping and stroke/background options;
-- YouTube Shorts 1080x1920 output profile;
-- audio passthrough/normalization baseline;
-- golden/snapshot fixtures.
-
-Exit condition: a local clip + headline produces a correct 1080x1920 Short.
+First complete 1080x1920 vertical format over the generic renderer.
 
 ### PR7 — Preview/final render orchestration and artifact manifests
 
-PR6 proved the first complete render path. Before exposing that path through a phone-facing service, freeze one durable render-attempt contract so API, PWA, and later batch workers do not invoke FFmpeg directly or invent incompatible artifact metadata.
-
-Deliverables:
-
-- persistent render jobs backed by the existing SQLite job table;
-- immutable `RenderPlan` snapshots per submitted attempt;
-- explicit preview/final purpose bound to output-profile identity;
-- atomic queued-to-running job claims and terminal states;
-- runtime-relative artifact storage under project/job identity;
-- successful artifact sidecars with source, plan, command, output, encoder, and ffprobe fingerprints;
-- structured failed/cancelled sidecars;
-- output hash/dimension verification before success is published;
-- real FFmpeg integration coverage through the persisted job boundary;
-- no worker pool, batch scheduler, API/PWA surface, or publishing yet.
-
-Exit condition: a persisted preview/final render attempt can be executed and recovered as a verified MP4 plus reproducibility sidecar without depending on an in-memory project state.
+Durable render attempts, immutable plan snapshots, preview/final identity, verified output artifacts, reproducibility sidecars, and restart-safe execution.
 
 ---
 
 ## Milestone 2 — Phone-first production workflow
 
+Status: **complete**.
+
 ### PR8 — Authenticated local FastAPI, durable Inbox ingest, and media preparation
 
-Status: **complete**
-
-Deliverables:
-
-- thin FastAPI transport over an explicit application-service boundary;
-- multipart upload from phone/desktop with pre-parse authentication and bounded request size;
-- URL/note intake records even when downloading is not automated;
-- durable byte acceptance only after staging file fsync, containing-directory persistence where supported, and an exact size + SHA-256 receipt;
-- restart recovery from authenticated staging, canonical content-addressed blobs, catalogued assets, provenance, and deterministic project checkpoints;
-- transient post-acceptance storage failures remain resumable while integrity contradictions fail closed;
-- automatic content-addressed asset ingest, authoritative ffprobe classification/legacy metadata repair, attached-cover-art-safe probing, thumbnail generation, and `INBOX` project creation;
-- serialized canonical thumbnail publication inside the supported single-owner runtime;
-- durable receiving/prepared/partial/failed intake records and restart reconciliation;
-- one live API owner per runtime root enforced with an OS advisory lock before reconciliation;
-- loopback pairing bootstrap plus revocable bearer sessions;
-- TLS required for non-loopback/LAN binding;
-- no public-internet exposure by default;
-- no PWA, worker pool, automatic downloading, publishing, or direct FFmpeg execution from HTTP routes.
-
-Exit condition: authenticated media sent over a protected local connection reaches the desktop library and becomes a recoverable Inbox project without USB or manual folder work.
+Authenticated local ingest, durable staging/recovery, content-addressed acceptance, probing/thumbnails, Inbox project creation, single-owner runtime, and secure LAN boundary.
 
 ### PR9 — PWA shell and share-to-Inbox flow
 
-Status: **complete**
-
-Deliverables:
-
-- responsive mobile-first web UI;
-- installable PWA;
-- Android share target where supported;
-- Inbox list and project cards;
-- upload progress and failure recovery;
-- QR/local address onboarding.
-
-Exit condition: normal flow on Android is `Share -> Content Forge -> Inbox`.
+Installable phone-first PWA, Android share target, Inbox UI, upload recovery, and pairing/onboarding.
 
 ### PR10 — Review queue and proxy preview
 
-Status: **complete**
-
-Deliverables:
-
-- explicit `AUTO`, `REVIEW`, `MANUAL` task semantics;
-- review queue ranked by blocking status;
-- 540x960 fast preview profile;
-- approve/reject/edit loop;
-- phone controls for hook selection, crop confirmation, ordering, and simple metadata;
-- project state machine from Inbox through Done.
-
-Exit condition: a project can be completed without sitting at the desktop unless a genuinely complex edit is needed.
+Explicit review authority, fast previews, approve/reject/edit loop, phone controls, and final-production lifecycle.
 
 ---
 
 ## Milestone 3 — Template/component system and initial format coverage
 
+Status: **complete**.
+
 ### PR11 — Template registry, skins, slots, and component contracts
 
-Status: **complete**
-
-Deliverables:
-
-- declarative template schema;
-- component registry;
-- slots, anchors, safe zones, defaults, and per-template validation;
-- template and component versioning;
-- reusable skins/assets with redistribution-safe fixtures;
-- plugin discovery boundary without third-party plugin loading yet.
-
-Exit condition: adding a simple visual format no longer requires changes to core timeline or renderer code.
+Versioned declarative template/component/skin registry and extension boundary.
 
 ### PR12 — Initial template pack
 
-Status: **complete**
-
-Add the formats already identified during research:
-
-- `hook_topbar`;
-- `social_post`;
-- `meme_white_header`;
-- `anime_frame` / generic `content_frame`;
-- `art_story`;
-- `panel_sequence`;
-- `sync_stack`;
-- `reaction_bottom` composition support.
-
-Exit condition: all initial non-voiced content families can be represented using the same runtime.
+Registered initial non-voiced formats including hook, social-post, meme, framed-content, art-story, panel-sequence, sync-stack, and reaction compositions.
 
 ### PR13 — Reusable overlay and motion components
 
-Status: **complete**
-
-Deliverables:
-
-- `ArtistCredit`;
-- `CommentCard`;
-- `Reaction` (PNG/GIF/WebM/MP4 loop where backend permits);
-- `Avatar`;
-- `Watermark`;
-- `KenBurns`/slow zoom;
-- pan/crop reveal;
-- blur reveal;
-- simple transition set;
-- automatic text overflow checks.
-
-Exit condition: art/manga/meme formats can be composed from reusable components rather than bespoke scripts.
+Reusable credits/comments/reactions/avatars/watermarks, pan/zoom/reveal motion, transitions, and text-overflow checks.
 
 ### PR14 — Music and audio composition
 
-Status: **complete**
-
-Deliverables:
-
-- music library references;
-- original audio/music mix controls;
-- fade/duck/normalize;
-- loudness/peak QC baseline;
-- per-template audio policy;
-- cached audio intermediates.
-
-Exit condition: batch outputs have predictable audio without manual FFmpeg work.
+Deterministic music/original mixing, ducking/fades, loudness/peak QC, and cached lossless premaster handling.
 
 ---
 
 ## Milestone 4 — Optional intelligence and variants
 
+Status: **complete**.
+
 ### PR15 — LLM provider boundary and `chatgpt-web-adapter`
 
-Status: **complete**
-
-Deliverables:
-
-- `LLMProvider` protocol;
-- adapter implementation using `chatgpt-web-adapter`;
-- hook suggestions;
-- title/description suggestions;
-- OCR-text cleanup helper contract;
-- translation helper;
-- content-kind/template suggestions;
-- every generated value remains proposed until accepted where judgment matters;
-- renderer works identically with the provider disabled.
-
-Exit condition: language/semantic assistance is useful but never a hard dependency.
+Optional replaceable language/semantic assistance with proposal-only authority; rendering remains provider-independent.
 
 ### PR16 — Language variants and localized render metadata
 
-Status: **complete**
-
-Deliverables:
-
-- master project + language variants;
-- localized hook, subtitle, title, description, hashtags, and optional font selection;
-- shared source/timeline references;
-- variant-specific preview/render cache keys;
-- EN/JA/KO examples using synthetic text fixtures.
-
-Exit condition: one source project can produce multiple language variants without duplication of media or timelines.
+Shared-source localized variants with deterministic variant-specific render/cache identity.
 
 ### PR17 — Batch preparation, render queue, QC, and reproducibility
 
-Status: **complete**
-
-Deliverables:
-
-- persistent batch coordination over the existing PR7 SQLite render/job contract;
-- crash-safe frozen-plan interruption recovery;
-- batch preview/final render;
-- source-hash, template-version, renderer-version, accepted-text, and provider-parameter manifests;
-- QC for duration, dimensions, missing audio/assets, overflow, safe zones, black frames where practical, and render failures;
-- authenticated export/reproducibility sidecars.
-
-Exit condition: v0.1 can reliably process a batch of projects end-to-end.
+Crash-safe batch coordination, frozen render plans, batch preview/final rendering, QC, and reproducibility evidence.
 
 ### v0.1 release boundary
 
-Status: **implemented through PR17**
-
-The following production flow now has a durable implementation boundary:
+Status: **implemented through PR17**.
 
 ```text
 Phone discovery
@@ -321,148 +156,255 @@ Phone discovery
 -> MP4 + reproducibility metadata export
 ```
 
-v0.1 intentionally excludes automatic publishing, broad web scraping, and voiced-story production. OCR/voiced-panel work begins after this boundary rather than being required by it.
+Automatic publishing, voiced stories, and analytics were intentionally outside the v0.1 boundary and were added later without replacing the v0.1 renderer/runtime.
 
 ---
 
 ## Milestone 5 — Voiced panels and persistent cast
 
+Status: **complete**.
+
 ### PR18 — OCR provider and panel text extraction workflow
 
-Status: **complete**
-
-Deliverables:
-
-- `OCRProvider` protocol;
-- one local implementation selected after evaluation;
-- bounding boxes + confidence;
-- review tasks for uncertain text;
-- original OCR output retained alongside corrected text;
-- no automatic speaker guessing required for release.
-
-Exit condition: a verified panel image can produce retained raw text/geometry/confidence/provider evidence and bounded human correction work without speaker attribution or a second review authority.
+Retained local OCR output, geometry/confidence evidence, bounded correction authority, and replaceable OCR provider boundary.
 
 ### PR19 — Dialogue scene model and speaker assignment
 
-Status: **complete**
-
-Deliverables:
-
-- dialogue lines attached to panels/scenes;
-- ordered reading flow;
-- speaker IDs;
-- character registry;
-- manual/assisted speaker assignment UI;
-- scene focus hints (`speaker`, `face`, explicit crop).
-
-Exit condition: verified PR18 regions can be turned into a durable scene dialogue with explicit human-approved reading order, complete speaker identity, retained source geometry/text, and optional semantic focus hints without conflating narrative character identity with future voice-cast identity.
+Human-approved reading order, narrative speaker identity, character registry, provenance revalidation, and semantic focus hints.
 
 ### PR20 — TTS provider and Qwen TTS integration
 
-Status: **complete**
+Replaceable per-line TTS boundary, pinned Qwen integration, semantic cache identity, verified WAV evidence, and content-addressed generated audio.
 
-Deliverables:
+### PR21 — Persistent Voice Cast registry
 
-- `TTSProvider` protocol;
-- local Qwen TTS implementation;
-- per-line generation and caching;
-- voice/style parameters in manifests;
-- duration extraction;
-- deterministic cache invalidation.
+Status: **complete**.
 
-Exit condition: accepted PR19 dialogue lines can synthesize independently verified, content-addressed audio through a replaceable TTS boundary with semantic request identity, immutable provider/model evidence, exact cache invalidation, and no dependence on persistent PR21 cast identity.
-
-### PR21 — Voice Cast registry
-
-Status: **in progress**
-
-Deliverables:
-
-- persistent cast voices such as protagonist, secondary characters, narrator;
-- character-to-cast mapping;
-- preview voice button from phone/desktop;
-- project overrides without mutating global cast;
-- channel/profile-specific casts later.
+Persistent reusable cast identity, character-to-cast bindings, immutable cast revisions, project-local overrides, preview synthesis, and exact reference-audio integrity.
 
 ### PR22 — Voiced story review UI and timed text
 
-Deliverables:
+Status: **complete**.
 
-- panel-centric editor instead of a generic NLE timeline;
-- OCR correction;
-- speaker and voice assignment;
-- listen/regenerate controls;
-- automatic scene duration from synthesized lines;
-- phrase-level timed text/ASS rendering;
-- optional forced alignment left for a later PR.
+Panel-centric voiced-story review, listen/regenerate controls, verified audio-derived scene timing, phrase-level editorial timed text, reversible materialization, and render guards.
 
 ### PR23 — Voiced scene audio mix and camera choreography
 
-Deliverables:
+Status: **complete**.
 
-- dialogue sequencing;
-- ambience/music ducking;
-- pause rules;
-- pan/zoom/focus changes around speakers;
-- reusable scene presets;
-- preview and QC for missing/overlapping dialogue.
+Dialogue/presentation QC, music/ambience ducking, reversible camera choreography, focus intent, preview lifecycle invalidation, and real FFmpeg integration.
 
-Exit condition: a panel sequence can become a polished voiced Short with only bounded review tasks.
+Milestone exit condition achieved: a panel sequence can become a reviewed, voiced, timed, mixed, camera-presented render without introducing a second timeline or renderer authority.
 
 ---
 
 ## Milestone 6 — Long-form and reusable production assets
 
+Status: **complete**.
+
 ### PR24 — Long-form output profiles
 
-Deliverables:
+Status: **complete**.
 
-- 16:9 1080p/1440p profiles;
-- chapter/scene concatenation;
-- shared voiced scenes between Short and long-form projects;
-- long-form render caching;
-- no separate renderer architecture.
+16:9 1080p/1440p output through the existing timeline/render architecture, chapter metadata, authenticated render reuse, and exact cross-project shared voiced-scene references.
 
-### PR25 — Project/series/channel profiles
+### PR25 — Project / series / channel production profiles
 
-Deliverables:
+Status: **complete**.
 
-- reusable branding;
-- default templates and skins;
-- default voice cast;
-- language defaults;
-- credit policy;
-- output profiles;
-- music/reaction libraries.
+Revisioned reusable production defaults for branding, templates/skins, cast, languages, credit policy, output profiles, music/reaction libraries, with explicit reversible Project binding.
 
 ### PR26 — Production library search and tagging
 
-Deliverables:
+Status: **complete**.
 
-- game/anime/artist/character/topic/source tags;
-- fast local search;
-- virtual collections rather than requiring manual physical folders;
-- duplicate and previously-used warnings;
-- source reuse history.
+Indexed bounded tags, Unicode-safe search/prefix search, virtual collections, duplicate lookup, source-reuse history, used/unused filters, authenticated API, and PWA library surface.
 
 ---
 
-## Milestone 7 — Source adapters, publishing, and analytics
+## Milestone 7A — Publishing and exact remote authority
 
-These are deliberately postponed until the production loop is proven.
+Status: **complete through the first YouTube production path**.
 
-Potential work:
+Publishing remains optional. Rendering/export is always usable without a publishing provider.
 
-- source-specific import helpers where terms and APIs allow;
-- remote access through a private network such as Tailscale;
-- publishing provider boundary;
-- YouTube upload/scheduling integration;
-- analytics ingest;
-- template/hook experiment tracking;
-- viewed-vs-swiped, retention, subscriber conversion, restrictions, and revenue-oriented evaluation;
-- recommendation assistance based on the user's own historical performance.
+### PR27 — Publishing provider boundary and export-to-publish handoff
 
-Automatic publishing must not become a prerequisite for rendering or exporting.
+Status: **complete**.
+
+Platform-agnostic credential-free `PublishRequest`, exact human approval, semantic/idempotency identity, durable publish ledger, replaceable provider boundary, explicit remote side-effect boundary, and fail-closed `outcome_unknown` semantics.
+
+### PR28 — YouTube Data API publishing adapter
+
+Status: **complete**.
+
+Installed-app OAuth, exact channel binding, authenticated immutable media snapshot, resumable YouTube upload/scheduling, processing verification, exact remote metadata verification, provider-local secret boundary, and optional YouTube runtime.
+
+### PR29 — Versioned publication declarations contract v2
+
+Status: **complete**.
+
+Backward-compatible v1 digest preservation plus strict human-approved child-directed and realistic altered/synthetic-media declarations. V2 declarations participate in exact approval/idempotency identity, map to YouTube publication status, and are verified after upload.
+
+Milestone exit condition achieved: an authenticated final render can become one exact human-approved YouTube publication with durable evidence and duplicate-publication safety.
+
+---
+
+## PR30 — Roadmap v2 / post-PR29 status reconciliation
+
+Status: **in progress** in this documentation-only PR.
+
+Deliverables:
+
+- reconcile README/ROADMAP with the actual merged PR1–PR29 implementation state;
+- mark Milestones 5 and 6 complete;
+- split Milestone 7 into completed publishing work and the next measurement/learning phase;
+- make PR31 the next product implementation step;
+- keep convenience integrations below the evidence feedback loop rather than treating them as blockers.
+
+No runtime, schema, provider, API, PWA, or rendering behavior changes in PR30.
+
+---
+
+## Milestone 7B — Measurement, experiments, and evidence-driven improvement
+
+This is the next primary product phase.
+
+### PR31 — Analytics provider boundary
+
+Planned.
+
+Deliverables:
+
+- replaceable `AnalyticsProvider` protocol independent from publishing providers;
+- typed metric/observation contracts with explicit provider/version evidence;
+- exact link from an observation to a durable successful `PublishResult` / remote publication identity;
+- observation time and metric window semantics separated from ingestion time;
+- no credentials, filesystem paths, or provider sessions in semantic analytics records;
+- additive durable storage designed for repeated observations rather than overwriting one mutable current value;
+- explicit unavailable/partial/provider-error behavior;
+- provider-free Content Forge remains fully usable.
+
+Exit condition: Content Forge can represent trustworthy performance observations without coupling the core model to YouTube-specific metric names or OAuth behavior.
+
+### PR32 — YouTube Analytics adapter
+
+Planned.
+
+Deliverables:
+
+- optional YouTube Analytics/Data API implementation behind PR31;
+- account/channel identity bound to the already configured publication destination;
+- ingest only for exact known published remote video IDs unless explicitly importing historical channel data in a later feature;
+- normalize supported views/watch/engagement/subscriber/restriction metrics into PR31 observations while retaining raw provider evidence where useful;
+- bounded pagination/rate handling and controlled partial availability;
+- OAuth scopes remain local provider configuration, not analytics identity.
+
+Exit condition: a Content Forge YouTube publication can acquire authenticated performance observations through a replaceable adapter.
+
+### PR33 — Durable performance history and observation windows
+
+Planned.
+
+Deliverables:
+
+- append-only or otherwise history-preserving observation snapshots;
+- explicit comparable windows such as early/24h/7d/30d where provider data permits;
+- distinguish provisional from mature measurements;
+- no silent replacement of historical values with the latest fetch;
+- deterministic derived summaries over retained observations;
+- missing-data and late-data behavior remains explicit.
+
+Exit condition: the system can answer how a publication evolved over time, not merely what its counters say now.
+
+### PR34 — Experiment identity and publication attribution
+
+Planned.
+
+Deliverables:
+
+- versioned experiment definitions over production decisions already represented by Content Forge;
+- exact attribution from accepted variant/template/hook/language/presentation choices to final render and publish receipt;
+- experiment arms are immutable evidence, not mutable labels attached after results are known;
+- no automatic causal claims from uncontrolled comparisons;
+- support ordinary production history even when no experiment was declared.
+
+Exit condition: Content Forge can say exactly what production choice was being tested when a published result was produced.
+
+### PR35 — Performance dashboard and comparison PWA
+
+Planned.
+
+Deliverables:
+
+- publication timeline and metric-window views;
+- comparisons across templates, hooks, languages, profiles, formats, and declared experiment arms where evidence supports them;
+- source counts/sample sizes shown alongside aggregates;
+- missing/partial/stale analytics visibly distinguished from zero;
+- no hidden ranking objective that silently changes production decisions.
+
+Exit condition: the user can inspect what happened and compare relevant historical outputs without querying provider dashboards manually.
+
+### PR36 — Recommendation assistance from owned historical evidence
+
+Planned only after PR31–PR35 produce trustworthy evidence.
+
+Deliverables:
+
+- bounded recommendations over the user's own retained production/performance history;
+- every recommendation cites the observations/comparisons that motivated it;
+- uncertainty/sample-size limitations are first-class;
+- proposals never mutate projects or publishing choices without normal human review;
+- optional LLM assistance may explain/summarize evidence but does not become metric authority;
+- avoid promises that a recommendation will improve reach, retention, revenue, or virality.
+
+Exit condition: Content Forge can propose the next production decision because of traceable owned evidence, while the human retains judgment authority.
+
+Milestone 7B target loop:
+
+```text
+exact production choice
+-> exact render
+-> exact publication
+-> authenticated observations over time
+-> comparable retained history
+-> bounded recommendation
+-> human decision
+```
+
+---
+
+## Milestone 8 — Convenience integrations and operational reach
+
+These are useful but are intentionally not blockers for the measurement feedback loop.
+
+### PR37 — Source-specific import helpers
+
+Candidate scope:
+
+- source-specific helpers only where APIs/terms permit;
+- preserve original source URL/creator/title/permission evidence;
+- no broad scraping architecture;
+- imported bytes still enter through canonical local asset/provenance boundaries.
+
+### PR38 — Private remote access profile
+
+Candidate scope:
+
+- documented and tested private-network access such as Tailscale-style deployment;
+- retain TLS/auth/session boundaries;
+- no public-internet exposure by default;
+- no cloud dependency in the core production runtime.
+
+### Later candidates — only when justified by real use
+
+- second publishing platform adapter;
+- YouTube thumbnails/captions/playlists or additional approved publication semantics;
+- a durable long-running remote `processing` state if bounded YouTube processing proves too conservative in real long-form use;
+- historical channel analytics import separate from Content Forge-owned publications;
+- more production formats/components driven by actual workflow demand.
+
+These items should not be implemented merely to make the feature list longer.
 
 ---
 
@@ -472,9 +414,14 @@ Automatic publishing must not become a prerequisite for rendering or exporting.
 2. `ContentKind`, `Template`, and `Workflow` remain separate.
 3. The renderer consumes a normalized timeline/render plan, not business-specific content types.
 4. Providers are replaceable and optional.
-5. Human-required decisions surface as explicit review tasks.
+5. Human-required decisions surface as explicit review tasks or exact approvals.
 6. Every output can be traced back to source records and accepted project state.
 7. New content formats should normally be additive.
 8. Short-form and long-form share the same scene/timeline runtime.
 9. Fast previews and final renders are separate output profiles over the same project.
-10. The project optimizes human attention before it optimizes machine cleverness.
+10. Publishing authority is separate from render correctness and project state.
+11. Credentials and machine-local paths stay outside semantic request/evidence identities unless the identity specifically describes local storage itself.
+12. Uncertain remote side effects fail closed; automatic duplicate publication is never preferred over explicit reconciliation.
+13. Analytics observations are evidence, not authority to mutate production state.
+14. Recommendations remain proposals and must be traceable to retained evidence.
+15. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
