@@ -4,11 +4,11 @@ This roadmap is organized as small reviewable pull requests. The architecture sh
 
 ## Current implementation status
 
-- PR1–PR29: **complete** in the intended post-merge repository state.
-- Current documentation step: **PR30 — Roadmap v2 / post-PR29 status reconciliation**.
+- PR1–PR30: **complete** in the intended post-merge repository state.
+- Current product step: **PR31 — Analytics provider boundary**.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
-- Next product step after PR30: **PR31 — Analytics provider boundary**.
+- Milestone 7B — Measurement, experiments, and evidence-driven improvement: **next**.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
 The current product loop is already durable through publication:
@@ -252,27 +252,30 @@ Milestone exit condition achieved: an authenticated final render can become one 
 
 ## PR30 — Roadmap v2 / post-PR29 status reconciliation
 
-Status: **in progress** in this documentation-only PR.
+Status: **complete**.
 
-Deliverables:
+Delivered:
 
-- reconcile README/ROADMAP with the actual merged PR1–PR29 implementation state;
-- mark Milestones 5 and 6 complete;
+- reconciled README/ROADMAP with the actual merged PR1–PR29 implementation state;
+- marked Milestones 5 and 6 complete;
 - split Milestone 7 into completed publishing work and the next measurement/learning phase;
-- make PR31 the next product implementation step;
-- keep convenience integrations below the evidence feedback loop rather than treating them as blockers.
+- made PR31 the next product implementation step;
+- moved convenience integrations below the evidence feedback loop rather than treating them as blockers;
+- reconciled provider documentation so the already-implemented publishing boundary is no longer described as future work.
 
-No runtime, schema, provider, API, PWA, or rendering behavior changes in PR30.
+PR30 changes documentation only; it introduces no runtime, schema, provider implementation, API, PWA, storage, or rendering behavior.
 
 ---
 
 ## Milestone 7B — Measurement, experiments, and evidence-driven improvement
 
+Status: **next**.
+
 This is the next primary product phase.
 
 ### PR31 — Analytics provider boundary
 
-Planned.
+Current planned product step.
 
 Deliverables:
 
