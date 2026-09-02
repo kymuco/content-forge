@@ -14,6 +14,7 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .daily_production_pwa_route import install_daily_production_pwa_route
 from .daily_production_routes import install_daily_production_routes
 from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
@@ -132,6 +133,7 @@ def create_app(
             max_upload_bytes=max_upload_bytes,
             share_body_limit=max_upload_bytes + MULTIPART_OVERHEAD_BUDGET,
         )
+        install_daily_production_pwa_route(app)
     except BaseException:
         app.state.runtime_lease.close()
         raise
