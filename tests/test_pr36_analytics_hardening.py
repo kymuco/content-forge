@@ -117,11 +117,12 @@ def test_analytics_window_cannot_begin_before_publication(tmp_path) -> None:
         AnalyticsQuery(
             publication=publication,
             window=AnalyticsWindow(
-                start_at=effective_at.replace(minute=effective_at.minute - 1),
-                end_at=effective_at.replace(hour=effective_at.hour + 1),
+                start_at=datetime(2026, 9, 1, 9, 59, tzinfo=UTC),
+                end_at=datetime(2026, 9, 1, 11, 0, tzinfo=UTC),
             ),
             metric_ids=("views",),
         )
+    assert publication.effective_at == effective_at
 
 
 def test_observed_at_may_be_provisional_but_not_predate_window(tmp_path) -> None:
@@ -133,7 +134,7 @@ def test_observed_at_may_be_provisional_but_not_predate_window(tmp_path) -> None
     with pytest.raises(ValidationError):
         AnalyticsObservationBatch(
             query=query,
-            observed_at=query.window.start_at.replace(minute=query.window.start_at.minute - 1),
+            observed_at=datetime(2026, 9, 1, 9, 59, tzinfo=UTC),
             availability="complete",
             metrics=(AnalyticsMetric(metric_id="views", unit="count", value=1),),
             evidence=AnalyticsInvocationEvidence(
