@@ -1,4 +1,4 @@
-"""PR27 fail-closed validation for publishing-provider results."""
+"""PR27/PR29 fail-closed validation for publishing-provider results."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ def validate_publish_result(
     expected_request_sha256 = semantic_publish_request_digest(request.request)
     expected_idempotency_key = publish_idempotency_key(request.request)
 
+    if request.approval.contract_version != request.request.contract_version:
+        raise PublishingResponseError("publish approval contract version does not match approved request")
+    if result.evidence.contract_version != request.request.contract_version:
+        raise PublishingResponseError("publish result contract version does not match approved request")
     if target.provider_id != health.provider_id:
         raise PublishingResponseError("publish target provider does not match provider health identity")
     if result.evidence.provider_id != health.provider_id:
