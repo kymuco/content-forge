@@ -23,6 +23,7 @@ def validate_publish_result(
         raise PublishingResponseError("publishing provider reported unavailable before result validation")
     target = request.request.target
     artifact = request.request.artifact
+    metadata = request.request.metadata
     expected_request_sha256 = semantic_publish_request_digest(request.request)
     expected_idempotency_key = publish_idempotency_key(request.request)
 
@@ -43,12 +44,14 @@ def validate_publish_result(
     if result.evidence.destination_id != target.destination_id:
         raise PublishingResponseError("publish result destination does not match approved target")
 
-    expected_disposition = (
-        "scheduled" if request.request.metadata.scheduled_for is not None else "published"
-    )
+    expected_disposition = "scheduled" if metadata.scheduled_for is not None else "published"
     if result.disposition != expected_disposition:
         raise PublishingResponseError(
             f"publish result disposition must be {expected_disposition} for the approved request"
+        )
+    if metadata.scheduled_for is not None and result.effective_at != metadata.scheduled_for:
+        raise PublishingResponseError(
+            "publish result effective time does not match approved schedule"
         )
     return result
 
