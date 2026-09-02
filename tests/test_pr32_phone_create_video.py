@@ -36,10 +36,11 @@ def test_pr32_installed_pwa_remains_an_explicit_predecessor_after_pr33() -> None
     assert 'const PR29_CACHE_NAME = `${CACHE_PREFIX}v16`' in worker
     assert 'const PR31_CACHE_NAME = `${CACHE_PREFIX}v17`' in worker
     assert 'const PR32_CACHE_NAME = `${CACHE_PREFIX}v18`' in worker
-    assert 'const CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
+    assert 'const PR33_CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
     assert 'key === PR29_CACHE_NAME' in worker
     assert 'key === PR31_CACHE_NAME' in worker
     assert 'key === PR32_CACHE_NAME' in worker
+    assert 'key === PR33_CACHE_NAME' in worker
     assert 'appUrl("production-home.js")' in worker
 
 
