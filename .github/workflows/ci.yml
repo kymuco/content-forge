@@ -85,7 +85,11 @@ jobs:
       - name: Compile
         run: python -m compileall -q src
       - name: PR28 YouTube provider contract tests
-        run: pytest -q tests/test_pr28_youtube_publishing.py tests/test_api_cli.py
+        run: |
+          pytest -q \
+            tests/test_pr28_youtube_publishing.py \
+            tests/test_pr28_youtube_optional_runtime.py \
+            tests/test_api_cli.py
 
   ffmpeg-integration:
     runs-on: ubuntu-latest
