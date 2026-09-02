@@ -14,7 +14,7 @@ OCRProvider        # implemented in PR18
 TTSProvider        # implemented in PR20
 SourceProvider     # later convenience work
 PublishingProvider # implemented in PR27; YouTube adapter in PR28/PR29
-AnalyticsProvider  # planned for PR36 after Daily Production Completion
+AnalyticsProvider  # implemented in PR36; concrete platform adapter next
 ```
 
 ## General provider rules
@@ -360,39 +360,54 @@ OAuth tokens, local token paths, SDK sessions, and other secrets remain provider
 
 See [`pr27-publishing-provider-boundary.md`](pr27-publishing-provider-boundary.md), [`pr28-youtube-publishing-adapter.md`](pr28-youtube-publishing-adapter.md), and [`pr29-versioned-publication-declarations.md`](pr29-versioned-publication-declarations.md).
 
-## `AnalyticsProvider` (planned PR36)
+## `AnalyticsProvider`
 
-Analytics remains the next major provider boundary after Daily Production Completion rather than the immediate PR31 product step.
+PR36 implements the platform-independent, read-only analytics evidence boundary after Daily Production Completion.
 
-The intended role is to import authenticated platform performance observations for exact known publications without making analytics a hidden project-state authority.
+The provider protocol is deliberately narrow:
 
-Planned normalized observation families may include provider-supported values such as:
-
-```text
-views
-watch/average-view-duration metrics
-viewed-vs-swiped where available
-retention observations where available
-likes/comments/shares
-subscriber conversion
-restrictions/monetization state where available
-revenue/RPM where available
+```python
+class AnalyticsProvider(Protocol):
+    def health(self) -> AnalyticsProviderHealth: ...
+    def observe(self, query: AnalyticsQuery) -> AnalyticsObservationBatch: ...
 ```
 
-The exact PR36 metric model will be designed from current provider APIs rather than freezing this illustrative list prematurely.
+The subject of one query is not a loose Project or provider video ID. It is an exact `SuccessfulPublicationRef` reconstructed from one durable PR27 `succeeded` attempt. Before analytics can use that subject, Content Forge revalidates the approved publish request, provider-health evidence, and retained publish result with the existing publishing validator.
 
-Key planned invariants:
+`AnalyticsQuery` then binds that publication to one explicit half-open window `[start_at, end_at)` and a canonical set of requested metric IDs. The window cannot begin before the publication's effective time.
 
-- analytics is optional;
-- observations retain provider/version/time-window evidence;
-- observations attach to exact durable successful publication identity;
-- observation time/window is separate from ingestion time;
-- repeated observations preserve history rather than silently replacing one mutable counter snapshot;
-- missing/partial data is distinct from zero;
-- analytics evidence does not mutate Project, render, or publish authority;
-- later recommendations remain proposals traceable to retained observations.
+Provider observations distinguish three states:
 
-See [`../ROADMAP.md`](../ROADMAP.md) for PR36–PR41 sequencing.
+```text
+complete    # all requested metrics are present
+partial     # some requested metrics are present, the rest are explicitly missing
+unavailable # none of the requested metrics is currently available, with a reason
+```
+
+A real numeric zero is therefore evidence and is never used as a stand-in for missing data. Normalized metric units are explicit (`count`, `ratio`, `seconds`, `currency_minor`, or `score`), while concrete metric IDs remain provider/adapter-facing vocabulary rather than a fabricated universal performance ontology.
+
+Every observation retains:
+
+```text
+exact analytics query
+provider ID + version
+semantic query SHA-256
+publication remote ID
+optional provider observation ID
+provider observed_at time
+complete / partial / unavailable coverage
+returned metrics + explicit missing metric IDs
+```
+
+Local `ingested_at` is added only by append-only storage and is intentionally separate from provider `observed_at`. Repeating the exact same semantic observation is idempotent and keeps the original ingestion time; a genuinely new observation of the same publication/window is retained as a new history record instead of overwriting the previous snapshot.
+
+Provider health and returned observations are canonical-revalidated at the application boundary, including protection against unvalidated Pydantic `model_copy(update=...)` objects. Storage repeats canonical validation, verifies the publication still matches durable successful evidence, revalidates stored JSON on reads, and cross-checks denormalized index columns against immutable observation JSON.
+
+Analytics never mutates `Project`, Review, Render/QC, or Publishing state. The analytics schema is lazy and provider-free rendering/export/publishing remains usable without any analytics provider.
+
+PR36 does **not** implement a YouTube Analytics SDK adapter, dashboard, comparable/mature-window summaries, experiments, or recommendations. Those remain PR37+.
+
+See [`pr36-analytics-provider-boundary.md`](pr36-analytics-provider-boundary.md) and [`../ROADMAP.md`](../ROADMAP.md) for the exact contract and PR37–PR41 sequencing.
 
 ## Provider configuration
 
@@ -417,9 +432,13 @@ providers:
   publishing:
     kind: youtube
     enabled: false
+
+  analytics:
+    kind: future_platform_adapter
+    enabled: false
 ```
 
-This example is architectural documentation, not a promise that one canonical YAML loader currently owns all provider configuration.
+This example is architectural documentation, not a promise that one canonical YAML loader currently owns all provider configuration or that a concrete analytics adapter already exists.
 
 ## Testing
 
@@ -430,6 +449,7 @@ This allows normal CI to test provider contracts without requiring live external
 - LLM proposal acceptance/rejection and strict provider-output parsing;
 - OCR source/request evidence validation and raw-versus-corrected retention;
 - TTS semantic/cache identity, pinned Qwen snapshot resolution, WAV verification, and generated-asset integrity;
-- publishing provider health/result validation, exact approval/idempotency identity, crash uncertainty, authenticated YouTube upload bytes, and v2 declaration mapping/verification.
+- publishing provider health/result validation, exact approval/idempotency identity, crash uncertainty, authenticated YouTube upload bytes, and v2 declaration mapping/verification;
+- analytics exact successful-publication binding, temporal-window semantics, complete/partial/unavailable coverage, provider identity drift, model-copy bypass hardening, append-only/idempotent history, stored-row tamper detection, and provider-free lazy storage.
 
-PR36 should follow the same pattern: fake/injected analytics providers in base CI, with any real provider SDK isolated behind an optional contract job.
+A real PR37 analytics adapter should add an optional contract job without making external analytics SDKs or credentials part of base CI.
