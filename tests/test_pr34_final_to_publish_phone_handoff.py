@@ -15,6 +15,7 @@ from content_forge.providers import (
     PublishMetadata,
     PublishRequest,
     PublishTarget,
+    PublishingProviderHealth,
     YouTubePublishingConfig,
     YouTubePublishingProvider,
     approve_publish_request,
@@ -156,6 +157,60 @@ def test_pr34_project_projection_is_authenticated_and_filters_exact_final_before
             and item["request"]["artifact"]["output_sha256"] == exact_sha
             for item in payload["items"]
         )
+    finally:
+        app.state.runtime_lease.close()
+
+
+def test_pr34_projection_limit_cannot_hide_older_unknown_remote_outcome(tmp_path: Path) -> None:
+    app = create_app(root=tmp_path, publishing_provider=_TargetOnlyProvider())
+    client = TestClient(app)
+    try:
+        project_id = new_entity_id(EntityKind.PROJECT)
+        exact_job_id = new_entity_id(EntityKind.JOB)
+        exact_sha = "d" * 64
+        unknown_id, exact_request = _prepare(
+            app,
+            project_id,
+            title="Older unknown upload",
+            render_job_id=exact_job_id,
+            output_sha256=exact_sha,
+        )
+        repository = app.state.library.publishing
+        repository.mark_running(
+            unknown_id,
+            PublishingProviderHealth(
+                provider_id="fixture",
+                provider_version="fixture-v1",
+                available=True,
+            ),
+        )
+        repository.mark_outcome_unknown(
+            unknown_id,
+            code="synthetic_unknown",
+            message="synthetic remote outcome is unknown",
+        )
+
+        # A newer prepared request for the same exact bytes must not displace the older
+        # retry-blocking outcome when the phone asks for only the strongest item.
+        newer_id, _ = _prepare(
+            app,
+            project_id,
+            title="Newer prepared upload",
+            render_job_id=exact_job_id,
+            output_sha256=exact_sha,
+        )
+        assert newer_id != unknown_id
+
+        headers = _paired_headers(client)
+        response = client.get(
+            _projection_url(project_id, exact_request, limit=1),
+            headers=headers,
+        )
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["attempt"]["attempt_id"] == unknown_id
+        assert items[0]["attempt"]["state"] == "outcome_unknown"
     finally:
         app.state.runtime_lease.close()
 
