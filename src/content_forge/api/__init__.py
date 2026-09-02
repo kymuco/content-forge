@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from content_forge.application import review_pr32_presets as _review_pr32_presets  # noqa: F401
 from content_forge.providers.publishing import PublishingProvider
 from content_forge.providers.tts import TTSProvider
 from content_forge.web.routes import install_pwa_routes
@@ -15,6 +16,7 @@ from .app import (
 )
 from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
+from .production_preset_routes import install_production_preset_routes
 from .production_profile_routes import install_production_profile_routes
 from .publishing_pwa_route import install_publishing_pwa_route
 from .publishing_routes import install_publishing_routes
@@ -49,6 +51,12 @@ def create_app(
             library=app.state.library,
             ffmpeg_path=ffmpeg_path,
             ffprobe_path=ffprobe_path,
+        )
+        install_production_preset_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            review=review,
         )
         install_review_prepare_route(
             app,
