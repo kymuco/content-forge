@@ -108,6 +108,26 @@ def test_pr29_v2_requires_both_explicit_boolean_declarations() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("child_directed", "synthetic"),
+    [
+        ("false", False),
+        (False, "true"),
+        (0, False),
+        (False, 1),
+    ],
+)
+def test_pr29_declarations_reject_non_boolean_coercion(
+    child_directed: object,
+    synthetic: object,
+) -> None:
+    with pytest.raises(ValidationError, match="valid boolean"):
+        PublishDeclarations(
+            child_directed=child_directed,
+            contains_realistic_altered_or_synthetic_media=synthetic,
+        )
+
+
 def test_pr29_v2_declarations_participate_in_exact_digest_and_approval() -> None:
     base = dict(
         contract_version="pr29_publish_contract_v2",
