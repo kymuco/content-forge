@@ -51,15 +51,21 @@ class _OpaqueProvider:
     pass
 
 
-def _request(project_id: str, *, title: str) -> PublishRequest:
+def _request(
+    project_id: str,
+    *,
+    title: str,
+    render_job_id: str | None = None,
+    output_sha256: str | None = None,
+) -> PublishRequest:
     return PublishRequest(
         contract_version="pr29_publish_contract_v2",
         artifact=PublishArtifactRef(
             project_id=project_id,
-            render_job_id=new_entity_id(EntityKind.JOB),
+            render_job_id=render_job_id or new_entity_id(EntityKind.JOB),
             profile_id="youtube_shorts_1080p",
             render_plan_digest="1" * 64,
-            output_sha256="2" * 64,
+            output_sha256=output_sha256 or "2" * 64,
             bytes_written=123,
             width=1080,
             height=1920,
@@ -75,31 +81,68 @@ def _request(project_id: str, *, title: str) -> PublishRequest:
     )
 
 
-def _prepare(app, project_id: str, *, title: str) -> str:
-    approved = approve_publish_request(_request(project_id, title=title))
-    return app.state.library.publishing.prepare_attempt(approved).attempt_id
+def _prepare(
+    app,
+    project_id: str,
+    *,
+    title: str,
+    render_job_id: str | None = None,
+    output_sha256: str | None = None,
+) -> tuple[str, PublishRequest]:
+    request = _request(
+        project_id,
+        title=title,
+        render_job_id=render_job_id,
+        output_sha256=output_sha256,
+    )
+    approved = approve_publish_request(request)
+    attempt = app.state.library.publishing.prepare_attempt(approved)
+    return attempt.attempt_id, request
 
 
-def test_pr34_project_projection_is_authenticated_and_filters_before_limit(tmp_path: Path) -> None:
+def _projection_url(project_id: str, request: PublishRequest, *, limit: int = 20) -> str:
+    artifact = request.artifact
+    return (
+        f"/api/v1/publishing/projects/{project_id}"
+        f"?render_job_id={artifact.render_job_id}"
+        f"&output_sha256={artifact.output_sha256}"
+        f"&limit={limit}"
+    )
+
+
+def test_pr34_project_projection_is_authenticated_and_filters_exact_final_before_limit(
+    tmp_path: Path,
+) -> None:
     app = create_app(root=tmp_path, publishing_provider=_TargetOnlyProvider())
     client = TestClient(app)
     try:
         project_id = new_entity_id(EntityKind.PROJECT)
         unrelated_id = new_entity_id(EntityKind.PROJECT)
-        expected_attempt = _prepare(app, project_id, title="Project upload")
-        _prepare(app, unrelated_id, title="Unrelated newer upload")
+        exact_job_id = new_entity_id(EntityKind.JOB)
+        exact_sha = "a" * 64
+        expected_attempt, exact_request = _prepare(
+            app,
+            project_id,
+            title="Project upload",
+            render_job_id=exact_job_id,
+            output_sha256=exact_sha,
+        )
+        # Newer attempts for both the same Project/different final and another Project
+        # must not consume the exact-final projection limit.
+        _prepare(app, project_id, title="Stale project final", output_sha256="b" * 64)
+        _prepare(app, unrelated_id, title="Unrelated newer upload", output_sha256="c" * 64)
 
-        unauthenticated = client.get(f"/api/v1/publishing/projects/{project_id}?limit=1")
+        url = _projection_url(project_id, exact_request, limit=1)
+        unauthenticated = client.get(url)
         assert unauthenticated.status_code == 401
 
         headers = _paired_headers(client)
-        response = client.get(
-            f"/api/v1/publishing/projects/{project_id}?limit=1",
-            headers=headers,
-        )
+        response = client.get(url, headers=headers)
         assert response.status_code == 200
         payload = response.json()
         assert payload["project_id"] == project_id
+        assert payload["render_job_id"] == exact_job_id
+        assert payload["output_sha256"] == exact_sha
         assert payload["provider_configured"] is True
         assert payload["configured_target"] == {
             "provider_id": "fixture",
@@ -107,21 +150,44 @@ def test_pr34_project_projection_is_authenticated_and_filters_before_limit(tmp_p
         }
         assert payload["preferred_contract_version"] == "pr29_publish_contract_v2"
         assert [item["attempt"]["attempt_id"] for item in payload["items"]] == [expected_attempt]
-        assert all(item["request"]["artifact"]["project_id"] == project_id for item in payload["items"])
+        assert all(
+            item["request"]["artifact"]["project_id"] == project_id
+            and item["request"]["artifact"]["render_job_id"] == exact_job_id
+            and item["request"]["artifact"]["output_sha256"] == exact_sha
+            for item in payload["items"]
+        )
     finally:
         app.state.runtime_lease.close()
 
 
-def test_pr34_project_projection_rejects_malformed_project_id(tmp_path: Path) -> None:
+def test_pr34_project_projection_requires_valid_exact_final_identity(tmp_path: Path) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
         headers = _paired_headers(client)
-        response = client.get(
-            "/api/v1/publishing/projects/not-a-project-id",
+        project_id = new_entity_id(EntityKind.PROJECT)
+        job_id = new_entity_id(EntityKind.JOB)
+
+        malformed_project = client.get(
+            f"/api/v1/publishing/projects/not-a-project-id"
+            f"?render_job_id={job_id}&output_sha256={'a' * 64}",
             headers=headers,
         )
-        assert response.status_code == 422
+        assert malformed_project.status_code == 422
+
+        malformed_job = client.get(
+            f"/api/v1/publishing/projects/{project_id}"
+            f"?render_job_id=not-a-job&output_sha256={'a' * 64}",
+            headers=headers,
+        )
+        assert malformed_job.status_code == 422
+
+        malformed_sha = client.get(
+            f"/api/v1/publishing/projects/{project_id}"
+            f"?render_job_id={job_id}&output_sha256=not-a-sha",
+            headers=headers,
+        )
+        assert malformed_sha.status_code == 422
     finally:
         app.state.runtime_lease.close()
 
@@ -132,10 +198,8 @@ def test_pr34_unknown_provider_never_invents_a_phone_destination(tmp_path: Path)
     try:
         headers = _paired_headers(client)
         project_id = new_entity_id(EntityKind.PROJECT)
-        response = client.get(
-            f"/api/v1/publishing/projects/{project_id}",
-            headers=headers,
-        )
+        request = _request(project_id, title="No target")
+        response = client.get(_projection_url(project_id, request), headers=headers)
         assert response.status_code == 200
         assert response.json()["provider_configured"] is True
         assert response.json()["configured_target"] is None
@@ -169,34 +233,33 @@ def test_pr34_served_project_flow_emits_non_authoritative_publish_hooks(tmp_path
         response = client.get("/app/production-home.js")
         assert response.status_code == 200
         script = response.text
-        assert 'content-forge:project-flow-rendered' in script
-        assert 'detail: { project }' in script
-        assert 'content-forge:project-flow-closed' in script
-        assert script.count('content-forge:project-flow-rendered') == 1
-        assert script.count('content-forge:project-flow-closed') == 1
+        assert "content-forge:project-flow-rendered" in script
+        assert "detail: { project }" in script
+        assert "content-forge:project-flow-closed" in script
+        assert script.count("content-forge:project-flow-rendered") == 1
+        assert script.count("content-forge:project-flow-closed") == 1
     finally:
         app.state.runtime_lease.close()
 
 
-def test_pr34_phone_publish_flow_uses_exact_final_and_existing_publish_authority() -> None:
+def test_pr34_phone_publish_source_uses_existing_publish_authority() -> None:
     script = static_path("project-publishing.js").read_text(encoding="utf-8")
 
-    assert 'content-forge:project-flow-rendered' in script
+    assert "content-forge:project-flow-rendered" in script
     assert 'await apiJson("publishing/status")' in script
-    assert 'publishing/projects/${encodeURIComponent(project.project_id)}?limit=50' in script
-    assert 'render_job_id: project.final.job_id' in script
+    assert "render_job_id: project.final.job_id" in script
     assert 'contract_version: "pr29_publish_contract_v2"' in script
-    assert 'child_directed: requiredDeclaration' in script
-    assert 'contains_realistic_altered_or_synthetic_media: requiredDeclaration' in script
+    assert "child_directed: requiredDeclaration" in script
+    assert "contains_realistic_altered_or_synthetic_media: requiredDeclaration" in script
     assert 'apiJson("publishing/candidates"' in script
     assert 'apiJson("publishing/attempts"' in script
-    assert '/execute`' in script
-    assert 'artifact.project_id !== project.project_id' in script
-    assert 'artifact.render_job_id !== final.job_id' in script
-    assert 'artifact.output_sha256 !== final.output_sha256' in script
-    assert 'Routine replacement publishing is blocked to prevent a duplicate upload.' in script
-    assert 'Multiple active publish attempts exist for this exact final.' in script
-    assert 'configured_target' in script
+    assert "/execute`" in script
+    assert "artifact.project_id !== project.project_id" in script
+    assert "artifact.render_job_id !== final.job_id" in script
+    assert "artifact.output_sha256 !== final.output_sha256" in script
+    assert "Routine replacement publishing is blocked to prevent a duplicate upload." in script
+    assert "Multiple active publish attempts exist for this exact final." in script
+    assert "configured_target" in script
     assert "innerHTML" not in script
 
     routine_form = script.split("function renderForm(", 1)[1].split("async function renderStage", 1)[0]
@@ -211,16 +274,25 @@ def test_pr34_phone_publish_flow_uses_exact_final_and_existing_publish_authority
     assert "/execute" not in approval
 
 
-def test_pr34_publishing_route_bundles_advanced_and_project_phone_modules(tmp_path: Path) -> None:
+def test_pr34_served_phone_bundle_queries_exact_final_and_prioritizes_remote_risk(
+    tmp_path: Path,
+) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
         response = client.get("/app/publishing.js")
         assert response.status_code == 200
         script = response.text
-        assert 'publishing-candidate-form' in script
-        assert 'project-publishing-stage' in script
-        assert 'content-forge:project-flow-rendered' in script
+        assert "publishing-candidate-form" in script
+        assert "project-publishing-stage" in script
+        assert "content-forge:project-flow-rendered" in script
+        assert "?render_job_id=${encodeURIComponent(project.final.job_id)}" in script
+        assert "&output_sha256=${encodeURIComponent(project.final.output_sha256)}" in script
+        assert "context.render_job_id !== project.final.job_id" in script
+        assert "context.output_sha256 !== project.final.output_sha256" in script
+        assert 'if (state === "outcome_unknown") return 5;' in script
+        assert 'if (state === "running") return 4;' in script
+        assert 'if (state === "succeeded") return 3;' in script
     finally:
         app.state.runtime_lease.close()
 
@@ -230,7 +302,7 @@ def test_pr34_installed_pwa_advances_from_pr33_shell() -> None:
 
     assert 'const PR33_CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
     assert 'const CACHE_NAME = `${CACHE_PREFIX}v20`' in worker
-    assert 'key === PR33_CACHE_NAME' in worker
+    assert "key === PR33_CACHE_NAME" in worker
     assert 'appUrl("publishing.js")' in worker
 
 
