@@ -115,6 +115,29 @@ The phone should excel at small decisions:
 
 Each task should fit on one focused screen/card whenever practical.
 
+### Flow 6 — Daily attention and bounded safe work
+
+Once multiple sources and Projects coexist, the normal phone home should answer **what needs attention now?** rather than exposing every internal subsystem.
+
+The daily projection is grouped as:
+
+```text
+Needs recovery
+Needs you
+Ready automatically
+Working
+New sources
+Finished
+```
+
+These are presentation groups, not new persisted Project states. They are derived from canonical Inbox, Project, Review, Render/QC, and Publishing authority.
+
+`Run safe work` may advance only deterministic work whose human authority is already complete: bootstrap derived production Projects, render previews after all non-preview blockers are closed, and render finals after an exact preview approval. It never accepts hook/crop/manual review, approves previews, chooses publication declarations, approves publishing, or executes a remote publication.
+
+Raw Inbox source Projects remain reusable source material and are excluded from this automatic compute path. A source leaves the **New sources** group after canonical PR32 provenance records that it has been used, but remains selectable for another Create video workflow.
+
+Remote publishing uncertainty is safety-significant rather than ordinary history. Durable `prepared`, `running`, and especially `outcome_unknown` attempts remain visible even when their Project is older than the normal bounded recent-project window. The daily queue never retries those remote side effects automatically.
+
 ## Desktop-only or desktop-preferred work
 
 The mobile-first goal does not mean forcing every operation onto a small screen.
@@ -245,4 +268,7 @@ Phone-first ingest/review is successful when all of the following are true:
 3. The user can see upload/preparation status from the phone.
 4. Common review tasks can be completed comfortably one-handed.
 5. Preview approval and final render can be triggered from phone.
-6. No credentials or raw storage tree need to be exposed to the phone.
+6. Multiple concurrent source/project items can be triaged from one daily attention surface without exposing internal IDs.
+7. Deterministic desktop work can be advanced in a bounded batch without accepting human decisions.
+8. Uncertain remote side effects remain visible and are never silently retried.
+9. No credentials or raw storage tree need to be exposed to the phone.
