@@ -13,6 +13,7 @@ from content_forge.providers.analytics import (
     AnalyticsObservationBatch,
     SuccessfulPublicationRef,
     semantic_analytics_observation_digest,
+    semantic_analytics_query_digest,
 )
 from content_forge.providers.publishing import ApprovedPublishRequest
 from content_forge.providers.publishing_validation import validate_publish_result
@@ -179,13 +180,39 @@ class AnalyticsRepository:
 
     @staticmethod
     def _decode(row) -> AnalyticsObservationRecord:
-        return AnalyticsObservationRecord(
-            observation_sha256=str(row["observation_sha256"]),
-            observation=AnalyticsObservationBatch.model_validate_json(
+        try:
+            observation = AnalyticsObservationBatch.model_validate_json(
                 str(row["observation_json"])
-            ),
-            ingested_at=datetime.fromisoformat(str(row["ingested_at"])),
-        )
+            )
+            record = AnalyticsObservationRecord(
+                observation_sha256=str(row["observation_sha256"]),
+                observation=observation,
+                ingested_at=datetime.fromisoformat(str(row["ingested_at"])),
+            )
+        except Exception as exc:
+            raise StorageConflictError("stored analytics observation is invalid") from exc
+
+        publication = observation.query.publication
+        evidence = observation.evidence
+        expected = {
+            "publish_attempt_id": publication.publish_attempt_id,
+            "request_sha256": publication.request_sha256,
+            "query_sha256": semantic_analytics_query_digest(observation.query),
+            "analytics_provider_id": evidence.provider_id,
+            "analytics_provider_version": evidence.provider_version,
+            "publication_remote_id": publication.remote_id,
+            "window_start": observation.query.window.start_at.isoformat(),
+            "window_end": observation.query.window.end_at.isoformat(),
+            "observed_at": observation.observed_at.isoformat(),
+        }
+        for column, expected_value in expected.items():
+            if str(row[column]) != expected_value:
+                raise StorageConflictError(
+                    f"analytics observation index evidence mismatch: {column}"
+                )
+        if str(row["query_sha256"]) != evidence.query_sha256:
+            raise StorageConflictError("analytics observation query evidence mismatch")
+        return record
 
     @staticmethod
     def _canonical_observation(
@@ -270,7 +297,15 @@ class AnalyticsRepository:
                 "SELECT * FROM analytics_observations WHERE observation_sha256 = ?",
                 (observation_sha256,),
             ).fetchone()
-        return None if row is None else self._decode(row)
+        if row is None:
+            return None
+        record = self._decode(row)
+        current = self.successful_publication(
+            record.observation.query.publication.publish_attempt_id
+        )
+        if record.observation.query.publication != current:
+            raise StorageConflictError("analytics observation publication evidence is stale")
+        return record
 
     def observations_for_publication(
         self,
@@ -281,6 +316,7 @@ class AnalyticsRepository:
         publish_attempt_id = require_entity_id(publish_attempt_id, EntityKind.PUBLISH)
         if limit < 1 or limit > 4096:
             raise ValueError("analytics observation limit must be between 1 and 4096")
+        current = self.successful_publication(publish_attempt_id)
         with self.database.connection() as connection:
             rows = connection.execute(
                 """
@@ -291,7 +327,10 @@ class AnalyticsRepository:
                 """,
                 (publish_attempt_id, limit),
             ).fetchall()
-        return tuple(self._decode(row) for row in rows)
+        records = tuple(self._decode(row) for row in rows)
+        if any(record.observation.query.publication != current for record in records):
+            raise StorageConflictError("analytics history publication evidence is inconsistent")
+        return records
 
 
 __all__ = ["AnalyticsObservationRecord", "AnalyticsRepository"]
