@@ -4,16 +4,16 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 
 ## Current implementation status
 
-- PR1–PR35: **complete in the intended post-merge repository state**.
+- PR1–PR36: **complete in the intended post-merge repository state**.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
 - Milestone 7B — Daily Production Completion: **complete in the intended post-PR35 state**.
-- Current implemented step: **PR35 — Mobile batch Inbox and attention queue**.
-- Next product phase: **Milestone 8 — Measurement, experiments, and evidence-driven improvement**.
-- Next planned implementation step: **PR36 — Analytics provider boundary**.
+- Current implemented step: **PR36 — Analytics provider boundary and durable observation history**.
+- Current product phase: **Milestone 8 — Measurement, experiments, and evidence-driven improvement**.
+- Next planned implementation step: **PR37 — YouTube Analytics adapter**.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
-The engine is already durable through publication:
+The engine is already durable through publication and can now retain provider-agnostic measurement evidence:
 
 ```text
 Source
@@ -23,24 +23,11 @@ Source
 -> Render
 -> QC / export
 -> Human-approved publish request
--> YouTube
+-> durable successful publication
+-> optional AnalyticsProvider observation
 ```
 
-The immediate product goal is to hide that engine behind the original phone-first workflow:
-
-```text
-Find/share on phone
--> Production Home
--> Create video
--> choose a useful human-facing format
--> choose/order compatible source media
--> answer only the decisions that need judgment
--> preview on phone
--> approve
--> desktop renders/QCs
--> final on phone
--> publish
-```
+The phone-first daily production loop remains complete through PR35. Milestone 8 now builds a separate evidence loop over exact known publications rather than changing production authority.
 
 The desktop remains the local source of truth and compute worker. The phone is the normal daily control surface. Internal subsystem panels remain available for advanced/debugging work, but routine production should not require knowledge of project IDs, render job IDs, template versions, provider internals, or repository architecture.
 
@@ -215,7 +202,7 @@ Status: **complete**.
 
 PR30 reconciled the repository with actual implementation through PR29. Analytics was initially selected as the next architecture step. Re-evaluation against the original phone-first workflow showed a more immediate bottleneck: Content Forge already had a strong production engine but still exposed too much engineering topology for daily use.
 
-That finding changed priority, not architecture. Analytics remains planned; Daily Production Completion comes first.
+That finding changed priority, not architecture. Analytics remained planned; Daily Production Completion came first.
 
 ---
 
@@ -380,35 +367,49 @@ for the common production paths, without requiring routine access to desktop UI,
 
 ## Milestone 8 — Measurement, experiments, and evidence-driven improvement
 
-Status: **next planned product phase**.
+Status: **active; PR36 complete in the intended post-merge state**.
 
-The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge should first retain trustworthy observations from the user's own published work, then make bounded recommendations traceable to that evidence.
+The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge first retains trustworthy observations from the user's own exact published work, then later builds comparable histories and bounded recommendations traceable to that evidence.
 
 ### PR36 — Analytics provider boundary
 
-Planned.
+Status: **complete in the intended post-merge state**.
 
-- replaceable `AnalyticsProvider` independent from publishing providers;
-- typed observations with provider/version evidence;
-- exact link to durable successful publication identity;
-- observation time/window semantics distinct from ingestion time;
-- additive history-oriented storage;
-- provider-free Content Forge remains usable.
+Delivered:
+
+- replaceable read-only `AnalyticsProvider`, independent from publishing providers;
+- exact `SuccessfulPublicationRef` reconstructed from one durable `succeeded` PR27 attempt rather than a loose Project/video ID;
+- successful publication evidence is revalidated against the durable approved request, provider-health snapshot, and publish result before analytics may use it;
+- exact `AnalyticsQuery` with canonical metric IDs and explicit half-open observation window `[start_at, end_at)` that cannot begin before publication effective time;
+- normalized metrics with explicit units and strict finite/value-domain validation;
+- `complete / partial / unavailable` coverage where missing observations are never encoded as numeric zero;
+- provider/version/query/publication invocation evidence with deterministic semantic SHA-256 identity;
+- provider `observed_at` is distinct from local append-only `ingested_at`;
+- exact observation replay is idempotent while genuinely new snapshots preserve history instead of overwriting counters;
+- provider health and observation models are canonical-revalidated, including protection against Pydantic `model_copy(update=...)` validation bypass;
+- append-only lazy SQLite analytics schema that is not created until analytics is used;
+- stored immutable observation JSON is revalidated on reads and denormalized index columns are cross-checked against it;
+- analytics cannot mutate Project, Review, Render/QC, or Publishing authority;
+- provider-free Content Forge remains fully usable;
+- no YouTube Analytics adapter, dashboard, experiment engine, or recommendation engine is claimed by PR36.
+
+See [`docs/pr36-analytics-provider-boundary.md`](docs/pr36-analytics-provider-boundary.md) for the exact evidence contract.
 
 ### PR37 — YouTube Analytics adapter
 
-Planned.
+Planned next.
 
-- optional authenticated YouTube Analytics/Data implementation;
-- ingest exact known published video IDs first;
-- normalized supported performance metrics with retained provider evidence;
-- bounded partial/unavailable behavior.
+- optional authenticated YouTube Analytics/Data implementation behind the PR36 protocol;
+- observe exact known successful YouTube publication IDs first;
+- map only provider-supported metrics with explicit units and retained provider evidence;
+- bounded partial/unavailable behavior rather than invented zeroes;
+- credentials remain provider-local and the base runtime remains provider-free.
 
 ### PR38 — Durable performance history and observation windows
 
 Planned.
 
-- history-preserving observation snapshots;
+- history-preserving observation snapshots over PR36 records;
 - explicit comparable windows where provider data permits;
 - provisional versus mature measurements;
 - deterministic summaries and explicit missing/late data.
@@ -510,5 +511,8 @@ These items should not be implemented merely to make the feature list longer.
 19. Active or uncertain remote publication state must not disappear merely because the related Project falls outside an ordinary recent-history window.
 20. Bounded automatic work must consume only already-complete authority and must never infer or accept a human decision.
 21. Analytics observations are evidence, not authority to mutate production state.
-22. Recommendations remain proposals and must be traceable to retained evidence.
-23. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+22. Analytics observations must attach to revalidated exact successful publication evidence; a loose Project ID or remote ID is insufficient authority.
+23. Missing/partial analytics data is distinct from a numeric zero, and observation time/window is distinct from local ingestion time.
+24. Analytics history is additive; a later snapshot does not silently overwrite earlier evidence.
+25. Recommendations remain proposals and must be traceable to retained evidence.
+26. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.

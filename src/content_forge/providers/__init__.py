@@ -1,5 +1,24 @@
 """Optional provider boundaries for Content Forge."""
 
+from .analytics import (
+    AnalyticsAvailability,
+    AnalyticsExecutionError,
+    AnalyticsInvocationEvidence,
+    AnalyticsMetric,
+    AnalyticsMetricUnit,
+    AnalyticsObservationBatch,
+    AnalyticsProvider,
+    AnalyticsProviderError,
+    AnalyticsProviderHealth,
+    AnalyticsQuery,
+    AnalyticsResponseError,
+    AnalyticsUnavailableError,
+    AnalyticsWindow,
+    SuccessfulPublicationRef,
+    semantic_analytics_observation_digest,
+    semantic_analytics_query_digest,
+    validate_analytics_observation,
+)
 from .chatgpt_web_adapter import ChatGPTWebAdapterLLMProvider
 from .llm import (
     ClassificationRequest,
@@ -91,6 +110,19 @@ from .youtube import YOUTUBE_OAUTH_SCOPES, YouTubePublishingConfig
 from .youtube_v2 import YouTubePublishingProvider
 
 __all__ = [
+    "AnalyticsAvailability",
+    "AnalyticsExecutionError",
+    "AnalyticsInvocationEvidence",
+    "AnalyticsMetric",
+    "AnalyticsMetricUnit",
+    "AnalyticsObservationBatch",
+    "AnalyticsProvider",
+    "AnalyticsProviderError",
+    "AnalyticsProviderHealth",
+    "AnalyticsQuery",
+    "AnalyticsResponseError",
+    "AnalyticsUnavailableError",
+    "AnalyticsWindow",
     "ApprovedPublishRequest",
     "ChatGPTWebAdapterLLMProvider",
     "ClassificationRequest",
@@ -142,6 +174,7 @@ __all__ = [
     "PublishingUnavailableError",
     "QwenTTSConfig",
     "QwenTTSProvider",
+    "SuccessfulPublicationRef",
     "TTSExecutionError",
     "TTSGenerationSettings",
     "TTSInvocationEvidence",
@@ -166,6 +199,8 @@ __all__ = [
     "publish_artifact_ref",
     "publish_idempotency_key",
     "replace_provider_suggestions",
+    "semantic_analytics_observation_digest",
+    "semantic_analytics_query_digest",
     "semantic_ocr_request_digest",
     "semantic_publish_request_digest",
     "semantic_request_digest",
@@ -174,5 +209,6 @@ __all__ = [
     "to_review_suggestions",
     "tts_cache_key",
     "tts_config_digest",
+    "validate_analytics_observation",
     "validate_publish_result",
 ]
