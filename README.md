@@ -70,11 +70,11 @@ Publish -> Measure -> Compare -> Recommend -> Human decision
 
 ## Development status
 
-**PR1–PR29 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, and Milestone 7A now includes a production YouTube publishing path.
+**PR1–PR30 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, and PR30 reconciles the roadmap/provider documentation with that actual implementation state.
 
 The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, and versioned human-approved YouTube publication declarations.
 
-**PR30 is a documentation-only roadmap reconciliation.** The next product implementation step after PR30 is **PR31 — Analytics provider boundary**, beginning the measurement/experiment/recommendation feedback loop over exact publications. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
+The current product implementation step is **PR31 — Analytics provider boundary**, beginning the measurement/experiment/recommendation feedback loop over exact publications. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
 
 The original v0.1 vertical slice remains implemented through PR17:
 
@@ -137,13 +137,13 @@ The production runtime currently covers:
 - reusable project/series/channel defaults and production-library search/tagging;
 - optional exact human-approved YouTube upload and scheduling.
 
-Analytics-driven comparison and recommendation are **not** implemented yet; that is the next roadmap phase and will be built over retained publication evidence rather than hidden heuristics.
+Analytics-driven comparison and recommendation are **not** implemented yet; that is the current roadmap phase and will be built over retained publication evidence rather than hidden heuristics.
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
 ## Documentation
 
-- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR29 roadmap
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR30 roadmap
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
