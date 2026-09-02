@@ -26,10 +26,25 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def write_private_token(path: Path, payload: str) -> None:
-    """Atomically persist OAuth authorized-user JSON as owner-only local state."""
+def _token_target(path: Path) -> Path:
+    """Resolve the parent directory without following a final-component token symlink."""
 
-    path = path.expanduser().resolve()
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    parent = expanded.parent.resolve()
+    target = parent / expanded.name
+    if target.is_symlink():
+        raise RuntimeError("YouTube OAuth token path must not be a symlink")
+    if target.exists() and not target.is_file():
+        raise RuntimeError("YouTube OAuth token path must identify a regular file")
+    return target
+
+
+def write_private_token(path: Path, payload: str) -> None:
+    """Atomically persist OAuth authorized-user JSON as private local state."""
+
+    path = _token_target(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     fd: int | None = None
@@ -46,7 +61,10 @@ def write_private_token(path: Path, payload: str) -> None:
         _fsync_directory(path.parent)
     except BaseException:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             temp.unlink()
         except OSError:
@@ -86,7 +104,7 @@ def authorize_youtube(
     """Run Google's installed-app OAuth flow and persist only the authorized-user token."""
 
     client_secrets_path = client_secrets_path.expanduser().resolve()
-    token_path = token_path.expanduser().resolve()
+    token_path = _token_target(token_path)
     if not client_secrets_path.is_file():
         raise RuntimeError("YouTube OAuth client-secrets file is missing")
     if client_secrets_path == token_path:
@@ -142,7 +160,7 @@ def main() -> None:
     parser.add_argument(
         "--token",
         required=True,
-        help="owner-only local path for the resulting authorized-user token JSON",
+        help="private local path for the resulting authorized-user token JSON",
     )
     parser.add_argument(
         "--no-browser",
