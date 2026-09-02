@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from content_forge.core import AttentionMode, MediaType, Project, ProjectState, ReviewPriority, Scene, TemplateRef, Variant
+from content_forge.core import AttentionMode, MediaType, Project, ProjectState, ReviewPriority, TemplateRef, Variant
 from content_forge.profiles.shorts import shorts_final_profile, shorts_preview_profile
 from content_forge.templates import HOOK_OVERLAY_TEMPLATE_ID, compile_registered_template
 
@@ -24,10 +24,6 @@ def _preset_bootstrap_project(self: _base.ReviewService, project_id: str) -> Pro
     except ProductionPresetError as exc:
         raise ReviewConflictError(f"production preset authority is invalid: {exc}") from exc
     if preset is None:
-        return _BASE_BOOTSTRAP(self, project_id)
-    if preset.template_id == HOOK_OVERLAY_TEMPLATE_ID:
-        # Preserve the historical PR10 hook_overlay path byte-for-byte where it already
-        # models the chosen preset correctly.
         return _BASE_BOOTSTRAP(self, project_id)
 
     def bootstrap(project: Project) -> Project:
@@ -174,7 +170,8 @@ def _preset_compile_plan(self: _FinalReviewService, project: Project, profile_id
         raise ReviewNotReadyError("project is not renderable by the phone production workflow")
 
     # Preserve the exact render-authority gates installed by PR23/PR24 before bypassing
-    # the old hook_overlay-only compiler branch.
+    # the old hook_overlay-only compiler branch. Earlier PR10/PR17 safety lives around
+    # this method in the unchanged review lifecycle rather than inside template compilation.
     guard = getattr(self, "_require_pr23_render_authority", None)
     if callable(guard):
         guard(project)
