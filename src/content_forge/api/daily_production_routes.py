@@ -15,6 +15,7 @@ from content_forge.application import (
 )
 from content_forge.application.production_presets import (
     ProductionPresetConflictError,
+    ProductionPresetError,
     ProductionPresetService,
     _preset_evidence,
     _source_snapshots,
@@ -88,11 +89,14 @@ def _used_source_project_ids(projects: tuple[object, ...]) -> set[str]:
     return used
 
 
-def _source_project_ids(presets: ProductionPresetService) -> set[str]:
-    return {
-        str(item["source_project_id"])
-        for item in presets.list_sources(limit=500)
-    }
+def _is_source_project(presets: ProductionPresetService, project_id: str) -> bool:
+    """Check canonical source identity directly rather than through a bounded catalog."""
+
+    try:
+        presets._source(project_id)
+    except (ProductionPresetError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _ready_summaries(queue: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
@@ -506,13 +510,16 @@ def install_daily_production_routes(
         payload: SafeWorkRequest,
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
-        # Only derived production Projects are bootstrapped here. Reusable raw sources are
-        # deliberately excluded even if historical data also exposed them in Review Queue.
-        source_ids = _source_project_ids(presets)
+        # Raw source identity and active remote side effects are checked directly rather
+        # than through bounded daily catalogs. Neither may become automatic local work.
+        publish_risk_ids = set(_active_publish_risks(library))
         prepared = 0
         prepare_failed = 0
         for project in presets.list_projects(limit=500):
-            if bool(project.metadata.get("pr10_review_initialized")):
+            if (
+                bool(project.metadata.get("pr10_review_initialized"))
+                or project.project_id in publish_risk_ids
+            ):
                 continue
             try:
                 review.bootstrap_project(project.project_id)
@@ -524,10 +531,14 @@ def install_daily_production_routes(
         candidates: list[tuple[str, str]] = []
         for summary in _ready_summaries(queue):
             project_id = summary.get("project_id")
-            if isinstance(project_id, str) and project_id not in source_ids:
+            if (
+                isinstance(project_id, str)
+                and project_id not in publish_risk_ids
+                and not _is_source_project(presets, project_id)
+            ):
                 candidates.append(("render_final", project_id))
         for project_id in _queue_project_ids(queue):
-            if project_id in source_ids:
+            if project_id in publish_risk_ids or _is_source_project(presets, project_id):
                 continue
             try:
                 summary = review.project_summary(review.get_project(project_id))
