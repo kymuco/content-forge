@@ -7,6 +7,7 @@ from content_forge.providers import (
     AnalyticsObservationBatch,
     AnalyticsProvider,
     AnalyticsProviderError,
+    AnalyticsProviderHealth,
     AnalyticsQuery,
     AnalyticsResponseError,
     AnalyticsUnavailableError,
@@ -54,6 +55,18 @@ class AnalyticsService:
             metric_ids=metric_ids,
         )
 
+    @staticmethod
+    def _canonical_health(raw: object) -> AnalyticsProviderHealth:
+        try:
+            health = AnalyticsProviderHealth.model_validate(
+                raw.model_dump(mode="python")  # type: ignore[attr-defined]
+            )
+        except Exception as exc:
+            raise AnalyticsResponseError("analytics provider returned invalid health evidence") from exc
+        if health != raw:
+            raise AnalyticsResponseError("analytics provider health evidence is not canonical")
+        return health
+
     def collect(
         self,
         publish_attempt_id: str,
@@ -71,11 +84,12 @@ class AnalyticsService:
             metric_ids=metric_ids,
         )
         try:
-            health = provider.health()
+            raw_health = provider.health()
         except AnalyticsProviderError:
             raise
         except Exception as exc:
             raise AnalyticsExecutionError("analytics provider health check failed") from exc
+        health = self._canonical_health(raw_health)
         if not health.available:
             raise AnalyticsUnavailableError("analytics provider is unavailable")
 
