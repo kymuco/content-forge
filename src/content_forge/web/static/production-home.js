@@ -14,6 +14,8 @@
   const PROJECT_LIMIT = 48;
   const SOURCE_LIMIT = 48;
   const ADVANCED_PANEL_IDS = Object.freeze([
+    "capture-panel",
+    "review-panel",
     "dialogue-panel",
     "voice-cast-panel",
     "voiced-story-panel",
@@ -30,6 +32,9 @@
 
   let advancedVisible = false;
   let refreshGeneration = 0;
+  let projectFlowGeneration = 0;
+  let activeProjectId = null;
+  let activeProjectLabel = null;
   const artifactUrls = new Set();
 
   let presets = [];
@@ -100,6 +105,14 @@
 
   async function apiJson(relativePath, options) {
     return (await api(relativePath, options)).json();
+  }
+
+  function jsonPost(body) {
+    return {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    };
   }
 
   function revokeArtifactUrls() {
@@ -191,42 +204,313 @@
     return { bucket: "inbox", badge: state || "Project", className: "badge neutral", detail: "Continue production", action: "continue" };
   }
 
-  function scrollToReview() {
-    const review = document.getElementById("review-panel");
-    if (review) review.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
   function refreshExistingSurfaces() {
     if (refreshButton) refreshButton.click();
   }
 
-  async function startProject(projectId) {
-    setStatus("Preparing this project for phone review…");
-    await apiJson(`projects/${encodeURIComponent(projectId)}/review/bootstrap`, { method: "POST" });
-    refreshExistingSurfaces();
-    await refreshHome();
-    setStatus("Project prepared. Continue with the decisions below.", "success");
-    scrollToReview();
+  const projectFlowPanel = document.createElement("section");
+  projectFlowPanel.id = "project-flow-panel";
+  projectFlowPanel.className = "panel hidden";
+  const projectFlowHeading = document.createElement("div");
+  projectFlowHeading.className = "panel-heading";
+  const projectFlowTitle = document.createElement("div");
+  projectFlowTitle.append(text("p", "PROJECT", "eyebrow"), text("h2", "Video project"));
+  const projectFlowBadge = text("span", "Project", "badge neutral");
+  projectFlowHeading.append(projectFlowTitle, projectFlowBadge);
+  const projectFlowActions = document.createElement("div");
+  projectFlowActions.className = "row";
+  const projectBackButton = document.createElement("button");
+  projectBackButton.type = "button";
+  projectBackButton.className = "ghost";
+  projectBackButton.textContent = "← Back to projects";
+  projectFlowActions.appendChild(projectBackButton);
+  const projectFlowBody = document.createElement("div");
+  projectFlowBody.id = "project-flow-body";
+  projectFlowBody.className = "review-list";
+  const projectFlowStatus = text("p", "", "status");
+  projectFlowPanel.append(projectFlowHeading, projectFlowActions, projectFlowBody, projectFlowStatus);
+  panel.insertAdjacentElement("afterend", projectFlowPanel);
+
+  function setProjectFlowStatus(message, kind) {
+    projectFlowStatus.textContent = message || "";
+    projectFlowStatus.dataset.kind = kind || "";
   }
 
-  async function renderFinal(projectId) {
-    setStatus("Rendering the final video on the desktop…");
-    await apiJson(`projects/${encodeURIComponent(projectId)}/final`, { method: "POST" });
-    refreshExistingSurfaces();
-    await refreshHome();
-    setStatus("Final video is ready.", "success");
+  function flowButton(label, className, onClick) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = className || "secondary";
+    item.textContent = label;
+    item.addEventListener("click", async () => {
+      item.disabled = true;
+      try {
+        await onClick();
+      } catch (error) {
+        setProjectFlowStatus(error && error.message ? error.message : "Project action failed.", "error");
+      } finally {
+        item.disabled = false;
+      }
+    });
+    return item;
   }
 
-  async function attachFinal(card, endpoint) {
-    const existing = card.querySelector(".review-preview-shell");
-    if (existing) {
-      existing.remove();
+  function taskIsOpen(task) {
+    return task && String(task.status || "").toLowerCase() === "open";
+  }
+
+  function taskLabel(taskType) {
+    switch (taskType) {
+      case "hook": return "Hook";
+      case "crop_confirmation": return "Crop";
+      case "metadata": return "Video details";
+      case "source_order": return "Source order";
+      case "source_setup": return "Source setup";
+      default: return String(taskType || "Decision").replaceAll("_", " ");
+    }
+  }
+
+  function taskCard(task, subtitle) {
+    const card = document.createElement("article");
+    card.className = "review-card";
+    const heading = document.createElement("div");
+    heading.className = "card-heading";
+    const left = document.createElement("div");
+    left.append(text("strong", taskLabel(task.task_type)), text("p", subtitle, "muted compact-text"));
+    heading.append(
+      left,
+      text("span", taskIsOpen(task) ? "Needs you" : "Done", taskIsOpen(task) ? "badge state-partial" : "badge success")
+    );
+    card.appendChild(heading);
+    return card;
+  }
+
+  async function resolveProjectTask(task, value) {
+    if (!activeProjectId) return;
+    await apiJson(
+      `projects/${encodeURIComponent(activeProjectId)}/review/${encodeURIComponent(task.review_task_id)}/resolve`,
+      jsonPost({ value })
+    );
+    await refreshProjectFlow();
+  }
+
+  function renderResolvedDecision(card, task) {
+    if (task.task_type === "hook" && typeof task.accepted_value === "string") {
+      card.appendChild(text("p", task.accepted_value, "compact-text"));
       return;
     }
-    const shell = document.createElement("div");
-    shell.className = "review-preview-shell";
-    shell.appendChild(text("p", "Loading authenticated final video…", "muted"));
-    card.appendChild(shell);
+    if (task.task_type === "metadata" && task.accepted_value && typeof task.accepted_value === "object") {
+      const title = task.accepted_value.title;
+      card.appendChild(text("p", title || "Optional details saved.", "muted compact-text"));
+      return;
+    }
+    card.appendChild(text("p", "This decision is locked into the current project revision.", "muted compact-text"));
+  }
+
+  function renderHookDecision(task) {
+    const card = taskCard(task, "The text shown with this format.");
+    if (!taskIsOpen(task)) {
+      renderResolvedDecision(card, task);
+      return card;
+    }
+    const form = document.createElement("form");
+    form.className = "stack compact";
+    const label = document.createElement("label");
+    label.textContent = "Hook";
+    const input = document.createElement("textarea");
+    input.rows = 3;
+    input.maxLength = 4096;
+    input.value = task.payload && task.payload.current || "";
+    label.appendChild(input);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "primary";
+    save.textContent = "Save hook";
+    form.append(label, save);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      try {
+        setProjectFlowStatus("Saving hook…");
+        await resolveProjectTask(task, input.value);
+        setProjectFlowStatus("Hook saved.", "success");
+      } catch (error) {
+        setProjectFlowStatus(error && error.message ? error.message : "Hook update failed.", "error");
+      } finally {
+        save.disabled = false;
+      }
+    });
+    card.appendChild(form);
+    return card;
+  }
+
+  function cropNumber(labelText, value) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "1";
+    input.step = "0.01";
+    input.inputMode = "decimal";
+    input.value = String(value);
+    label.appendChild(input);
+    return { label, input };
+  }
+
+  function validatedCrop(inputs) {
+    const x = Number(inputs.x.value);
+    const y = Number(inputs.y.value);
+    const width = Number(inputs.width.value);
+    const height = Number(inputs.height.value);
+    if (![x, y, width, height].every(Number.isFinite)) throw new Error("Crop values must be numbers.");
+    if (x < 0 || y < 0 || width <= 0 || height <= 0 || x > 1 || y > 1 || width > 1 || height > 1) {
+      throw new Error("Crop values must stay inside the normalized 0–1 frame.");
+    }
+    if (x + width > 1.000001 || y + height > 1.000001) {
+      throw new Error("Crop rectangle must fit completely inside the frame.");
+    }
+    return { x, y, width, height };
+  }
+
+  function renderCropDecision(task) {
+    const card = taskCard(task, "Keep full frame or set a bounded crop for each scene.");
+    if (!taskIsOpen(task)) {
+      renderResolvedDecision(card, task);
+      return card;
+    }
+    const sceneIds = task.payload && Array.isArray(task.payload.scene_ids)
+      ? task.payload.scene_ids.filter((value) => typeof value === "string")
+      : [];
+    const stored = task.payload && task.payload.crops && typeof task.payload.crops === "object"
+      ? task.payload.crops
+      : {};
+    const editors = [];
+    sceneIds.forEach((sceneId, index) => {
+      const raw = Object.prototype.hasOwnProperty.call(stored, sceneId) ? stored[sceneId] : null;
+      const scene = document.createElement("div");
+      scene.className = "stack compact";
+      scene.appendChild(text("strong", `Scene ${index + 1}`));
+      const fullLabel = document.createElement("label");
+      const full = document.createElement("input");
+      full.type = "checkbox";
+      full.checked = raw == null;
+      fullLabel.append(full, document.createTextNode(" Use full frame"));
+      const x = cropNumber("X", raw && raw.x != null ? raw.x : 0);
+      const y = cropNumber("Y", raw && raw.y != null ? raw.y : 0);
+      const width = cropNumber("Width", raw && raw.width != null ? raw.width : 1);
+      const height = cropNumber("Height", raw && raw.height != null ? raw.height : 1);
+      const fields = document.createElement("div");
+      fields.className = "row";
+      fields.append(x.label, y.label, width.label, height.label);
+      function updateDisabled() {
+        for (const input of [x.input, y.input, width.input, height.input]) input.disabled = full.checked;
+      }
+      full.addEventListener("change", updateDisabled);
+      updateDisabled();
+      scene.append(fullLabel, fields);
+      card.appendChild(scene);
+      editors.push({ sceneId, full, x: x.input, y: y.input, width: width.input, height: height.input });
+    });
+    card.appendChild(flowButton("Save crop", "secondary", async () => {
+      const crops = {};
+      for (const editor of editors) {
+        crops[editor.sceneId] = editor.full.checked ? null : validatedCrop(editor);
+      }
+      setProjectFlowStatus("Saving crop…");
+      await resolveProjectTask(task, { crops });
+      setProjectFlowStatus("Crop saved. Preview will use this exact project revision.", "success");
+    }));
+    return card;
+  }
+
+  function renderMetadataDecision(task) {
+    const card = taskCard(task, "Optional title, description and hashtags retained with the project.");
+    if (!taskIsOpen(task)) {
+      renderResolvedDecision(card, task);
+      return card;
+    }
+    const payload = task.payload || {};
+    const form = document.createElement("form");
+    form.className = "stack compact";
+    const titleLabel = document.createElement("label");
+    titleLabel.textContent = "Title";
+    const titleInput = document.createElement("input");
+    titleInput.maxLength = 4096;
+    titleInput.value = payload.title || "";
+    titleLabel.appendChild(titleInput);
+    const descriptionLabel = document.createElement("label");
+    descriptionLabel.textContent = "Description";
+    const descriptionInput = document.createElement("textarea");
+    descriptionInput.rows = 3;
+    descriptionInput.maxLength = 20000;
+    descriptionInput.value = payload.description || "";
+    descriptionLabel.appendChild(descriptionInput);
+    const hashtagsLabel = document.createElement("label");
+    hashtagsLabel.textContent = "Hashtags (comma separated)";
+    const hashtagsInput = document.createElement("input");
+    hashtagsInput.value = Array.isArray(payload.hashtags) ? payload.hashtags.join(", ") : "";
+    hashtagsLabel.appendChild(hashtagsInput);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "secondary";
+    save.textContent = "Save details";
+    form.append(titleLabel, descriptionLabel, hashtagsLabel, save);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      try {
+        const hashtags = hashtagsInput.value.split(",").map((value) => value.trim()).filter(Boolean);
+        setProjectFlowStatus("Saving video details…");
+        await resolveProjectTask(task, {
+          title: titleInput.value || null,
+          description: descriptionInput.value || null,
+          hashtags,
+        });
+        setProjectFlowStatus("Video details saved.", "success");
+      } catch (error) {
+        setProjectFlowStatus(error && error.message ? error.message : "Video details update failed.", "error");
+      } finally {
+        save.disabled = false;
+      }
+    });
+    card.appendChild(form);
+    return card;
+  }
+
+  function revealAdvancedReview() {
+    activeProjectId = null;
+    activeProjectLabel = null;
+    projectFlowPanel.classList.add("hidden");
+    panel.classList.remove("hidden");
+    advancedVisible = true;
+    applyAdvancedVisibility();
+    const review = document.getElementById("review-panel");
+    if (review) review.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderReadOnlyDecision(task) {
+    const card = taskCard(task, task.task_type === "source_order"
+      ? "Order is retained by project authority; PR33 does not add a second reorder path."
+      : "This decision is outside the bounded phone editor.");
+    const reason = task.payload && task.payload.reason;
+    if (reason) card.appendChild(text("p", reason, "error-text"));
+    if (taskIsOpen(task)) {
+      card.appendChild(flowButton("Open Advanced review", "secondary", async () => revealAdvancedReview()));
+    }
+    return card;
+  }
+
+  function renderDecisionTask(task) {
+    switch (task.task_type) {
+      case "hook": return renderHookDecision(task);
+      case "crop_confirmation": return renderCropDecision(task);
+      case "metadata": return renderMetadataDecision(task);
+      default: return renderReadOnlyDecision(task);
+    }
+  }
+
+  async function attachProjectArtifact(container, endpoint, loadingText) {
+    container.replaceChildren(text("p", loadingText, "muted"));
     try {
       const response = await api(endpoint);
       const blob = await response.blob();
@@ -237,11 +521,229 @@
       video.controls = true;
       video.playsInline = true;
       video.src = url;
-      shell.replaceChildren(video);
+      container.replaceChildren(video);
     } catch (error) {
-      shell.replaceChildren(text("p", error.message || "Final video could not be loaded.", "error-text"));
+      container.replaceChildren(text("p", error && error.message ? error.message : "Video could not be loaded.", "error-text"));
     }
   }
+
+  function renderSourceOrder(project) {
+    const sourceCount = Number(project.production_source_count || 0);
+    if (!sourceCount) return null;
+    const card = document.createElement("article");
+    card.className = "review-card";
+    const heading = document.createElement("div");
+    heading.className = "card-heading";
+    const left = document.createElement("div");
+    left.append(
+      text("strong", "Sources"),
+      text("p", "Order is locked from the explicit Create video selection.", "muted compact-text")
+    );
+    heading.append(left, text("span", `${sourceCount} source${sourceCount === 1 ? "" : "s"}`, "badge neutral"));
+    card.appendChild(heading);
+    const order = document.createElement("div");
+    order.className = "review-actions";
+    for (let index = 0; index < sourceCount; index += 1) {
+      order.appendChild(text("span", `#${index + 1}`, "badge neutral"));
+    }
+    card.appendChild(order);
+    return card;
+  }
+
+  function renderPreviewStage(project, tasks) {
+    const card = document.createElement("article");
+    card.className = "review-card";
+    const previewTask = tasks.find((task) => task.task_type === "preview_approval") || null;
+    const preview = project.preview && typeof project.preview === "object" ? project.preview : {};
+    const state = String(project.state || "").toUpperCase();
+    const approved = previewTask && !taskIsOpen(previewTask);
+    const blockers = tasks.filter((task) => (
+      task.task_type !== "preview_approval" && taskIsOpen(task) && Boolean(task.blocking)
+    ));
+    const heading = document.createElement("div");
+    heading.className = "card-heading";
+    const left = document.createElement("div");
+    left.append(
+      text("strong", "Preview"),
+      text("p", approved ? "Approved preview pinned to this project revision." : "Low-resolution check before final render.", "muted compact-text")
+    );
+    heading.append(left, text("span", approved ? "Approved" : (preview.status === "ready" ? "Ready" : "Preview"), approved ? "badge success" : "badge neutral"));
+    card.appendChild(heading);
+
+    if (preview.status === "ready" && typeof preview.job_id === "string") {
+      const shell = document.createElement("div");
+      shell.className = "review-preview-shell";
+      card.appendChild(shell);
+      void attachProjectArtifact(shell, `render-jobs/${encodeURIComponent(preview.job_id)}/artifact`, "Loading authenticated preview…");
+      if (!approved && state === "NEEDS_REVIEW") {
+        const actions = document.createElement("div");
+        actions.className = "review-actions";
+        actions.appendChild(flowButton("Approve preview", "primary", async () => {
+          setProjectFlowStatus("Approving preview…");
+          await apiJson(
+            `projects/${encodeURIComponent(activeProjectId)}/preview/${encodeURIComponent(preview.job_id)}/approve`,
+            { method: "POST" }
+          );
+          await refreshProjectFlow();
+          setProjectFlowStatus("Preview approved. Final render is now allowed.", "success");
+        }));
+        actions.appendChild(flowButton("Reject & edit", "danger", async () => {
+          setProjectFlowStatus("Reopening editable decisions…");
+          await apiJson(
+            `projects/${encodeURIComponent(activeProjectId)}/preview/${encodeURIComponent(preview.job_id)}/reject`,
+            jsonPost({})
+          );
+          await refreshProjectFlow();
+          setProjectFlowStatus("Preview rejected. Editable decisions are open again on this screen.", "success");
+        }));
+        card.appendChild(actions);
+      }
+      return card;
+    }
+
+    if (!previewTask) {
+      card.appendChild(text("p", "This project has no phone preview approval task yet.", "muted compact-text"));
+      return card;
+    }
+    if (preview.status === "rendering") {
+      card.appendChild(text("p", "Desktop worker is rendering the preview. Refresh if this page was reopened after a restart.", "muted compact-text"));
+      card.appendChild(flowButton("Refresh", "secondary", refreshProjectFlow));
+      return card;
+    }
+    if (blockers.length) {
+      card.appendChild(text("p", `${blockers.length} blocking decision${blockers.length === 1 ? "" : "s"} remain above.`, "muted compact-text"));
+      return card;
+    }
+    if (taskIsOpen(previewTask)) {
+      card.appendChild(flowButton("Generate preview", "primary", async () => {
+        setProjectFlowStatus("Rendering preview on the desktop…");
+        await apiJson(`projects/${encodeURIComponent(activeProjectId)}/preview`, { method: "POST" });
+        await refreshProjectFlow();
+        setProjectFlowStatus("Preview ready. Watch it here before approving.", "success");
+      }));
+    }
+    return card;
+  }
+
+  function renderFinalStage(project) {
+    const card = document.createElement("article");
+    card.className = "review-card";
+    const state = String(project.state || "").toUpperCase();
+    const heading = document.createElement("div");
+    heading.className = "card-heading";
+    const left = document.createElement("div");
+    left.append(
+      text("strong", "Final video"),
+      text("p", state === "DONE" ? "Authenticated final output is ready." : "Desktop worker renders the approved project at final quality.", "muted compact-text")
+    );
+    heading.append(left, text("span", state === "DONE" ? "Ready" : state || "Final", state === "DONE" ? "badge success" : "badge neutral"));
+    card.appendChild(heading);
+
+    if (state === "READY") {
+      card.appendChild(flowButton("Render final", "primary", async () => {
+        setProjectFlowStatus("Rendering the final video on the desktop…");
+        await apiJson(`projects/${encodeURIComponent(activeProjectId)}/final`, { method: "POST" });
+        await refreshProjectFlow();
+        setProjectFlowStatus("Final video is ready.", "success");
+      }));
+    } else if (state === "RENDERING" || state === "QC") {
+      card.appendChild(text("p", "No phone action is needed while the desktop finishes render/QC.", "muted compact-text"));
+      card.appendChild(flowButton("Refresh progress", "secondary", refreshProjectFlow));
+    } else if (state === "DONE" && project.final && project.final.artifact_endpoint) {
+      const shell = document.createElement("div");
+      shell.className = "review-preview-shell";
+      card.appendChild(shell);
+      void attachProjectArtifact(shell, project.final.artifact_endpoint, "Loading authenticated final video…");
+    } else {
+      card.appendChild(text("p", "Approve the preview before final render.", "muted compact-text"));
+    }
+    return card;
+  }
+
+  function renderProjectFlow(project) {
+    projectFlowBody.replaceChildren();
+    const label = activeProjectLabel || project.production_preset_label || projectKindLabel(project);
+    projectFlowTitle.replaceChildren(text("p", "PROJECT", "eyebrow"), text("h2", label));
+    const state = String(project.state || "Project");
+    projectFlowBadge.textContent = state.replaceAll("_", " ");
+    projectFlowBadge.className = state.toUpperCase() === "DONE" ? "badge success" : "badge neutral";
+
+    const overview = document.createElement("article");
+    overview.className = "review-card";
+    const overviewHeading = document.createElement("div");
+    overviewHeading.className = "card-heading";
+    const overviewLeft = document.createElement("div");
+    overviewLeft.append(
+      text("strong", project.production_preset_label || projectKindLabel(project)),
+      text("p", "One project context from decisions through preview and final.", "muted compact-text")
+    );
+    overviewHeading.append(overviewLeft, text("span", `${Number(project.open_blocking_tasks || 0)} blocking`, "badge neutral"));
+    overview.appendChild(overviewHeading);
+    projectFlowBody.appendChild(overview);
+
+    const order = renderSourceOrder(project);
+    if (order) projectFlowBody.appendChild(order);
+
+    const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+    const decisions = tasks.filter((task) => task.task_type !== "preview_approval");
+    for (const task of decisions) projectFlowBody.appendChild(renderDecisionTask(task));
+    projectFlowBody.appendChild(renderPreviewStage(project, tasks));
+    projectFlowBody.appendChild(renderFinalStage(project));
+  }
+
+  async function refreshProjectFlow() {
+    if (!activeProjectId) return;
+    const generation = ++projectFlowGeneration;
+    const projectId = activeProjectId;
+    setProjectFlowStatus("Loading this project…");
+    try {
+      revokeArtifactUrls();
+      const project = await apiJson(`projects/${encodeURIComponent(projectId)}`);
+      if (generation !== projectFlowGeneration || activeProjectId !== projectId) return;
+      renderProjectFlow(project);
+      setProjectFlowStatus("All actions on this screen reuse the existing project/review/render authority.");
+    } catch (error) {
+      if (generation !== projectFlowGeneration || activeProjectId !== projectId) return;
+      projectFlowBody.replaceChildren(text("div", "This project could not be loaded.", "empty-state"));
+      setProjectFlowStatus(error && error.message ? error.message : "Project could not be loaded.", "error");
+    }
+  }
+
+  async function openProject(projectId, label) {
+    if (typeof projectId !== "string" || !projectId) return;
+    closeCreateWizard();
+    advancedVisible = false;
+    applyAdvancedVisibility();
+    activeProjectId = projectId;
+    activeProjectLabel = label || null;
+    setHidden(panel, true);
+    setHidden(projectFlowPanel, false);
+    projectFlowPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    await refreshProjectFlow();
+  }
+
+  async function startProject(projectId, label) {
+    setStatus("Preparing this project for phone review…");
+    await apiJson(`projects/${encodeURIComponent(projectId)}/review/bootstrap`, { method: "POST" });
+    await refreshHome();
+    await openProject(projectId, label);
+    setProjectFlowStatus("Project prepared. Make the decisions on this screen.", "success");
+  }
+
+  function closeProjectFlow() {
+    activeProjectId = null;
+    activeProjectLabel = null;
+    projectFlowGeneration += 1;
+    revokeArtifactUrls();
+    projectFlowBody.replaceChildren();
+    setProjectFlowStatus("");
+    setHidden(projectFlowPanel, true);
+    setHidden(panel, false);
+    void refreshHome();
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  projectBackButton.addEventListener("click", closeProjectFlow);
 
   function renderProject(entry) {
     const project = entry.project;
@@ -257,20 +759,18 @@
     left.appendChild(text("p", `${projectKindLabel(project)} · ${view.detail}`, "muted compact-text"));
     heading.append(left, text("span", view.badge, view.className));
     card.appendChild(heading);
+    const label = intakeLabel(intake, project);
 
     if (view.action === "start") {
-      card.appendChild(button("Start video", "primary", () => startProject(project.project_id)));
-    } else if (view.action === "continue") {
-      card.appendChild(button("Continue", "primary", async () => {
-        scrollToReview();
-        setStatus("Continue with this project's open review decisions below.");
-      }));
-    } else if (view.action === "render") {
-      card.appendChild(button("Render final", "primary", () => renderFinal(project.project_id)));
-    } else if (view.action === "watch" && project.final && project.final.artifact_endpoint) {
-      card.appendChild(button("Watch final", "primary", () => attachFinal(card, project.final.artifact_endpoint)));
+      card.appendChild(button("Start video", "primary", () => startProject(project.project_id, label)));
     } else if (view.action === "working") {
-      card.appendChild(text("p", "No action needed on the phone right now.", "muted compact-text"));
+      card.appendChild(button("View progress", "secondary", () => openProject(project.project_id, label)));
+    } else if (view.action === "watch" && project.final && project.final.artifact_endpoint) {
+      card.appendChild(button("View final", "primary", () => openProject(project.project_id, label)));
+    } else if (view.action === "done") {
+      card.appendChild(button("Open project", "secondary", () => openProject(project.project_id, label)));
+    } else {
+      card.appendChild(button("Continue", "primary", () => openProject(project.project_id, label)));
     }
     return { card, bucket: view.bucket };
   }
@@ -334,9 +834,14 @@
     const generation = ++refreshGeneration;
     const bearer = await token();
     if (generation !== refreshGeneration) return;
-    setHidden(panel, !bearer);
     if (!bearer) {
+      activeProjectId = null;
+      activeProjectLabel = null;
       advancedVisible = false;
+      setHidden(projectFlowPanel, true);
+    }
+    setHidden(panel, !bearer || Boolean(activeProjectId));
+    if (!bearer) {
       projectList.replaceChildren();
       summary.replaceChildren();
       count.textContent = "0";
@@ -346,7 +851,7 @@
     }
     setStatus("Loading production state…");
     try {
-      revokeArtifactUrls();
+      if (!activeProjectId) revokeArtifactUrls();
       const entries = await loadProjectEntries();
       if (generation !== refreshGeneration) return;
       const buckets = { inbox: 0, attention: 0, rendering: 0, ready: 0 };
@@ -427,7 +932,7 @@
     createActions,
     createStatus
   );
-  panel.insertAdjacentElement("afterend", createPanel);
+  projectFlowPanel.insertAdjacentElement("afterend", createPanel);
 
   function setCreateStatus(message, kind) {
     createStatus.textContent = message || "";
@@ -654,6 +1159,7 @@
   }
 
   async function openCreateWizard() {
+    if (activeProjectId) closeProjectFlow();
     createPanel.classList.remove("hidden");
     createPanel.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
@@ -696,10 +1202,9 @@
       const label = result.production_preset_label || selectedPreset.label;
       pendingCreateRequestId = null;
       closeCreateWizard();
-      refreshExistingSurfaces();
       await refreshHome();
-      setStatus(`${label} created. Continue with review and preview.`, "success");
-      scrollToReview();
+      await openProject(result.project_id, label);
+      setProjectFlowStatus(`${label} created. Continue here through preview and final.`, "success");
     } catch (error) {
       setCreateStatus(
         `${error && error.message ? error.message : "Could not create project."} Retry is safe with the same request identity.`,
@@ -728,10 +1233,15 @@
     if (advancedVisible) setStatus("Advanced control surfaces are visible until you hide them again.");
   });
 
-  if (refreshButton) refreshButton.addEventListener("click", refreshHome);
-  window.addEventListener("focus", refreshHome);
+  async function refreshVisibleSurface() {
+    if (activeProjectId) await refreshProjectFlow();
+    else await refreshHome();
+  }
+
+  if (refreshButton) refreshButton.addEventListener("click", () => void refreshVisibleSurface());
+  window.addEventListener("focus", () => void refreshVisibleSurface());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refreshHome();
+    if (document.visibilityState === "visible") void refreshVisibleSurface();
   });
   window.addEventListener("beforeunload", () => {
     revokeArtifactUrls();
@@ -739,11 +1249,11 @@
   });
 
   if (connectionBadge) {
-    const observer = new MutationObserver(() => refreshHome());
+    const observer = new MutationObserver(() => void refreshVisibleSurface());
     observer.observe(connectionBadge, { childList: true, attributes: true, subtree: true });
   }
 
   watchAdvancedPanels();
   applyAdvancedVisibility();
-  refreshHome();
+  void refreshHome();
 })();
