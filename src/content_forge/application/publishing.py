@@ -11,7 +11,6 @@ from content_forge.providers import (
     PublishRequest,
     PublishTarget,
     PublishingExecutionError,
-    PublishingPreflightError,
     PublishingPreflightProvider,
     PublishingProvider,
     PublishingResponseError,
@@ -202,7 +201,7 @@ class PublishingService:
                     code="provider_preflight_failed",
                     message="publishing provider rejected the approved request before remote execution",
                 )
-                raise PublishingPreflightError(
+                raise PublishAttemptError(
                     "publishing provider preflight rejected approved request"
                 ) from exc
 
