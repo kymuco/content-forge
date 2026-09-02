@@ -77,4 +77,4 @@ def test_cli_youtube_publishing_selection_is_explicit_and_credentials_stay_lazy(
     assert isinstance(provider, YouTubePublishingProvider)
     assert provider.config.token_path == "/local/youtube-token.json"
     assert provider.config.channel_id == "UC123"
-    assert provider.health.__self__ is provider
+    assert not hasattr(provider.config, "category_id")
