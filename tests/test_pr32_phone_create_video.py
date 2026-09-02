@@ -30,14 +30,16 @@ def test_pr32_phone_home_contains_real_create_video_wizard_contract() -> None:
     assert "innerHTML" not in script
 
 
-def test_pr32_installed_pwa_upgrades_pr31_shell_without_forgetting_historical_cache_names() -> None:
+def test_pr32_installed_pwa_remains_an_explicit_predecessor_after_pr33() -> None:
     worker = static_path("sw.js").read_text(encoding="utf-8")
 
     assert 'const PR29_CACHE_NAME = `${CACHE_PREFIX}v16`' in worker
     assert 'const PR31_CACHE_NAME = `${CACHE_PREFIX}v17`' in worker
-    assert 'const CACHE_NAME = `${CACHE_PREFIX}v18`' in worker
+    assert 'const PR32_CACHE_NAME = `${CACHE_PREFIX}v18`' in worker
+    assert 'const CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
     assert 'key === PR29_CACHE_NAME' in worker
     assert 'key === PR31_CACHE_NAME' in worker
+    assert 'key === PR32_CACHE_NAME' in worker
     assert 'appUrl("production-home.js")' in worker
 
 
