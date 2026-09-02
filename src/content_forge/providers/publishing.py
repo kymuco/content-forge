@@ -137,8 +137,8 @@ class PublishMetadata(FrozenModel):
 class PublishDeclarations(FrozenModel):
     """Explicit human publication declarations that may affect platform policy."""
 
-    child_directed: bool
-    contains_realistic_altered_or_synthetic_media: bool
+    child_directed: bool = Field(strict=True)
+    contains_realistic_altered_or_synthetic_media: bool = Field(strict=True)
 
 
 class PublishRequest(FrozenModel):
