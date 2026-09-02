@@ -129,6 +129,21 @@ def install_production_preset_routes(
         except ProductionPresetError as exc:
             raise _preset_http_error(exc) from exc
 
+    @app.get("/api/v1/production/projects")
+    def list_production_projects(
+        limit: int = Query(default=100, ge=1, le=500),
+        _session: AuthSession = Depends(require_session),
+    ) -> dict[str, object]:
+        try:
+            return {
+                "items": [
+                    review.project_summary(project)
+                    for project in service.list_projects(limit=limit)
+                ]
+            }
+        except ProductionPresetError as exc:
+            raise _preset_http_error(exc) from exc
+
     @app.post("/api/v1/production/projects", status_code=status.HTTP_201_CREATED)
     def create_production_project(
         payload: ProductionProjectCreateRequest,
