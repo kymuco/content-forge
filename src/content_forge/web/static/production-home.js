@@ -35,6 +35,7 @@
   let projectFlowGeneration = 0;
   let activeProjectId = null;
   let activeProjectLabel = null;
+  let activeProjectState = null;
   const artifactUrls = new Set();
 
   let presets = [];
@@ -258,6 +259,14 @@
     return task && String(task.status || "").toLowerCase() === "open";
   }
 
+  function projectIsTerminal() {
+    return activeProjectState === "RENDERING" || activeProjectState === "QC" || activeProjectState === "DONE";
+  }
+
+  function taskIsEditable(task) {
+    return taskIsOpen(task) && !projectIsTerminal();
+  }
+
   function taskLabel(taskType) {
     switch (taskType) {
       case "hook": return "Hook";
@@ -276,9 +285,15 @@
     heading.className = "card-heading";
     const left = document.createElement("div");
     left.append(text("strong", taskLabel(task.task_type)), text("p", subtitle, "muted compact-text"));
+    const open = taskIsOpen(task);
+    const editable = taskIsEditable(task);
     heading.append(
       left,
-      text("span", taskIsOpen(task) ? "Needs you" : "Done", taskIsOpen(task) ? "badge state-partial" : "badge success")
+      text(
+        "span",
+        editable ? "Needs you" : (open ? "Locked" : "Done"),
+        editable ? "badge state-partial" : (open ? "badge neutral" : "badge success")
+      )
     );
     card.appendChild(heading);
     return card;
@@ -303,12 +318,16 @@
       card.appendChild(text("p", title || "Optional details saved.", "muted compact-text"));
       return;
     }
+    if (taskIsOpen(task) && projectIsTerminal()) {
+      card.appendChild(text("p", "Production has already crossed the final-render boundary; this unresolved optional decision is retained as history and is no longer editable.", "muted compact-text"));
+      return;
+    }
     card.appendChild(text("p", "This decision is locked into the current project revision.", "muted compact-text"));
   }
 
   function renderHookDecision(task) {
     const card = taskCard(task, "The text shown with this format.");
-    if (!taskIsOpen(task)) {
+    if (!taskIsEditable(task)) {
       renderResolvedDecision(card, task);
       return card;
     }
@@ -374,7 +393,7 @@
 
   function renderCropDecision(task) {
     const card = taskCard(task, "Keep full frame or set a bounded crop for each scene.");
-    if (!taskIsOpen(task)) {
+    if (!taskIsEditable(task)) {
       renderResolvedDecision(card, task);
       return card;
     }
@@ -425,7 +444,7 @@
 
   function renderMetadataDecision(task) {
     const card = taskCard(task, "Optional title, description and hashtags retained with the project.");
-    if (!taskIsOpen(task)) {
+    if (!taskIsEditable(task)) {
       renderResolvedDecision(card, task);
       return card;
     }
@@ -480,6 +499,7 @@
   function revealAdvancedReview() {
     activeProjectId = null;
     activeProjectLabel = null;
+    activeProjectState = null;
     projectFlowPanel.classList.add("hidden");
     panel.classList.remove("hidden");
     advancedVisible = true;
@@ -494,8 +514,10 @@
       : "This decision is outside the bounded phone editor.");
     const reason = task.payload && task.payload.reason;
     if (reason) card.appendChild(text("p", reason, "error-text"));
-    if (taskIsOpen(task)) {
+    if (taskIsEditable(task)) {
       card.appendChild(flowButton("Open Advanced review", "secondary", async () => revealAdvancedReview()));
+    } else if (taskIsOpen(task) && projectIsTerminal()) {
+      renderResolvedDecision(card, task);
     }
     return card;
   }
@@ -665,8 +687,9 @@
     const label = activeProjectLabel || project.production_preset_label || projectKindLabel(project);
     projectFlowTitle.replaceChildren(text("p", "PROJECT", "eyebrow"), text("h2", label));
     const state = String(project.state || "Project");
+    activeProjectState = state.toUpperCase();
     projectFlowBadge.textContent = state.replaceAll("_", " ");
-    projectFlowBadge.className = state.toUpperCase() === "DONE" ? "badge success" : "badge neutral";
+    projectFlowBadge.className = activeProjectState === "DONE" ? "badge success" : "badge neutral";
 
     const overview = document.createElement("article");
     overview.className = "review-card";
@@ -716,6 +739,7 @@
     applyAdvancedVisibility();
     activeProjectId = projectId;
     activeProjectLabel = label || null;
+    activeProjectState = null;
     setHidden(panel, true);
     setHidden(projectFlowPanel, false);
     projectFlowPanel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -733,6 +757,7 @@
   function closeProjectFlow() {
     activeProjectId = null;
     activeProjectLabel = null;
+    activeProjectState = null;
     projectFlowGeneration += 1;
     revokeArtifactUrls();
     projectFlowBody.replaceChildren();
@@ -837,6 +862,7 @@
     if (!bearer) {
       activeProjectId = null;
       activeProjectLabel = null;
+      activeProjectState = null;
       advancedVisible = false;
       setHidden(projectFlowPanel, true);
     }
