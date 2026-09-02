@@ -21,6 +21,7 @@ from content_forge.providers import (
     semantic_publish_request_digest,
     validate_publish_result,
 )
+from content_forge.providers.publishing import _PublishingPreflightCleanupProvider
 from content_forge.storage import LocalLibrary, PublishAttemptRecord, StorageConflictError
 
 
@@ -38,6 +39,20 @@ class PublishAttemptError(PublishOrchestrationError):
 
 class PublishOutcomeUnknownError(PublishOrchestrationError):
     """Remote publishing began but no authenticated durable outcome is known."""
+
+
+def _discard_preflight_state(provider: PublishingProvider) -> None:
+    """Best-effort release of provider-local state while the remote boundary is still closed."""
+
+    if not isinstance(provider, _PublishingPreflightCleanupProvider):
+        return
+    try:
+        provider._clear_execution_state()
+    except Exception:
+        # Cleanup must never replace the ledger transition failure that prevented
+        # remote execution. Concrete providers are responsible for making this hook
+        # idempotent and internally defensive.
+        pass
 
 
 class PublishingService:
@@ -188,6 +203,7 @@ class PublishingService:
             )
 
         idempotency_key = publish_idempotency_key(approved.request)
+        preflight_completed = False
         if isinstance(provider, PublishingPreflightProvider):
             try:
                 provider.preflight(
@@ -195,6 +211,7 @@ class PublishingService:
                     media_path=media_path,
                     idempotency_key=idempotency_key,
                 )
+                preflight_completed = True
             except Exception as exc:
                 self.library.publishing.mark_failed(
                     attempt.attempt_id,
@@ -205,9 +222,17 @@ class PublishingService:
                     "publishing provider preflight rejected approved request"
                 ) from exc
 
-        running = self.library.publishing.mark_running(attempt.attempt_id, health)
+        try:
+            running = self.library.publishing.mark_running(attempt.attempt_id, health)
+        except Exception:
+            if preflight_completed:
+                _discard_preflight_state(provider)
+            raise
+
         pinned_health = running.provider_health
         if pinned_health is None:
+            if preflight_completed:
+                _discard_preflight_state(provider)
             raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         try:
             result = provider.publish(
