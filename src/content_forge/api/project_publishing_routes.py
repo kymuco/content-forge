@@ -55,10 +55,12 @@ def _attempt_payload(library: LocalLibrary, attempt_id: str) -> dict[str, object
 def _project_attempt_ids(
     library: LocalLibrary,
     project_id: str,
+    render_job_id: str,
+    output_sha256: str,
     *,
     limit: int,
 ) -> tuple[str, ...]:
-    """Return newest attempts for one project, applying limit after exact filtering."""
+    """Return newest attempts for one exact final, applying limit after exact filtering."""
 
     # Accessing the repository initializes the additive publishing schema before the
     # read-only join below. No ledger row is created or mutated by this projection.
@@ -80,7 +82,12 @@ def _project_attempt_ids(
             request = PublishRequest.model_validate_json(str(row["request_json"]))
         except Exception as exc:
             raise StorageConflictError("stored publish operation is invalid") from exc
-        if request.artifact.project_id != project_id:
+        artifact = request.artifact
+        if (
+            artifact.project_id != project_id
+            or artifact.render_job_id != render_job_id
+            or artifact.output_sha256 != output_sha256
+        ):
             continue
         selected.append(str(row["attempt_id"]))
         if len(selected) >= limit:
@@ -112,17 +119,31 @@ def install_project_publishing_routes(
     @app.get("/api/v1/publishing/projects/{project_id}")
     def project_publishing_context(
         project_id: str,
+        render_job_id: str = Query(min_length=1, max_length=64),
+        output_sha256: str = Query(
+            min_length=64,
+            max_length=64,
+            pattern=r"^[0-9a-fA-F]{64}$",
+        ),
         _session: AuthSession = Depends(require_session),
         limit: int = Query(default=20, ge=1, le=100),
     ) -> dict[str, object]:
         try:
             project_id = require_entity_id(project_id, EntityKind.PROJECT)
+            render_job_id = require_entity_id(render_job_id, EntityKind.JOB)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        output_sha256 = output_sha256.lower()
 
         target = _configured_target(provider)
         try:
-            attempt_ids = _project_attempt_ids(library, project_id, limit=limit)
+            attempt_ids = _project_attempt_ids(
+                library,
+                project_id,
+                render_job_id,
+                output_sha256,
+                limit=limit,
+            )
             items = [_attempt_payload(library, attempt_id) for attempt_id in attempt_ids]
         except StorageConflictError as exc:
             raise HTTPException(
@@ -132,6 +153,8 @@ def install_project_publishing_routes(
 
         return {
             "project_id": project_id,
+            "render_job_id": render_job_id,
+            "output_sha256": output_sha256,
             "provider_configured": provider is not None,
             "configured_target": (
                 None if target is None else target.model_dump(mode="json")
