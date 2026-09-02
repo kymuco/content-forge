@@ -12,7 +12,7 @@ const LAST_CACHE_NAME = `${CACHE_PREFIX}v11`;
 const EARLIER_CACHE_NAME = `${CACHE_PREFIX}v12`;
 const OLDER_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v13`;
 const IMMEDIATE_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v14`;
-const CACHE_NAME = `${CACHE_PREFIX}v16`;
+const CACHE_NAME = `${CACHE_PREFIX}v17`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -40,6 +40,7 @@ const SHELL_ASSETS = [
   appUrl("shared.js"),
   appUrl("app.js"),
   appUrl("review.js"),
+  appUrl("production-home.js"),
   appUrl("dialogue.js"),
   appUrl("voice-cast.js"),
   appUrl("voiced-story.js"),
