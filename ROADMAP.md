@@ -4,12 +4,12 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 
 ## Current implementation status
 
-- PR1–PR33: **complete** in the intended post-merge repository state.
+- PR1–PR34: **complete** in the intended post-merge repository state.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
 - Milestone 7B — Daily Production Completion: **current product phase**.
-- Current implemented step: **PR33 — Project-specific edit, preview, and final happy path**.
-- Next product step: **PR34 — Final-to-publish phone handoff**.
+- Current implemented step: **PR34 — Final-to-publish phone handoff**.
+- Next product step: **PR35 — Mobile batch Inbox and attention queue**.
 - Analytics/experiments remain planned **after** the daily phone production loop is genuinely convenient.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
@@ -304,15 +304,32 @@ See [`docs/pr33-project-specific-phone-flow.md`](docs/pr33-project-specific-phon
 
 ### PR34 — Final-to-publish phone handoff
 
-Planned.
+Status: **complete in the intended post-merge state**.
 
-- carry the exact final render identity into the existing publishing candidate flow automatically;
-- no manual render job IDs in ordinary UI;
-- human-facing destination/profile selection from configured local publishing state;
-- retain exact publication declarations and separate human approval from remote execution;
-- final result/reconciliation state returned to the project flow.
+Delivered:
 
-Exit condition: an approved final video can be published from the phone without exposing publishing ledger internals while retaining PR27–PR29 safety.
+- a Project-specific Publish stage appears only for canonical `DONE` Projects with exact final job/hash evidence;
+- the routine phone path carries exact `project.final.job_id` into the existing publishing candidate boundary automatically;
+- no manual Project, render-job, provider, destination/channel, or publish-attempt IDs are required in the ordinary path;
+- configured providers may expose only a credential-free `PublishTarget`; the YouTube adapter exposes `youtube` plus the configured channel ID while OAuth/token paths remain provider-local;
+- unknown providers are never guessed and fall back to Advanced publishing or local-only final use;
+- title/description/tags remain editable publish metadata, with visibility and optional schedule retained as explicit choices;
+- PR29 child-directed and realistic altered/synthetic-media declarations remain mandatory explicit Yes/No human authority;
+- exact candidate construction, semantic SHA-256, idempotency identity, exact approval, durable attempt storage, provider preflight, execution, and receipt validation remain the existing PR27–PR29 contracts;
+- publish approval and remote execution remain separate explicit actions;
+- authenticated read-only project publishing projection filters existing ledger history by exact `{project_id, render_job_id, output_sha256}` rather than adding a second ledger;
+- projection results are safety-prioritized before any bounded result limit: `outcome_unknown > running > succeeded > prepared > failed`, with newest-first ordering within the same state;
+- the phone bundle independently verifies returned project/job/hash identity and uses the same conservative state priority;
+- `outcome_unknown` and `running` block routine replacement; `succeeded` does not trigger a duplicate upload; retry-safe pre-boundary `failed` may form a new exact request;
+- multiple ambiguous active attempts fail closed into Advanced inspection rather than choosing an attempt heuristically;
+- refresh/reopen reads the durable ledger after existing reconciliation, so browser state is never publication authority;
+- Advanced publishing remains available as fallback/debug/recovery surface;
+- provider-free render/QC/playback/export remains usable;
+- installed PWA shell upgraded v19 → v20 while retaining v19 as an explicit predecessor.
+
+Exit condition achieved: an approved final video can enter the existing safe publish flow from the same phone Project context without exposing publishing ledger internals or routine IDs, while retaining PR27–PR29 exact authority and duplicate-publication safety.
+
+See [`docs/pr34-final-to-publish-phone-handoff.md`](docs/pr34-final-to-publish-phone-handoff.md) for the exact projection, recovery, and authority contract.
 
 ### PR35 — Mobile batch Inbox and attention queue
 
@@ -471,6 +488,7 @@ These items should not be implemented merely to make the feature list longer.
 15. A phone production preset is product vocabulary over exact registered template authority, not a second template system.
 16. Explicit wizard source selection/order is durable human authority and must remain traceable to exact asset/source provenance.
 17. Project-specific phone editability is derived from canonical lifecycle state; `RENDERING`, `QC`, and `DONE` never expose review mutations.
-18. Analytics observations are evidence, not authority to mutate production state.
-19. Recommendations remain proposals and must be traceable to retained evidence.
-20. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+18. Routine project publishing must be bound to the exact final `{project_id, render_job_id, output_sha256}` and bounded projections must preserve more safety-significant remote states before convenience ordering.
+19. Analytics observations are evidence, not authority to mutate production state.
+20. Recommendations remain proposals and must be traceable to retained evidence.
+21. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
