@@ -14,6 +14,7 @@ from .app import (
     _pairing_bootstrap_allowed,
     create_app as _create_api_app,
 )
+from .daily_production_routes import install_daily_production_routes
 from .dialogue_routes import install_dialogue_routes
 from .production_library_routes import install_production_library_routes
 from .production_preset_routes import install_production_preset_routes
@@ -53,7 +54,7 @@ def create_app(
             ffmpeg_path=ffmpeg_path,
             ffprobe_path=ffprobe_path,
         )
-        install_production_preset_routes(
+        presets = install_production_preset_routes(
             app,
             auth=app.state.auth,
             library=app.state.library,
@@ -107,6 +108,15 @@ def create_app(
             app,
             auth=app.state.auth,
             library=app.state.library,
+            provider=publishing_provider,
+        )
+        install_daily_production_routes(
+            app,
+            auth=app.state.auth,
+            library=app.state.library,
+            inbox=app.state.inbox,
+            review=review,
+            presets=presets,
             provider=publishing_provider,
         )
         install_publishing_pwa_route(app)
