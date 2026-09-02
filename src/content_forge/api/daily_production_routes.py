@@ -87,6 +87,13 @@ def _used_source_project_ids(projects: tuple[object, ...]) -> set[str]:
     return used
 
 
+def _source_project_ids(presets: ProductionPresetService) -> set[str]:
+    return {
+        str(item["source_project_id"])
+        for item in presets.list_sources(limit=500)
+    }
+
+
 def _project_publish_projection(
     library: LocalLibrary,
     summary: Mapping[str, object],
@@ -109,17 +116,19 @@ def _project_publish_projection(
     if not attempt_ids:
         return None, None
     payloads = [_attempt_payload(library, attempt_id) for attempt_id in attempt_ids]
-    states = [
-        str(item.get("attempt", {}).get("state", ""))
-        for item in payloads
-        if isinstance(item.get("attempt"), Mapping)
-    ]
-    if states.count("outcome_unknown") > 0:
+    states: list[str] = []
+    for payload in payloads:
+        attempt = payload.get("attempt")
+        if not isinstance(attempt, Mapping):
+            raise StorageConflictError("exact final publishing attempt is malformed")
+        state = attempt.get("state")
+        if not isinstance(state, str) or not state:
+            raise StorageConflictError("exact final publishing attempt has no state")
+        states.append(state)
+    if "outcome_unknown" in states:
         return "outcome_unknown", payloads[0]
     if states.count("running") > 1 or states.count("prepared") > 1:
         raise StorageConflictError("exact final has multiple active publish attempts")
-    if not states:
-        raise StorageConflictError("exact final publishing attempt has no state")
     return states[0], payloads[0]
 
 
@@ -200,11 +209,7 @@ def _project_card(
                 reason = "Previous publish attempt failed safely"
             else:
                 group = "finished"
-                reason = (
-                    "Published successfully"
-                    if publish_state == "succeeded"
-                    else "Final is complete"
-                )
+                reason = "Published successfully" if publish_state == "succeeded" else "Final is complete"
 
     return {
         "kind": "project",
@@ -224,6 +229,7 @@ def _safe_intake_payload(intake: object) -> dict[str, object]:
         "state",
         "project_id",
         "asset_id",
+        "original_name",
         "filename",
         "source_url",
         "creator_hint",
@@ -324,9 +330,8 @@ def install_daily_production_routes(
                 }
             )
 
-        intakes = inbox.list_intakes(limit=500)
         represented_projects = set(summaries) | source_ids
-        for intake_item in intakes:
+        for intake_item in inbox.list_intakes(limit=500):
             raw = _safe_intake_payload(intake_item)
             state = raw.get("state")
             project_id = raw.get("project_id")
@@ -393,9 +398,9 @@ def install_daily_production_routes(
         payload: SafeWorkRequest,
         _session: AuthSession = Depends(require_session),
     ) -> dict[str, object]:
-        # PR32 production Projects are the only INBOX objects PR35 bootstraps in bulk.
-        # Raw source Projects stay source material and never become review work merely
-        # because the user asked the desktop to continue safe computation.
+        # Only derived production Projects are bootstrapped here. Reusable raw sources are
+        # deliberately excluded even if historical data also exposed them in Review Queue.
+        source_ids = _source_project_ids(presets)
         prepared = 0
         prepare_failed = 0
         for project in presets.list_projects(limit=500):
@@ -415,14 +420,14 @@ def install_daily_production_routes(
             candidates.extend(
                 ("render_final", project_id)
                 for project_id in ready_raw
-                if isinstance(project_id, str)
+                if isinstance(project_id, str) and project_id not in source_ids
             )
         if isinstance(queue_items, list):
             for item in queue_items:
                 if not isinstance(item, Mapping) or not _preview_safe(item):
                     continue
                 project_id = item.get("project_id")
-                if isinstance(project_id, str):
+                if isinstance(project_id, str) and project_id not in source_ids:
                     candidates.append(("render_preview", project_id))
 
         unique: dict[tuple[str, str], None] = {}
