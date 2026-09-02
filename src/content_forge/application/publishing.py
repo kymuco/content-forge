@@ -1,4 +1,4 @@
-"""PR27 authenticated export-to-publish orchestration."""
+"""PR27/PR29 authenticated export-to-publish orchestration."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from pathlib import Path
 from content_forge.orchestration import RenderArtifactManifest, RenderOrchestrator
 from content_forge.providers import (
     ApprovedPublishRequest,
+    PublishContractVersion,
+    PublishDeclarations,
     PublishMetadata,
     PublishRequest,
     PublishTarget,
@@ -49,9 +51,6 @@ def _discard_preflight_state(provider: PublishingProvider) -> None:
     try:
         provider._clear_execution_state()
     except Exception:
-        # Cleanup must never replace the ledger transition failure that prevented
-        # remote execution. Concrete providers are responsible for making this hook
-        # idempotent and internally defensive.
         pass
 
 
@@ -98,14 +97,18 @@ class PublishingService:
         *,
         target: PublishTarget,
         metadata: PublishMetadata,
+        contract_version: PublishContractVersion = "pr27_publish_contract_v1",
+        declarations: PublishDeclarations | None = None,
     ) -> PublishRequest:
         """Build a credential-free candidate from one authenticated final render."""
 
         artifact = self._artifact_by_job_id(render_job_id)
         return PublishRequest(
+            contract_version=contract_version,
             artifact=publish_artifact_ref(artifact),
             target=target,
             metadata=metadata,
+            declarations=declarations,
         )
 
     def _authenticated_artifact(self, approved: ApprovedPublishRequest) -> RenderArtifactManifest:
