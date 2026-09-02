@@ -73,28 +73,37 @@ def _production_project(app, source: Project, *, preset_id: str = "framed_clip")
     return app.state.review.bootstrap_project(project.project_id)
 
 
-def _preview_queue_item(project_id: str) -> dict[str, object]:
+def _queue_task(project_id: str) -> dict[str, object]:
     return {
         "project_id": project_id,
-        "state": "needs_review",
+        "project_state": "needs_review",
+        "content_kind": "unclassified",
+        "task": {
+            "review_task_id": f"task-{project_id}",
+            "task_type": "preview_approval",
+            "attention": "review",
+            "priority": "blocking",
+            "blocking": True,
+            "status": "open",
+            "payload": {"status": "not_rendered"},
+            "suggestions": [],
+            "accepted_value": None,
+            "resolved_at": None,
+        },
+    }
+
+
+def _ready_summary(project_id: str) -> dict[str, object]:
+    return {
+        "project_id": project_id,
+        "state": "ready",
+        "content_kind": "unclassified",
         "review_initialized": True,
         "review_renderable": True,
-        "open_blocking_tasks": 1,
-        "preview": {"status": "not_rendered"},
+        "open_blocking_tasks": 0,
+        "preview": {"status": "ready"},
         "final": None,
-        "tasks": [
-            {
-                "review_task_id": f"task-{project_id}",
-                "task_type": "preview_approval",
-                "attention": "review",
-                "blocking": True,
-                "status": "open",
-                "payload": {"status": "not_rendered"},
-                "suggestions": [],
-                "accepted_value": None,
-                "resolved_at": None,
-            }
-        ],
+        "tasks": [],
     }
 
 
@@ -173,17 +182,12 @@ def test_pr35_safe_work_excludes_raw_source_even_if_legacy_review_queue_lists_it
     try:
         source = _inbox_image(app.state.library, tmp_path, "raw.png", b"raw-image")
         production = _production_project(app, source)
-        real_queue = app.state.review.list_queue
-        real_payload = real_queue(limit=500, include_auto=False)
-        production_item = next(
-            item for item in real_payload["items"] if item["project_id"] == production.project_id
-        )
 
         def fake_queue(*, limit: int = 100, include_auto: bool = False):
             del limit, include_auto
             return {
-                "items": [_preview_queue_item(source.project_id), production_item],
-                "ready_projects": [source.project_id],
+                "items": [_queue_task(source.project_id), _queue_task(production.project_id)],
+                "ready_projects": [_ready_summary(source.project_id)],
             }
 
         calls: list[tuple[str, str]] = []
@@ -219,15 +223,17 @@ def test_pr35_safe_work_prioritizes_final_then_preview_and_honors_render_limit(
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
-        final_a = new_entity_id(EntityKind.PROJECT)
-        final_b = new_entity_id(EntityKind.PROJECT)
-        preview = new_entity_id(EntityKind.PROJECT)
+        final_a, final_b = sorted(
+            [new_entity_id(EntityKind.PROJECT), new_entity_id(EntityKind.PROJECT)]
+        )
+        preview_source = _inbox_image(app.state.library, tmp_path, "preview.png", b"preview")
+        preview_project = _production_project(app, preview_source)
 
         def fake_queue(*, limit: int = 100, include_auto: bool = False):
             del limit, include_auto
             return {
-                "items": [_preview_queue_item(preview)],
-                "ready_projects": [final_b, final_a],
+                "items": [_queue_task(preview_project.project_id)],
+                "ready_projects": [_ready_summary(final_b), _ready_summary(final_a)],
             }
 
         calls: list[tuple[str, str]] = []
@@ -266,12 +272,16 @@ def test_pr35_safe_work_quarantines_review_failure_and_continues_other_candidate
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
-        first = new_entity_id(EntityKind.PROJECT)
-        second = new_entity_id(EntityKind.PROJECT)
+        first, second = sorted(
+            [new_entity_id(EntityKind.PROJECT), new_entity_id(EntityKind.PROJECT)]
+        )
 
         def fake_queue(*, limit: int = 100, include_auto: bool = False):
             del limit, include_auto
-            return {"items": [], "ready_projects": [first, second]}
+            return {
+                "items": [],
+                "ready_projects": [_ready_summary(first), _ready_summary(second)],
+            }
 
         calls: list[str] = []
 
@@ -290,7 +300,7 @@ def test_pr35_safe_work_quarantines_review_failure_and_continues_other_candidate
             json={"render_limit": 2},
         )
         assert response.status_code == 200, response.text
-        assert calls == sorted([first, second])
+        assert calls == [first, second]
         results = response.json()["results"]
         assert [item["outcome"] for item in results] == ["failed", "succeeded"]
         assert results[0]["error_code"] == "ReviewConflictError"
@@ -299,7 +309,10 @@ def test_pr35_safe_work_quarantines_review_failure_and_continues_other_candidate
         app.state.runtime_lease.close()
 
 
-def test_pr35_attention_preserves_retry_blocking_unknown_publish_outcome(tmp_path: Path) -> None:
+def test_pr35_attention_preserves_retry_blocking_unknown_publish_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
@@ -307,20 +320,24 @@ def test_pr35_attention_preserves_retry_blocking_unknown_publish_outcome(tmp_pat
         production = _production_project(app, source)
         render_job_id = new_entity_id(EntityKind.JOB)
         output_sha256 = "a" * 64
-        metadata = dict(production.metadata)
-        metadata.update(
-            {
-                "final_render_job_id": render_job_id,
-                "final_render_plan_digest": "1" * 64,
-                "final_output_sha256": output_sha256,
-            }
-        )
-        done = production.validated_copy(
-            update={"state": ProjectState.DONE, "metadata": metadata}
-        )
-        app.state.library.save_project(done)
+        real_project_summary = app.state.review.project_summary
 
-        request = _publish_request(done.project_id, render_job_id, output_sha256)
+        def projected_summary(project: Project):
+            summary = real_project_summary(project)
+            if project.project_id != production.project_id:
+                return summary
+            summary = dict(summary)
+            summary["state"] = "done"
+            summary["final"] = {
+                "job_id": render_job_id,
+                "render_plan_digest": "1" * 64,
+                "output_sha256": output_sha256,
+                "artifact_endpoint": f"render-jobs/{render_job_id}/artifact",
+            }
+            return summary
+
+        monkeypatch.setattr(app.state.review, "project_summary", projected_summary)
+        request = _publish_request(production.project_id, render_job_id, output_sha256)
         attempt = app.state.library.publishing.prepare_attempt(approve_publish_request(request))
         repository = app.state.library.publishing
         repository.mark_running(
@@ -343,7 +360,8 @@ def test_pr35_attention_preserves_retry_blocking_unknown_publish_outcome(tmp_pat
         card = next(
             item
             for item in response.json()["items"]
-            if item["kind"] == "project" and item["project"]["project_id"] == done.project_id
+            if item["kind"] == "project"
+            and item["project"]["project_id"] == production.project_id
         )
         assert card["group"] == "failed"
         assert card["publish_state"] == "outcome_unknown"
