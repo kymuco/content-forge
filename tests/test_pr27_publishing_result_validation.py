@@ -64,7 +64,13 @@ def _health() -> PublishingProviderHealth:
     )
 
 
-def _result(approved, *, disposition: str = "published", **evidence_updates) -> PublishResult:
+def _result(
+    approved,
+    *,
+    disposition: str = "published",
+    effective_at: datetime | None = None,
+    **evidence_updates,
+) -> PublishResult:
     evidence = PublishInvocationEvidence(
         provider_id="fixture",
         provider_version="1",
@@ -77,7 +83,11 @@ def _result(approved, *, disposition: str = "published", **evidence_updates) -> 
         disposition=disposition,
         remote_id="remote-1",
         remote_url="https://example.invalid/watch/remote-1",
-        effective_at=datetime(2026, 9, 2, 13, 0, tzinfo=timezone.utc),
+        effective_at=(
+            datetime(2026, 9, 2, 13, 0, tzinfo=timezone.utc)
+            if effective_at is None
+            else effective_at
+        ),
         evidence=evidence,
     )
 
@@ -136,16 +146,30 @@ def test_pr27_unscheduled_request_requires_published_result() -> None:
         )
 
 
-def test_pr27_scheduled_request_requires_scheduled_result() -> None:
-    approved = _approved(
-        scheduled_for=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+def test_pr27_scheduled_request_requires_scheduled_result_and_exact_instant() -> None:
+    scheduled_for = datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc)
+    approved = _approved(scheduled_for=scheduled_for)
+    scheduled = _result(
+        approved,
+        disposition="scheduled",
+        effective_at=scheduled_for,
     )
-    scheduled = _result(approved, disposition="scheduled")
     assert validate_publish_result(approved, _health(), scheduled) is scheduled
 
     with pytest.raises(PublishingResponseError, match="must be scheduled"):
         validate_publish_result(
             approved,
             _health(),
-            _result(approved, disposition="published"),
+            _result(approved, disposition="published", effective_at=scheduled_for),
+        )
+
+    with pytest.raises(PublishingResponseError, match="effective time"):
+        validate_publish_result(
+            approved,
+            _health(),
+            _result(
+                approved,
+                disposition="scheduled",
+                effective_at=datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc),
+            ),
         )
