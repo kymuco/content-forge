@@ -167,12 +167,38 @@ def preset_for_project(project: Project) -> ProductionPreset | None:
     raw = _preset_evidence(project)
     if raw is None:
         return None
+    if raw.get("schema_version") != 1:
+        raise ProductionPresetConflictError("production preset evidence version is unsupported")
     preset_id = raw.get("preset_id")
     template_id = raw.get("template_id")
     template_version = raw.get("template_version")
-    if not all(isinstance(value, str) for value in (preset_id, template_id, template_version)):
+    request_id = raw.get("request_id")
+    source_project_ids = raw.get("source_project_ids")
+    if not all(
+        isinstance(value, str)
+        for value in (preset_id, template_id, template_version, request_id)
+    ):
         raise ProductionPresetConflictError("production preset evidence is malformed")
+    try:
+        normalized_request = normalize_idempotency_key(request_id)
+    except ValueError as exc:
+        raise ProductionPresetConflictError("production preset request identity is malformed") from exc
+    if normalized_request != request_id:
+        raise ProductionPresetConflictError("production preset request identity is not canonical")
+    if (
+        not isinstance(source_project_ids, list)
+        or not source_project_ids
+        or len(source_project_ids) > 64
+        or not all(isinstance(value, str) and value for value in source_project_ids)
+        or len(set(source_project_ids)) != len(source_project_ids)
+    ):
+        raise ProductionPresetConflictError("production preset source identity is malformed")
+    if project.project_id != production_project_id(request_id):
+        raise ProductionPresetConflictError("production project ID does not match request identity")
+
     preset = preset_for_id(preset_id)
+    if not preset.min_sources <= len(source_project_ids) <= preset.max_sources:
+        raise ProductionPresetConflictError("production preset source count is outside its contract")
     if (preset.template_id, preset.template_version) != (template_id, template_version):
         raise ProductionPresetConflictError("production preset evidence changed template identity")
     if project.template != TemplateRef(
@@ -197,6 +223,8 @@ class ProductionPresetService:
         project = self.library.load_project(project_id)
         if project is None:
             raise ProductionPresetValidationError(f"unknown source project: {project_id}")
+        if project.project_id != project_id:
+            raise ProductionPresetConflictError("Inbox source project identity is inconsistent")
         if not isinstance(project.metadata.get("inbox_intake_id"), str):
             raise ProductionPresetValidationError(
                 "production sources must be original Inbox projects"
@@ -237,15 +265,14 @@ class ProductionPresetService:
             raise ProductionPresetValidationError("source limit must be between 1 and 500")
         with self.library.database.connection() as connection:
             rows = connection.execute(
-                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id LIMIT ?",
-                (limit,),
+                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id"
             ).fetchall()
         items: list[dict[str, object]] = []
         for row in rows:
             project_id = str(row["project_id"])
             try:
                 project, _ref, asset, _records = self._source(project_id)
-            except ProductionPresetError:
+            except (ProductionPresetError, TypeError, ValueError):
                 continue
             label = project.metadata.get("original_filename")
             if not isinstance(label, str) or not label.strip():
@@ -261,6 +288,8 @@ class ProductionPresetService:
                     "created_at": project.created_at.isoformat(),
                 }
             )
+            if len(items) >= limit:
+                break
         return tuple(items)
 
     def list_projects(self, *, limit: int = 100) -> tuple[Project, ...]:
@@ -268,13 +297,16 @@ class ProductionPresetService:
             raise ProductionPresetValidationError("project limit must be between 1 and 500")
         with self.library.database.connection() as connection:
             rows = connection.execute(
-                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id LIMIT ?",
-                (limit,),
+                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id"
             ).fetchall()
         projects: list[Project] = []
         for row in rows:
-            project = self.library.load_project(str(row["project_id"]))
-            if project is None:
+            row_project_id = str(row["project_id"])
+            try:
+                project = self.library.load_project(row_project_id)
+            except (TypeError, ValueError):
+                continue
+            if project is None or project.project_id != row_project_id:
                 continue
             try:
                 preset = preset_for_project(project)
@@ -282,6 +314,8 @@ class ProductionPresetService:
                 continue
             if preset is not None:
                 projects.append(project)
+                if len(projects) >= limit:
+                    break
         return tuple(projects)
 
     def create_project(
