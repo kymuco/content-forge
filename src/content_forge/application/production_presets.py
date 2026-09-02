@@ -244,7 +244,7 @@ class ProductionPresetService:
         for row in rows:
             project_id = str(row["project_id"])
             try:
-                project, ref, asset, _records = self._source(project_id)
+                project, _ref, asset, _records = self._source(project_id)
             except ProductionPresetError:
                 continue
             label = project.metadata.get("original_filename")
@@ -262,6 +262,27 @@ class ProductionPresetService:
                 }
             )
         return tuple(items)
+
+    def list_projects(self, *, limit: int = 100) -> tuple[Project, ...]:
+        if limit < 1 or limit > 500:
+            raise ProductionPresetValidationError("project limit must be between 1 and 500")
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        projects: list[Project] = []
+        for row in rows:
+            project = self.library.load_project(str(row["project_id"]))
+            if project is None:
+                continue
+            try:
+                preset = preset_for_project(project)
+            except ProductionPresetError:
+                continue
+            if preset is not None:
+                projects.append(project)
+        return tuple(projects)
 
     def create_project(
         self,
