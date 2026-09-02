@@ -30,6 +30,7 @@
 
   let currentCandidate = null;
   let providerConfigured = false;
+  let loadedAttemptId = null;
 
   function setStatus(message, kind) {
     status.textContent = message || "";
@@ -135,6 +136,13 @@
     approveButton.disabled = true;
   }
 
+  function invalidateLoadedAttempt() {
+    if (loadedAttemptId && attemptInput.value.trim() === loadedAttemptId) return;
+    loadedAttemptId = null;
+    executeButton.disabled = true;
+    attemptView.replaceChildren();
+  }
+
   function drawCandidate(candidate) {
     candidateView.replaceChildren();
     const request = candidate.request || {};
@@ -196,8 +204,11 @@
       if (result.remote_url) card.appendChild(text("p", result.remote_url, "mono wrap compact-text"));
     }
     attemptView.appendChild(card);
-    attemptInput.value = attempt.attempt_id || attemptInput.value;
-    executeButton.disabled = attempt.state !== "prepared" || !providerConfigured;
+    loadedAttemptId = typeof attempt.attempt_id === "string" && attempt.attempt_id
+      ? attempt.attempt_id
+      : null;
+    if (loadedAttemptId) attemptInput.value = loadedAttemptId;
+    executeButton.disabled = !loadedAttemptId || attempt.state !== "prepared" || !providerConfigured;
   }
 
   async function refreshProviderStatus() {
@@ -217,6 +228,8 @@
 
   form.addEventListener("input", invalidateCandidate);
   form.addEventListener("change", invalidateCandidate);
+  attemptInput.addEventListener("input", invalidateLoadedAttempt);
+  attemptInput.addEventListener("change", invalidateLoadedAttempt);
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -273,6 +286,8 @@
       return;
     }
     loadAttemptButton.disabled = true;
+    executeButton.disabled = true;
+    loadedAttemptId = null;
     try {
       const payload = await apiJson(`publishing/attempts/${encodeURIComponent(attemptId)}`);
       drawAttempt(payload);
@@ -287,8 +302,12 @@
   });
 
   executeButton.addEventListener("click", async () => {
-    const attemptId = attemptInput.value.trim();
-    if (!attemptId) return;
+    const attemptId = loadedAttemptId;
+    if (!attemptId || attemptInput.value.trim() !== attemptId) {
+      invalidateLoadedAttempt();
+      setStatus("Load the exact publish attempt before execution.", "error");
+      return;
+    }
     executeButton.disabled = true;
     try {
       setStatus("Executing the already-approved publish attempt…");
@@ -317,6 +336,7 @@
     setHidden(panel, !bearer);
     if (!bearer) {
       currentCandidate = null;
+      loadedAttemptId = null;
       candidateView.replaceChildren();
       attemptView.replaceChildren();
       approveButton.disabled = true;
