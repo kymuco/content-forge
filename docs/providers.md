@@ -4,7 +4,7 @@
 
 Providers isolate capabilities that are useful but should remain replaceable, optional, or environment-specific.
 
-Core project state, timelines, rendering, and storage must not depend directly on a particular LLM, OCR package, TTS model, source website, or publishing API.
+Core project state, timelines, rendering, and storage must not depend directly on a particular LLM, OCR package, TTS model, source website, publishing API, or analytics API.
 
 The provider families are:
 
@@ -12,9 +12,9 @@ The provider families are:
 LLMProvider        # implemented in PR15
 OCRProvider        # implemented in PR18
 TTSProvider        # implemented in PR20
-SourceProvider     # later
-PublishingProvider # later
-AnalyticsProvider  # later
+SourceProvider     # later convenience work
+PublishingProvider # implemented in PR27; YouTube adapter in PR28/PR29
+AnalyticsProvider  # next primary provider boundary, planned for PR31
 ```
 
 ## General provider rules
@@ -29,6 +29,8 @@ Every provider integration should follow these rules where applicable:
 6. **Secrets stay local.** Cookies, tokens, credentials, model weights, and provider session data are runtime configuration and never repository content.
 7. **Narrow interfaces.** Providers expose capabilities the application needs, not their entire underlying SDK/API.
 8. **Evidence before mutation.** Provider output is validated before durable project state is updated.
+9. **Remote side effects are explicit.** A provider that can mutate remote state must not hide that boundary behind unrelated local operations.
+10. **Provider evidence is not human authority.** Provider output may support a decision, but exact approvals/review rules remain separate where judgment matters.
 
 ## `LLMProvider`
 
@@ -236,7 +238,7 @@ Benefits:
 - exact cache reuse;
 - isolated regeneration;
 - known line durations;
-- straightforward later timed text;
+- straightforward timed text;
 - speaker-level control;
 - editing or changing the voice of one line does not force regeneration of an entire episode.
 
@@ -246,7 +248,7 @@ Every durable PR20 line receipt retains the exact PR19 scene-dialogue digest, ac
 
 A provider result does not authorize project state merely because its schema validates.
 
-Before publication, Content Forge independently reopens the generated file and requires a bounded uncompressed PCM16 WAV whose:
+Before publication into project authority, Content Forge independently reopens the generated file and requires a bounded uncompressed PCM16 WAV whose:
 
 - SHA-256;
 - byte size;
@@ -279,9 +281,7 @@ voice_design -> ...-VoiceDesign -> generate_voice_design
 
 The configured checkpoint name must match the selected mode. This avoids silently invoking the wrong Qwen capability family.
 
-The released 12Hz Qwen3-TTS family supports Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian. PR20 maps BCP-47 base subtags to the Qwen language names and uses Qwen `Auto` when language is omitted or `und`.
-
-Qwen repositories are pinned by an explicit immutable 40-hex Hugging Face commit SHA. `model_revision` is retained separately in evidence and cache identity. Before model construction, Content Forge resolves the complete repository with `snapshot_download(repo_id=..., revision=...)` and passes Qwen the resulting local snapshot path. This ensures model weights and the separately loaded processor/config files come from the same checkpoint.
+Qwen repositories are pinned by an explicit immutable 40-hex Hugging Face commit SHA. `model_revision` is retained separately in evidence and cache identity. Before model construction, Content Forge resolves the complete repository with `snapshot_download(repo_id=..., revision=...)` and passes Qwen the resulting local snapshot path. This ensures model weights and separately loaded processor/config files come from the same checkpoint.
 
 The default adapter uses:
 
@@ -312,24 +312,15 @@ When `x_vector_only_mode=False`, the Qwen adapter requires reference transcript 
 
 ### Voice cast registry
 
-Persistent voice casting remains the application layer above the provider and is PR21 scope.
+Persistent voice casting is the application layer above the provider and was implemented in PR21.
 
-PR20 accepts an explicit line `voice_id`; PR21 can later define stable entries such as:
+PR20 accepts explicit line synthesis settings; PR21 adds reusable immutable/revisioned cast identities, character-to-cast bindings, exact reference-audio evidence, project-local overrides, and preview synthesis without changing the underlying PR20 provider/cache/artifact authority.
 
-```text
-cast.female_energetic -> provider voice/config A
-cast.female_calm      -> provider voice/config B
-cast.male_lead        -> provider voice/config C
-cast.narrator         -> provider voice/config D
-```
+See [`pr20-tts-qwen.md`](pr20-tts-qwen.md) and [`pr21-voice-cast.md`](pr21-voice-cast.md) for the complete contracts.
 
-Characters can then map to cast entries without changing the PR20 request/cache/artifact contract or tying narrative identity to one TTS engine.
+## `SourceProvider` (later convenience work)
 
-See [`pr20-tts-qwen.md`](pr20-tts-qwen.md) for the complete PR20 contract.
-
-## `SourceProvider` (later)
-
-Content Forge v0.1 accepts uploads and URL records without becoming a scraping framework.
+Content Forge accepts uploads and URL records without becoming a scraping framework.
 
 A future source provider may support a specific service/API where technically and contractually appropriate.
 
@@ -340,47 +331,74 @@ Provider responsibilities can include:
 - download/export media where allowed and supported;
 - retain canonical source URL.
 
-The project must never assume that a URL is fetchable merely because it was captured in the Inbox.
+The project must never assume that a URL is fetchable merely because it was captured in the Inbox. Source-specific helpers are intentionally below the PR31+ analytics feedback loop in roadmap priority because existing Share/Inbox ingest already provides a functional production path.
 
-## `PublishingProvider` (later)
+## `PublishingProvider`
 
-Publishing is deliberately downstream of a completed export.
+PR27 implements the generic publishing boundary downstream of a completed authenticated final render.
 
-Potential operations:
+The generic flow is:
 
 ```text
-upload media
-create/update metadata
-schedule
-read upload status
+final RenderArtifactManifest
+-> exact credential-free PublishRequest
+-> exact human PublishApproval
+-> durable prepared attempt
+-> provider health/preflight
+-> durable running boundary
+-> remote side effect
+-> validated PublishResult
 ```
 
-The renderer must not publish as a side effect.
+The renderer never publishes as a side effect. Publishing is optional and remains outside `Project.state` and render correctness.
 
-This boundary permits manual publishing, YouTube integration, or future platform integrations without changing project/render semantics.
+PR27 also defines crash/uncertainty semantics: failures before the remote boundary can remain retryable, while uncertainty after `running` becomes `outcome_unknown` and blocks automatic duplicate publication.
 
-## `AnalyticsProvider` (later)
+PR28 implements the first concrete adapter for the YouTube Data API v3, including installed-app OAuth, exact channel binding, authenticated immutable upload bytes, resumable upload/scheduling, processing verification, and exact remote metadata verification. PR29 adds the backward-compatible v2 publication contract for strict human-approved child-directed and realistic altered/synthetic-media declarations.
 
-After enough real content exists, analytics can import platform performance data and attach it to published variants.
+OAuth tokens, local token paths, SDK sessions, and other secrets remain provider-local runtime state and do not participate in the semantic publish request or API/PWA payload.
 
-Potential normalized metrics:
+See [`pr27-publishing-provider-boundary.md`](pr27-publishing-provider-boundary.md), [`pr28-youtube-publishing-adapter.md`](pr28-youtube-publishing-adapter.md), and [`pr29-versioned-publication-declarations.md`](pr29-versioned-publication-declarations.md).
+
+## `AnalyticsProvider` (planned PR31)
+
+PR31 is the next primary provider boundary after the post-PR29 roadmap reconciliation.
+
+The intended role is to import authenticated platform performance observations for exact known publications without making analytics a hidden project-state authority.
+
+Planned normalized observation families may include provider-supported values such as:
 
 ```text
 views
-viewed_vs_swiped
-average_view_duration
-retention curve
+watch/average-view-duration metrics
+viewed-vs-swiped where available
+retention observations where available
 likes/comments/shares
 subscriber conversion
 restrictions/monetization state where available
 revenue/RPM where available
 ```
 
-Analytics should inform experimentation but not be invented before the production workflow is proven.
+The exact PR31 metric model will be designed from current provider APIs rather than freezing this illustrative list prematurely.
+
+Key planned invariants:
+
+- analytics is optional;
+- observations retain provider/version/time-window evidence;
+- observations attach to exact durable successful publication identity;
+- observation time/window is separate from ingestion time;
+- repeated observations preserve history rather than silently replacing one mutable counter snapshot;
+- missing/partial data is distinct from zero;
+- analytics evidence does not mutate Project, render, or publish authority;
+- later recommendations remain proposals traceable to retained observations.
+
+See [`../ROADMAP.md`](../ROADMAP.md) for PR31–PR36 sequencing.
 
 ## Provider configuration
 
-Local configuration may eventually support:
+Local configuration is capability-specific. Current optional integrations are selected through their established runtime/configuration surfaces; secrets and machine-local paths remain outside committed configuration.
+
+A conceptual deployment may include:
 
 ```yaml
 providers:
@@ -395,27 +413,23 @@ providers:
   tts:
     kind: qwen3_tts_local
     enabled: false
+
+  publishing:
+    kind: youtube
+    enabled: false
 ```
 
-Secrets/session details, model weights, and machine-local runtime configuration live outside committed config files.
+This example is architectural documentation, not a promise that one canonical YAML loader currently owns all provider configuration.
 
 ## Testing
 
 Core and workflow tests use fake/injected providers implementing the same protocols.
 
-This allows normal CI to test:
+This allows normal CI to test provider contracts without requiring live external accounts or heavyweight optional runtimes. Current coverage includes, among other boundaries:
 
-- proposal acceptance/rejection;
-- strict provider-output parsing;
-- source/request evidence validation;
-- raw OCR versus corrected-text retention;
-- confidence/review boundaries;
-- deterministic project state;
-- PR20 per-line synthesis identity/cache invalidation;
-- Qwen call-shape/language/mode/revision boundaries;
-- complete pinned Qwen repository snapshot resolution;
-- fail-closed unsupported 0.6B instruction handling;
-- PCM16 WAV verification and generated-asset integrity;
-- future dialogue timing with synthetic audio
+- LLM proposal acceptance/rejection and strict provider-output parsing;
+- OCR source/request evidence validation and raw-versus-corrected retention;
+- TTS semantic/cache identity, pinned Qwen snapshot resolution, WAV verification, and generated-asset integrity;
+- publishing provider health/result validation, exact approval/idempotency identity, crash uncertainty, authenticated YouTube upload bytes, and v2 declaration mapping/verification.
 
-without needing a live ChatGPT session, downloaded OCR model weights, Qwen/Torch model weights, a GPU, or external service.
+PR31 should follow the same pattern: fake/injected analytics providers in base CI, with any real provider SDK isolated behind an optional contract job.
