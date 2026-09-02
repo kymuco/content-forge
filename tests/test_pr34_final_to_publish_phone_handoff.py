@@ -352,12 +352,13 @@ def test_pr34_served_phone_bundle_queries_exact_final_and_prioritizes_remote_ris
         app.state.runtime_lease.close()
 
 
-def test_pr34_installed_pwa_advances_from_pr33_shell() -> None:
+def test_pr34_installed_pwa_namespace_remains_explicit_predecessor() -> None:
     worker = static_path("sw.js").read_text(encoding="utf-8")
 
     assert 'const PR33_CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
-    assert 'const CACHE_NAME = `${CACHE_PREFIX}v20`' in worker
+    assert 'const PR34_CACHE_NAME = `${CACHE_PREFIX}v20`' in worker
     assert "key === PR33_CACHE_NAME" in worker
+    assert "key === PR34_CACHE_NAME" in worker
     assert 'appUrl("publishing.js")' in worker
 
 
