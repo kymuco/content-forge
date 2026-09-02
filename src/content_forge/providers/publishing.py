@@ -252,7 +252,7 @@ class PublishingProvider(Protocol):
 
 @runtime_checkable
 class PublishingPreflightProvider(Protocol):
-    """Optional local preparation that must complete before remote execution may begin."""
+    """Optional side-effect-free preparation/read checks before remote publish may begin."""
 
     def preflight(
         self,
