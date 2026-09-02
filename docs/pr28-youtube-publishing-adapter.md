@@ -2,13 +2,11 @@
 
 ## Goal
 
-Turn the PR27 platform-agnostic publish boundary into one real remote publishing path without making YouTube, Google OAuth, or network availability part of rendering/export correctness.
+Turn the PR27 platform-agnostic publishing boundary into one real remote publishing path without making YouTube, Google OAuth, or network availability part of rendering/export correctness.
 
 PR28 adds a YouTube Data API v3 adapter only. It does not add analytics, a second platform adapter, or an automatic scheduler daemon.
 
-## Runtime boundary
-
-The authority chain remains:
+## Authority chain
 
 `final RenderArtifactManifest`
 → authenticated artifact loader
@@ -23,62 +21,48 @@ The authority chain remains:
 → authenticated `PublishResult`
 → durable `succeeded`
 
-If anything fails after the resumable upload call begins, PR27 records `outcome_unknown` rather than automatically retrying a potentially duplicated publication.
+Anything rejected before `running` is a known preflight failure. If uncertainty begins after the upload call starts, PR27 records `outcome_unknown` rather than automatically creating a potentially duplicate video.
 
 ## Provider identity
 
 The concrete provider identity is:
 
-- provider ID: `youtube`
-- provider version: `youtube_data_api_v3_pr28_v1`
-- destination identity: exact YouTube channel ID
+- provider ID: `youtube`;
+- provider version: `youtube_data_api_v3_pr28_v1`;
+- destination identity: exact YouTube channel ID.
 
-The configured channel ID is local runtime configuration and the same credential-free ID must be present in the human-approved `PublishTarget.destination_id`.
-
-`health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token currently resolves to exactly the configured channel.
-
-A successful health check pins that authenticated service on the current execution thread so the later upload uses the same credential context that was verified immediately before the remote boundary.
+`health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token resolves to exactly the configured channel. A successful health check pins that service on the current execution thread so the later upload uses the credential context verified immediately before the remote boundary.
 
 ## Provider preflight
 
-PR27's original provider contract intentionally had only `health()` and `publish()`. A real platform exposes narrower constraints than the portable publish model, so PR28 adds an optional duck-typed provider `preflight(...)` capability in `PublishingService`.
+A real platform has narrower constraints than portable PR27 metadata. PR28 therefore adds an optional provider `preflight(...)` capability to `PublishingService` and runs it after provider health but before `prepared → running`.
 
-The order is deliberate:
-
-1. authenticate the final artifact;
-2. verify provider health/identity;
-3. run provider preflight;
-4. only then transition `prepared → running`;
-5. call `publish()`.
-
-If preflight rejects the request, the durable attempt becomes retryable `failed`; it never crosses the remote-side-effect boundary.
-
-The YouTube preflight checks:
+YouTube preflight checks:
 
 - exact provider/channel identity;
 - stable PR27 idempotency identity;
-- exact media byte count against the approved artifact;
-- YouTube's upload-size ceiling;
-- title length and character restrictions;
-- UTF-8 description byte limit and character restrictions;
+- exact media byte count against approved artifact evidence;
+- YouTube's documented 256 GB upload ceiling;
+- title length and prohibited angle brackets;
+- UTF-8 description byte limit and prohibited angle brackets;
 - YouTube tag-budget accounting;
 - scheduled publication only for approved `public` visibility;
 - whole-second schedule precision;
 - schedule time strictly in the future.
 
-The generic PR27 `PublishMetadata` remains platform-agnostic and is not narrowed globally to YouTube limits.
+The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do not leak into other future providers.
 
 ## Upload semantics
 
-PR28 uses the Google API Python client's resumable media upload path:
+PR28 uses the Google API Python client's resumable path:
 
 - `videos.insert(part="snippet,status", ...)`;
 - `MediaFileUpload(..., resumable=True)`;
-- retry support delegated to the Google client `next_chunk(num_retries=...)`.
+- retry support through `next_chunk(num_retries=...)`.
 
-For unscheduled uploads, the approved visibility is passed directly as `status.privacyStatus`.
+For an unscheduled upload, approved visibility is passed directly as `status.privacyStatus`.
 
-For a scheduled public request, YouTube requires creation as:
+For a scheduled public request, YouTube requires a private video plus an exact future `publishAt`:
 
 ```json
 {
@@ -89,24 +73,20 @@ For a scheduled public request, YouTube requires creation as:
 }
 ```
 
-PR28 therefore accepts scheduling only when the approved semantic visibility is `public`. The remote object is verified to remain private with the exact approved `publishAt` before Content Forge stores a `scheduled` result.
+PR28 therefore accepts scheduling only when the approved semantic visibility is `public`. The remote object must verify as private with the exact approved `publishAt` before Content Forge stores a `scheduled` result.
 
 ## Remote verification
 
-A successful `videos.insert` response is not sufficient durable evidence by itself.
-
-After upload, PR28 calls `videos.list(part="snippet,status", id=<video_id>)` and verifies:
+A successful `videos.insert` response is not enough durable evidence. After upload, PR28 calls `videos.list(part="snippet,status", id=<video_id>)` and verifies:
 
 - exact video ID;
 - exact configured channel ID;
 - requested privacy for unscheduled uploads;
 - `private` plus exact `publishAt` for scheduled uploads.
 
-Only then is a `PublishResult` returned.
+Only then is `PublishResult` returned. The persisted public URL is a real query-free YouTube short link compatible with PR27's no-query/no-fragment URL invariant:
 
-The stored public remote URL is canonical and contains no query or fragment:
-
-`https://www.youtube.com/watch/<video_id>`
+`https://youtu.be/<video_id>`
 
 ## OAuth and credential storage
 
@@ -116,7 +96,7 @@ Install the optional runtime:
 python -m pip install -e ".[youtube]"
 ```
 
-Create a Google Cloud OAuth client for a desktop/installed application, enable YouTube Data API v3, and download the client-secrets JSON.
+Create a Google Cloud OAuth client for a desktop/installed application, enable YouTube Data API v3, and download its client-secrets JSON.
 
 Authorize Content Forge locally:
 
@@ -126,12 +106,12 @@ content-forge-youtube-auth \
   --token /private/path/youtube-token.json
 ```
 
-The command uses Google's installed-application OAuth flow with the minimal scopes needed by PR28:
+The installed-app OAuth flow requests only:
 
-- `https://www.googleapis.com/auth/youtube.upload`
-- `https://www.googleapis.com/auth/youtube.readonly`
+- `https://www.googleapis.com/auth/youtube.upload`;
+- `https://www.googleapis.com/auth/youtube.readonly`.
 
-It prints the exact authorized YouTube channel ID. The token is written atomically to the explicit local path and is owner-only on POSIX systems.
+The command prints the exact authorized channel ID. The authorized-user token is written atomically to the explicit local path and is owner-only on POSIX systems.
 
 The OAuth client-secrets file and authorized-user token are never:
 
@@ -142,7 +122,7 @@ The OAuth client-secrets file and authorized-user token are never:
 - written to the SQLite publishing ledger;
 - returned in `PublishResult`.
 
-Start the API with the explicit provider:
+Start the API explicitly with YouTube publishing enabled:
 
 ```bash
 content-forge-api \
@@ -151,47 +131,31 @@ content-forge-api \
   --youtube-channel-id UC...
 ```
 
-Without `--publishing-provider youtube`, Content Forge remains provider-free and cannot perform remote publishing.
+Without `--publishing-provider youtube`, the runtime remains provider-free and cannot perform remote publishing.
 
-## Important YouTube platform constraints
+## Current YouTube platform constraints
 
-YouTube's current API documentation states that:
+The YouTube Data API currently documents that:
 
-- video titles are limited to 100 characters;
+- titles are limited to 100 characters;
 - descriptions are limited to 5000 bytes;
 - tag accounting is limited to 500 characters;
-- `status.publishAt` can only be used while the video is private and before it has ever been published;
-- resumable uploads are the recommended reliability path for large/interruption-prone uploads;
-- uploads made through API projects created after July 28, 2020 that have not passed YouTube's API audit are restricted to private viewing.
+- `status.publishAt` applies only while a video is private and before it has been published;
+- resumable upload is the reliability path for interruption-prone uploads;
+- uploads from API projects created after July 28, 2020 that have not passed YouTube's API audit are restricted to private viewing.
 
-That last rule is external platform governance, not something Content Forge can bypass. A developer project may successfully upload while still being unable to make the video public until the project satisfies YouTube's audit requirements.
+That last rule is external platform governance, not something Content Forge can or should bypass. An upload can succeed while public visibility remains unavailable until the Google/YouTube API project satisfies the applicable audit requirements.
 
 ## Idempotency and crash safety
 
-YouTube's upload endpoint does not provide the same client-supplied idempotency primitive represented by PR27's `cfp-<sha256>` identity.
+YouTube's upload endpoint does not expose a client-supplied idempotency primitive equivalent to PR27's `cfp-<sha256>` identity. Content Forge retains that key as local exact-attempt evidence but never assumes a post-boundary network retry is duplicate-safe.
 
-Content Forge therefore keeps that key as local exact-attempt evidence, but never assumes a network retry is duplicate-safe after the remote upload boundary.
+Therefore:
 
-This is why the PR27 rule remains essential:
-
-- failures before `running` can become retryable `failed`;
+- failures before `running` may become retryable `failed`;
 - uncertainty after `running` becomes `outcome_unknown`;
-- automatic replacement uploads are blocked until the operator reconciles the remote state.
+- replacement upload is blocked until the operator reconciles remote state.
 
 ## Non-goals
 
-PR28 does not add:
-
-- YouTube analytics ingest;
-- thumbnail upload;
-- playlists;
-- captions;
-- made-for-kids UI;
-- synthetic-media disclosure UI;
-- monetization settings;
-- automatic background scheduling;
-- automatic retry of unknown upload outcomes;
-- TikTok/Instagram/other publishing adapters;
-- public-internet exposure.
-
-Those should be added only as separately reviewable capabilities after this first real publishing path is proven.
+PR28 does not add analytics ingest, thumbnail upload, playlists, captions, made-for-kids UI, synthetic-media disclosure UI, monetization settings, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
