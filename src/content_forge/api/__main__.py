@@ -68,7 +68,7 @@ def build_publishing_provider(
             raise ValueError("--youtube-token is required for YouTube publishing")
         if not youtube_channel_id:
             raise ValueError("--youtube-channel-id is required for YouTube publishing")
-        from content_forge.providers.youtube import (
+        from content_forge.providers import (
             YouTubePublishingConfig,
             YouTubePublishingProvider,
         )
@@ -107,7 +107,7 @@ def main() -> None:
         choices=("none", "youtube"),
         default="none",
         help=(
-            "optional PR28 remote publishing runtime; youtube requires the youtube extra "
+            "optional YouTube remote publishing runtime; requires the youtube extra "
             "plus an explicitly authorized local token and channel ID"
         ),
     )
