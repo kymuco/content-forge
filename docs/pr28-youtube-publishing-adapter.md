@@ -31,11 +31,11 @@ The concrete provider identity is:
 - provider version: `youtube_data_api_v3_pr28_v1`;
 - destination identity: exact YouTube channel ID.
 
-`health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token resolves to exactly the configured channel. A successful health check pins that service on the current execution thread so the later upload uses the credential context verified immediately before the remote boundary.
+`health()` loads the local OAuth token, refreshes it when needed, creates the YouTube Data API client, and calls `channels.list(mine=true)` to prove the token resolves to exactly the configured channel. A successful health check pins that service on the current execution thread so the later preflight/upload uses the credential context verified immediately before the remote boundary.
 
 ## Provider preflight
 
-A real platform has narrower constraints than portable PR27 metadata. PR28 therefore adds an optional provider `preflight(...)` capability to `PublishingService` and runs it after provider health but before `prepared → running`.
+A real platform has narrower constraints than portable PR27 metadata. PR28 therefore adds an optional `PublishingPreflightProvider` capability and runs it after provider health but before `prepared → running`.
 
 YouTube preflight checks:
 
@@ -43,12 +43,19 @@ YouTube preflight checks:
 - stable PR27 idempotency identity;
 - exact media byte count against approved artifact evidence;
 - YouTube's documented 256 GB upload ceiling;
+- YouTube's documented 12-hour duration ceiling;
+- for videos longer than 15 minutes, a read-only `channels.list(part="status", mine=true)` capability check requiring `status.longUploadsStatus == "allowed"`;
 - title length and prohibited angle brackets;
 - UTF-8 description byte limit and prohibited angle brackets;
 - YouTube tag-budget accounting;
 - scheduled publication only for approved `public` visibility;
 - whole-second schedule precision;
-- schedule time strictly in the future.
+- schedule time strictly in the future;
+- successful local construction of `MediaFileUpload` and the `videos.insert` request object.
+
+The capability lookup is a read-only provider preflight operation and cannot create a video. The actual remote upload boundary begins only after the durable transition to `running`, when `next_chunk()` is invoked on the already-built resumable request.
+
+This distinction is intentional: local request-construction failures, unsupported long uploads, and invalid metadata remain retryable `failed`; only uncertainty after a video upload may have begun becomes `outcome_unknown`.
 
 The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do not leak into other future providers.
 
@@ -56,9 +63,9 @@ The generic `PublishMetadata` remains platform-agnostic; YouTube constraints do 
 
 PR28 uses the Google API Python client's resumable path:
 
-- `videos.insert(part="snippet,status", ...)`;
+- `videos.insert(part="snippet,status", ...)` request construction during preflight;
 - `MediaFileUpload(..., resumable=True)`;
-- retry support through `next_chunk(num_retries=...)`.
+- remote upload through `next_chunk(num_retries=...)` only after `running`.
 
 For an unscheduled upload, approved visibility is passed directly as `status.privacyStatus`.
 
@@ -111,7 +118,7 @@ The installed-app OAuth flow requests only:
 - `https://www.googleapis.com/auth/youtube.upload`;
 - `https://www.googleapis.com/auth/youtube.readonly`.
 
-The command prints the exact authorized channel ID. The authorized-user token is written atomically to the explicit local path and is owner-only on POSIX systems.
+The command prints the exact authorized channel ID. The authorized-user token is written atomically to the explicit local path. Final-component token symlinks are rejected; on POSIX, runtime token loading also requires owner-only mode and ownership by the current user. Refresh persistence uses atomic replacement and does not widen permissions.
 
 The OAuth client-secrets file and authorized-user token are never:
 
@@ -135,16 +142,21 @@ Without `--publishing-provider youtube`, the runtime remains provider-free and c
 
 ## Current YouTube platform constraints
 
-The YouTube Data API currently documents that:
+The YouTube Data API / YouTube Help currently document that:
 
 - titles are limited to 100 characters;
-- descriptions are limited to 5000 bytes;
+- descriptions are limited to 5000 UTF-8 bytes;
 - tag accounting is limited to 500 characters;
+- uploads are limited to 256 GB or 12 hours, whichever is less;
+- videos longer than 15 minutes require channel long-upload eligibility/enablement;
 - `status.publishAt` applies only while a video is private and before it has been published;
-- resumable upload is the reliability path for interruption-prone uploads;
 - uploads from API projects created after July 28, 2020 that have not passed YouTube's API audit are restricted to private viewing.
 
 That last rule is external platform governance, not something Content Forge can or should bypass. An upload can succeed while public visibility remains unavailable until the Google/YouTube API project satisfies the applicable audit requirements.
+
+YouTube also exposes upload semantics such as `status.selfDeclaredMadeForKids` and `status.containsSyntheticMedia`. PR28 intentionally does **not** inject local defaults for those fields. They can affect the meaning/compliance state of the publication and therefore should become explicit, human-approved publish semantics in a future versioned contract rather than mutable provider-local configuration hidden outside the PR27 request digest.
+
+Until that contract exists, the operator remains responsible for satisfying applicable YouTube audience and altered/synthetic-media disclosure requirements through platform settings/workflow where needed.
 
 ## Idempotency and crash safety
 
@@ -158,4 +170,4 @@ Therefore:
 
 ## Non-goals
 
-PR28 does not add analytics ingest, thumbnail upload, playlists, captions, made-for-kids UI, synthetic-media disclosure UI, monetization settings, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
+PR28 does not add analytics ingest, thumbnail upload, playlists, captions, made-for-kids publish semantics, synthetic-media disclosure publish semantics, monetization settings, automatic background scheduling, automatic retry of unknown outcomes, another publishing platform, or public-internet exposure.
