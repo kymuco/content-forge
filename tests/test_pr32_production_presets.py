@@ -11,6 +11,7 @@ from content_forge.application.production_presets import (
     ProductionPresetService,
 )
 from content_forge.core import AssetRef, Project, ProjectState
+from content_forge.profiles.shorts import SHORTS_PREVIEW_PROFILE_ID
 from content_forge.storage.records import SourceInput
 
 LOOPBACK_HEADERS = {"Host": "localhost"}
@@ -143,7 +144,7 @@ def test_pr32_api_builds_framed_project_and_reuses_existing_review_render_author
             first.source_refs[0].asset_id,
             second.source_refs[0].asset_id,
         ]
-        plan = app.state.review._compile_plan(project, "shorts_preview_540x960")
+        plan = app.state.review._compile_plan(project, SHORTS_PREVIEW_PROFILE_ID)
         assert plan.template_id == "content_frame"
         assert len(plan.scenes) == 2
     finally:
