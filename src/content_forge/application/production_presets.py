@@ -232,6 +232,37 @@ class ProductionPresetService:
             )
         return project, ref, asset, records
 
+    def list_sources(self, *, limit: int = 100) -> tuple[dict[str, object], ...]:
+        if limit < 1 or limit > 500:
+            raise ProductionPresetValidationError("source limit must be between 1 and 500")
+        with self.library.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT project_id FROM projects ORDER BY updated_at DESC, project_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            project_id = str(row["project_id"])
+            try:
+                project, ref, asset, _records = self._source(project_id)
+            except ProductionPresetError:
+                continue
+            label = project.metadata.get("original_filename")
+            if not isinstance(label, str) or not label.strip():
+                label = f"{asset.media_type.value.title()} source"
+            items.append(
+                {
+                    "source_project_id": project.project_id,
+                    "asset_id": asset.asset_id,
+                    "label": label.strip(),
+                    "media_type": asset.media_type.value,
+                    "duration_seconds": asset.duration_seconds,
+                    "thumbnail_endpoint": f"assets/{asset.asset_id}/thumbnail",
+                    "created_at": project.created_at.isoformat(),
+                }
+            )
+        return tuple(items)
+
     def create_project(
         self,
         *,
