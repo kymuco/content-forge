@@ -263,6 +263,13 @@ class PublishingPreflightProvider(Protocol):
     ) -> None: ...
 
 
+@runtime_checkable
+class _PublishingPreflightCleanupProvider(Protocol):
+    """Internal cleanup hook for provider-local state prepared before the remote boundary."""
+
+    def _clear_execution_state(self) -> None: ...
+
+
 def publish_artifact_ref(manifest: RenderArtifactManifest) -> PublishArtifactRef:
     """Pin publish input to a verified final RenderArtifactManifest."""
 
