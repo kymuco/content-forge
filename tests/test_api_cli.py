@@ -48,7 +48,6 @@ def test_cli_youtube_publishing_selection_is_explicit_and_credentials_stay_lazy(
         "none",
         youtube_token_path=None,
         youtube_channel_id=None,
-        youtube_category_id=None,
     ) is None
 
     with pytest.raises(ValueError, match="--youtube-token"):
@@ -56,40 +55,26 @@ def test_cli_youtube_publishing_selection_is_explicit_and_credentials_stay_lazy(
             "youtube",
             youtube_token_path=None,
             youtube_channel_id="UC123",
-            youtube_category_id=None,
         )
     with pytest.raises(ValueError, match="--youtube-channel-id"):
         build_publishing_provider(
             "youtube",
             youtube_token_path="/local/youtube-token.json",
             youtube_channel_id=None,
-            youtube_category_id=None,
         )
     with pytest.raises(ValueError, match="require --publishing-provider youtube"):
         build_publishing_provider(
             "none",
             youtube_token_path="/local/youtube-token.json",
             youtube_channel_id="UC123",
-            youtube_category_id="24",
         )
 
     provider = build_publishing_provider(
         "youtube",
         youtube_token_path="/local/youtube-token.json",
         youtube_channel_id="UC123",
-        youtube_category_id=None,
     )
     assert isinstance(provider, YouTubePublishingProvider)
     assert provider.config.token_path == "/local/youtube-token.json"
     assert provider.config.channel_id == "UC123"
-    assert provider.config.category_id == "22"
-
-    explicit = build_publishing_provider(
-        "youtube",
-        youtube_token_path="/local/youtube-token.json",
-        youtube_channel_id="UC123",
-        youtube_category_id="24",
-    )
-    assert isinstance(explicit, YouTubePublishingProvider)
-    assert explicit.config.category_id == "24"
-    assert explicit._version.endswith(":category=24:notify=0")
+    assert provider.health.__self__ is provider
