@@ -427,7 +427,7 @@ class PublishingRepository:
             if row is None:
                 raise StorageConflictError("unknown publish attempt")
             current = self._decode_attempt(row)
-            allowed = {"prepared", "running"} if state == "failed" else {"running"}
+            allowed = {"prepared"} if state == "failed" else {"running"}
             if current.state not in allowed:
                 raise StorageConflictError(
                     f"publish attempt is {current.state}, cannot transition to {state}"
