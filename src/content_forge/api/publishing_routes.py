@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -134,10 +136,13 @@ def install_publishing_routes(
     )
     app.state.publishing = service
     reconciled = False
+    reconciliation_lock = Lock()
 
     def ensure_reconciled() -> None:
         nonlocal reconciled
-        if not reconciled:
+        with reconciliation_lock:
+            if reconciled:
+                return
             service.reconcile_interrupted()
             reconciled = True
 
