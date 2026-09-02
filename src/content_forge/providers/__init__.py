@@ -83,6 +83,11 @@ from .tts import (
     tts_cache_key,
     tts_config_digest,
 )
+from .youtube import (
+    YOUTUBE_OAUTH_SCOPES,
+    YouTubePublishingConfig,
+    YouTubePublishingProvider,
+)
 
 __all__ = [
     "ApprovedPublishRequest",
@@ -147,6 +152,9 @@ __all__ = [
     "TextCleanupResult",
     "TranslationRequest",
     "TranslationResult",
+    "YOUTUBE_OAUTH_SCOPES",
+    "YouTubePublishingConfig",
+    "YouTubePublishingProvider",
     "approve_publish_request",
     "build_task_prompt",
     "ocr_config_digest",
