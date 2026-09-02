@@ -11,6 +11,8 @@ from content_forge.providers import (
     PublishRequest,
     PublishTarget,
     PublishingExecutionError,
+    PublishingPreflightError,
+    PublishingPreflightProvider,
     PublishingProvider,
     PublishingResponseError,
     PublishingUnavailableError,
@@ -102,8 +104,6 @@ class PublishingService:
 
     def _media_path(self, artifact: RenderArtifactManifest) -> Path:
         path = self.library.paths.root / artifact.output_storage_key
-        # load_artifact() already authenticated this exact path and bytes. This check only
-        # protects an injected/test orchestrator from handing us a nonexistent runtime path.
         if not path.is_file():
             raise PublishArtifactError("authenticated final artifact path is missing")
         return path
@@ -189,10 +189,9 @@ class PublishingService:
             )
 
         idempotency_key = publish_idempotency_key(approved.request)
-        preflight = getattr(provider, "preflight", None)
-        if callable(preflight):
+        if isinstance(provider, PublishingPreflightProvider):
             try:
-                preflight(
+                provider.preflight(
                     approved,
                     media_path=media_path,
                     idempotency_key=idempotency_key,
@@ -203,11 +202,13 @@ class PublishingService:
                     code="provider_preflight_failed",
                     message="publishing provider rejected the approved request before remote execution",
                 )
-                raise PublishingExecutionError("publishing provider preflight failed") from exc
+                raise PublishingPreflightError(
+                    "publishing provider preflight rejected approved request"
+                ) from exc
 
         running = self.library.publishing.mark_running(attempt.attempt_id, health)
         pinned_health = running.provider_health
-        if pinned_health is None:  # defensive: repository state contract requires this.
+        if pinned_health is None:
             raise PublishOrchestrationError("running publish attempt lacks provider identity evidence")
         try:
             result = provider.publish(
@@ -218,9 +219,6 @@ class PublishingService:
             validate_publish_result(approved, pinned_health, result)
             return self.library.publishing.mark_succeeded(running.attempt_id, result)
         except Exception as exc:
-            # Once the provider call has begun, a local exception cannot prove that the
-            # remote side effect did not happen. Provider-controlled exception text is
-            # deliberately excluded from durable evidence and public error messages.
             try:
                 self.library.publishing.mark_outcome_unknown(
                     running.attempt_id,
