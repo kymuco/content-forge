@@ -34,7 +34,7 @@ CHANNEL_ID = "UC1234567890123456789012"
 NOW = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
 
-def _artifact() -> RenderArtifactManifest:
+def _artifact(*, duration_seconds: float = 8.0) -> RenderArtifactManifest:
     return RenderArtifactManifest(
         job_id=new_entity_id(EntityKind.JOB),
         project_id=new_entity_id(EntityKind.PROJECT),
@@ -52,7 +52,7 @@ def _artifact() -> RenderArtifactManifest:
         elapsed_seconds=1.0,
         width=1080,
         height=1920,
-        duration_seconds=8.0,
+        duration_seconds=duration_seconds,
         fps=30.0,
         has_audio=True,
         video_codec="h264",
@@ -107,12 +107,21 @@ class _UploadRequest:
 
 
 class _Channels:
-    def __init__(self, channel_id=CHANNEL_ID):
+    def __init__(self, channel_id=CHANNEL_ID, *, long_uploads_status: str = "allowed"):
         self.channel_id = channel_id
+        self.long_uploads_status = long_uploads_status
         self.calls = []
 
     def list(self, **kwargs):
         self.calls.append(kwargs)
+        if kwargs.get("part") == "status":
+            return _ExecuteRequest(
+                {
+                    "items": [
+                        {"status": {"longUploadsStatus": self.long_uploads_status}}
+                    ]
+                }
+            )
         return _ExecuteRequest({"items": [{"id": self.channel_id}]})
 
 
@@ -140,21 +149,27 @@ class _Service:
         self,
         *,
         channel_id=CHANNEL_ID,
+        long_uploads_status: str = "allowed",
         verify_payload=None,
         prepare_error: Exception | None = None,
     ):
         if verify_payload is None:
             verify_payload = {
-                "items": [{
-                    "id": "video_123",
-                    "snippet": {
-                        "channelId": CHANNEL_ID,
-                        "publishedAt": "2026-09-02T07:05:00Z",
-                    },
-                    "status": {"privacyStatus": "private"},
-                }]
+                "items": [
+                    {
+                        "id": "video_123",
+                        "snippet": {
+                            "channelId": CHANNEL_ID,
+                            "publishedAt": "2026-09-02T07:05:00Z",
+                        },
+                        "status": {"privacyStatus": "private"},
+                    }
+                ]
             }
-        self.channels_api = _Channels(channel_id)
+        self.channels_api = _Channels(
+            channel_id,
+            long_uploads_status=long_uploads_status,
+        )
         self.videos_api = _Videos(verify_payload, prepare_error=prepare_error)
 
     def channels(self):
@@ -263,6 +278,51 @@ def test_pr28_youtube_preflight_enforces_platform_metadata_before_remote_boundar
             )
 
 
+def test_pr28_youtube_preflight_enforces_duration_and_long_upload_capability(tmp_path: Path) -> None:
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"test")
+
+    too_long = _approved(_artifact(duration_seconds=12 * 60 * 60 + 0.1))
+    provider = _provider(tmp_path, _Service())
+    assert provider.health().available is True
+    with pytest.raises(PublishingPreflightError, match="12-hour"):
+        provider.preflight(
+            too_long,
+            media_path=media,
+            idempotency_key=publish_idempotency_key(too_long.request),
+        )
+    assert provider._thread_state.service is not None
+
+    long_artifact = _artifact(duration_seconds=15 * 60 + 1)
+    eligible_service = _Service(long_uploads_status="eligible")
+    eligible_provider = _provider(tmp_path, eligible_service)
+    eligible = _approved(long_artifact)
+    assert eligible_provider.health().available is True
+    with pytest.raises(PublishingPreflightError, match="not currently allowed"):
+        eligible_provider.preflight(
+            eligible,
+            media_path=media,
+            idempotency_key=publish_idempotency_key(eligible.request),
+        )
+    assert eligible_service.channels_api.calls[-1] == {
+        "part": "status",
+        "mine": True,
+        "maxResults": 2,
+    }
+    assert eligible_service.videos_api.insert_calls == []
+
+    allowed_service = _Service(long_uploads_status="allowed")
+    allowed_provider = _provider(tmp_path, allowed_service)
+    allowed = _approved(long_artifact)
+    _preflight(allowed_provider, allowed, media)
+    assert allowed_service.channels_api.calls[-1] == {
+        "part": "status",
+        "mine": True,
+        "maxResults": 2,
+    }
+    assert len(allowed_service.videos_api.insert_calls) == 1
+
+
 def test_pr28_youtube_preflight_builds_request_before_remote_boundary(tmp_path: Path) -> None:
     artifact = _artifact()
     media = tmp_path / "video.mp4"
@@ -282,14 +342,16 @@ def test_pr28_youtube_unscheduled_resumable_upload_and_verification(tmp_path: Pa
     media.write_bytes(b"test")
     service = _Service(
         verify_payload={
-            "items": [{
-                "id": "video_123",
-                "snippet": {
-                    "channelId": CHANNEL_ID,
-                    "publishedAt": "2026-09-02T07:05:00Z",
-                },
-                "status": {"privacyStatus": "unlisted"},
-            }]
+            "items": [
+                {
+                    "id": "video_123",
+                    "snippet": {
+                        "channelId": CHANNEL_ID,
+                        "publishedAt": "2026-09-02T07:05:00Z",
+                    },
+                    "status": {"privacyStatus": "unlisted"},
+                }
+            ]
         }
     )
     provider = _provider(tmp_path, service)
@@ -330,17 +392,19 @@ def test_pr28_youtube_schedule_maps_public_approval_to_private_publish_at(tmp_pa
     scheduled_for = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
     service = _Service(
         verify_payload={
-            "items": [{
-                "id": "video_123",
-                "snippet": {
-                    "channelId": CHANNEL_ID,
-                    "publishedAt": "2026-09-02T07:05:00Z",
-                },
-                "status": {
-                    "privacyStatus": "private",
-                    "publishAt": "2026-09-02T08:00:00Z",
-                },
-            }]
+            "items": [
+                {
+                    "id": "video_123",
+                    "snippet": {
+                        "channelId": CHANNEL_ID,
+                        "publishedAt": "2026-09-02T07:05:00Z",
+                    },
+                    "status": {
+                        "privacyStatus": "private",
+                        "publishAt": "2026-09-02T08:00:00Z",
+                    },
+                }
+            ]
         }
     )
     provider = _provider(tmp_path, service)
@@ -370,14 +434,16 @@ def test_pr28_youtube_verification_mismatch_fails_closed_after_upload(tmp_path: 
     media.write_bytes(b"test")
     service = _Service(
         verify_payload={
-            "items": [{
-                "id": "video_123",
-                "snippet": {
-                    "channelId": "UC_WRONG",
-                    "publishedAt": "2026-09-02T07:05:00Z",
-                },
-                "status": {"privacyStatus": "private"},
-            }]
+            "items": [
+                {
+                    "id": "video_123",
+                    "snippet": {
+                        "channelId": "UC_WRONG",
+                        "publishedAt": "2026-09-02T07:05:00Z",
+                    },
+                    "status": {"privacyStatus": "private"},
+                }
+            ]
         }
     )
     provider = _provider(tmp_path, service)
@@ -440,7 +506,7 @@ def test_pr28_local_upload_request_construction_failure_stays_failed(tmp_path: P
     assert stored.state == "failed"
     assert stored.error_code == "provider_preflight_failed"
     assert "LOCAL_PREP_SECRET" not in stored.model_dump_json()
-    assert provider._thread_state.prepared if False else True
+    assert not hasattr(provider._thread_state, "prepared")
 
 
 def test_pr28_private_token_writer_is_atomic_and_owner_only(tmp_path: Path) -> None:
@@ -450,3 +516,15 @@ def test_pr28_private_token_writer_is_atomic_and_owner_only(tmp_path: Path) -> N
     assert not list(token.parent.glob("*.tmp"))
     if os.name != "nt":
         assert stat.S_IMODE(token.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is privilege-sensitive on Windows")
+def test_pr28_private_token_writer_rejects_final_component_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real-token.json"
+    real.write_text("ORIGINAL", encoding="utf-8")
+    link = tmp_path / "youtube-token.json"
+    link.symlink_to(real)
+
+    with pytest.raises(RuntimeError, match="must not be a symlink"):
+        write_private_token(link, json.dumps({"refresh_token": "TOP_SECRET"}))
+    assert real.read_text(encoding="utf-8") == "ORIGINAL"
