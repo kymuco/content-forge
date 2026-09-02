@@ -13,7 +13,8 @@ const EARLIER_CACHE_NAME = `${CACHE_PREFIX}v12`;
 const OLDER_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v13`;
 const IMMEDIATE_PREVIOUS_CACHE_NAME = `${CACHE_PREFIX}v14`;
 const PR29_CACHE_NAME = `${CACHE_PREFIX}v16`;
-const CACHE_NAME = `${CACHE_PREFIX}v17`;
+const PR31_CACHE_NAME = `${CACHE_PREFIX}v17`;
+const CACHE_NAME = `${CACHE_PREFIX}v18`;
 const LIMITS = self.CFStore.limits;
 const ALLOWED_FIELDS = new Set(["title", "text", "url", "files"]);
 const LIVE_LIMIT_NAMES = Object.freeze([
@@ -76,6 +77,7 @@ self.addEventListener("activate", (event) => {
             || key === OLDER_PREVIOUS_CACHE_NAME
             || key === IMMEDIATE_PREVIOUS_CACHE_NAME
             || key === PR29_CACHE_NAME
+            || key === PR31_CACHE_NAME
             || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
           ))
           .map((key) => caches.delete(key))
