@@ -54,11 +54,16 @@ def build_publishing_provider(
     *,
     youtube_token_path: str | None,
     youtube_channel_id: str | None,
+    youtube_category_id: str | None = None,
 ) -> PublishingProvider | None:
     """Build one explicitly selected remote publisher without loading OAuth secrets eagerly."""
 
     if name == "none":
-        if youtube_token_path is not None or youtube_channel_id is not None:
+        if (
+            youtube_token_path is not None
+            or youtube_channel_id is not None
+            or youtube_category_id is not None
+        ):
             raise ValueError(
                 "YouTube runtime options require --publishing-provider youtube"
             )
@@ -77,6 +82,7 @@ def build_publishing_provider(
             YouTubePublishingConfig(
                 token_path=youtube_token_path,
                 channel_id=youtube_channel_id,
+                category_id=youtube_category_id or "22",
             )
         )
     raise ValueError(f"unsupported publishing provider: {name}")
@@ -121,6 +127,14 @@ def main() -> None:
         default=None,
         help="exact YouTube channel ID bound to the authorized publishing runtime",
     )
+    parser.add_argument(
+        "--youtube-category-id",
+        default=None,
+        help=(
+            "assignable YouTube video category ID; defaults to 22 (People & Blogs) "
+            "when the YouTube publisher is selected"
+        ),
+    )
     args = parser.parse_args()
     host = args.host or ("0.0.0.0" if args.lan else "127.0.0.1")
     try:
@@ -134,6 +148,7 @@ def main() -> None:
             args.publishing_provider,
             youtube_token_path=args.youtube_token,
             youtube_channel_id=args.youtube_channel_id,
+            youtube_category_id=args.youtube_category_id,
         )
     except ValueError as exc:
         parser.error(str(exc))
