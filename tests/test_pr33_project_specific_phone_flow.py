@@ -97,12 +97,13 @@ def test_pr33_terminal_projects_never_offer_false_review_mutations() -> None:
     assert 'activeProjectState === "READY"' not in script.split('function projectIsTerminal()', 1)[1].split('}', 1)[0]
 
 
-def test_pr33_installed_pwa_advances_from_pr32_shell() -> None:
+def test_pr33_installed_pwa_namespace_remains_an_explicit_predecessor() -> None:
     worker = static_path("sw.js").read_text(encoding="utf-8")
 
     assert 'const PR32_CACHE_NAME = `${CACHE_PREFIX}v18`' in worker
-    assert 'const CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
+    assert 'const PR33_CACHE_NAME = `${CACHE_PREFIX}v19`' in worker
     assert 'key === PR32_CACHE_NAME' in worker
+    assert 'key === PR33_CACHE_NAME' in worker
     assert 'appUrl("production-home.js")' in worker
 
 
