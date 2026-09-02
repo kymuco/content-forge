@@ -21,7 +21,7 @@ def test_pr27_pwa_shell_serves_separate_publish_approval_and_execution_controls(
         assert 'id="publishing-execute"' in shell.text
         assert "Approve exact request" in shell.text
         assert "Execute approved attempt" in shell.text
-        assert "Remote execution is a separate action" in shell.text
+        assert "execute the durable attempt as a separate action" in shell.text
 
         # PR27's browser surface may name a provider/destination but must not accept
         # runtime filesystem paths or provider credentials/secrets from the PWA.
