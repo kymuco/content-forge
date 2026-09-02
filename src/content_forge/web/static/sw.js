@@ -303,11 +303,6 @@ async function queueShareTarget(request) {
 async function networkFirstConfig(request, event) {
   try {
     const response = await fetch(request, { cache: "no-store" });
-  } catch (_) {
-    // Fall through to the last cached configuration when the server is offline.
-  }
-  try {
-    const response = await fetch(request, { cache: "no-store" });
     if (response.ok && response.type === "basic") {
       const copy = response.clone();
       event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
