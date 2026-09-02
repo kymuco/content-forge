@@ -117,6 +117,7 @@ The safety rule is based on whether the remote side effect may have begun.
 
 - `prepared` survives restart unchanged and is resumable;
 - preflight failures become `failed` and may be retried through a new attempt;
+- a `running` attempt can never be downgraded to retryable `failed`;
 - abandoned `running` attempts reconcile to `outcome_unknown`;
 - `outcome_unknown` blocks automatic retry to avoid duplicate publication;
 - repeating execution of an already `succeeded` attempt returns the stored receipt without a second provider call.
@@ -149,12 +150,13 @@ A successful provider returns `PublishResult` with:
 - exact output SHA-256;
 - destination identity.
 
-`validate_publish_result()` fail-closes if provider health, approval, request identity, artifact digest, destination, provider version, idempotency evidence, or disposition disagree.
+`validate_publish_result()` fail-closes if provider health, approval, request identity, artifact digest, destination, provider version, idempotency evidence, disposition, or approved scheduling evidence disagree.
 
-Disposition is symmetric:
+Disposition and scheduling evidence are exact:
 
 - an unscheduled request must return `published`;
-- a scheduled request must return `scheduled`.
+- a scheduled request must return `scheduled`;
+- a scheduled result's `effective_at` must exactly equal the canonical UTC `scheduled_for` that the human approved.
 
 A result mismatch after provider invocation becomes `outcome_unknown`, not retryable `failed`, because a remote object may already exist.
 
