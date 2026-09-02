@@ -161,6 +161,24 @@ def test_model_copy_validation_bypass_is_rejected_at_provider_and_storage_bounda
     assert library.analytics.observations_for_publication(attempt.attempt_id) == ()
 
 
+def test_successful_publication_is_revalidated_before_analytics_use(tmp_path) -> None:
+    library = LocalLibrary(tmp_path)
+    attempt, _effective_at = _successful_publication(library)
+    assert attempt.result is not None
+    tampered_evidence = attempt.result.evidence.model_copy(
+        update={"destination_id": "other-channel"}
+    )
+    tampered_result = attempt.result.model_copy(update={"evidence": tampered_evidence})
+    with library.database.transaction() as connection:
+        connection.execute(
+            "UPDATE publish_attempts SET result_json = ? WHERE attempt_id = ?",
+            (tampered_result.model_dump_json(), attempt.attempt_id),
+        )
+
+    with pytest.raises(StorageConflictError):
+        library.analytics.successful_publication(attempt.attempt_id)
+
+
 def test_analytics_schema_is_lazy_and_provider_free_runtime_stays_usable(tmp_path) -> None:
     library = LocalLibrary(tmp_path)
     with library.database.connection() as connection:
