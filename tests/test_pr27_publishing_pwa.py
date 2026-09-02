@@ -3,12 +3,15 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from content_forge.api import create_app
+from content_forge.application import PublishingService
 
 
 def test_pr27_pwa_shell_serves_separate_publish_approval_and_execution_controls(tmp_path) -> None:
     app = create_app(root=tmp_path)
     client = TestClient(app)
     try:
+        assert isinstance(app.state.publishing, PublishingService)
+
         shell = client.get("/app/")
         assert shell.status_code == 200
         assert 'id="publishing-panel"' in shell.text
