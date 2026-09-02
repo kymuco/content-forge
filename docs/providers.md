@@ -14,7 +14,7 @@ OCRProvider        # implemented in PR18
 TTSProvider        # implemented in PR20
 SourceProvider     # later convenience work
 PublishingProvider # implemented in PR27; YouTube adapter in PR28/PR29
-AnalyticsProvider  # next primary provider boundary, planned for PR31
+AnalyticsProvider  # planned for PR36 after Daily Production Completion
 ```
 
 ## General provider rules
@@ -331,7 +331,7 @@ Provider responsibilities can include:
 - download/export media where allowed and supported;
 - retain canonical source URL.
 
-The project must never assume that a URL is fetchable merely because it was captured in the Inbox. Source-specific helpers are intentionally below the PR31+ analytics feedback loop in roadmap priority because existing Share/Inbox ingest already provides a functional production path.
+The project must never assume that a URL is fetchable merely because it was captured in the Inbox. Source-specific helpers remain below Daily Production Completion and the later analytics feedback loop in roadmap priority because existing Share/Inbox ingest already provides a functional production path.
 
 ## `PublishingProvider`
 
@@ -360,9 +360,9 @@ OAuth tokens, local token paths, SDK sessions, and other secrets remain provider
 
 See [`pr27-publishing-provider-boundary.md`](pr27-publishing-provider-boundary.md), [`pr28-youtube-publishing-adapter.md`](pr28-youtube-publishing-adapter.md), and [`pr29-versioned-publication-declarations.md`](pr29-versioned-publication-declarations.md).
 
-## `AnalyticsProvider` (planned PR31)
+## `AnalyticsProvider` (planned PR36)
 
-PR31 is the next primary provider boundary after the post-PR29 roadmap reconciliation.
+Analytics remains the next major provider boundary after Daily Production Completion rather than the immediate PR31 product step.
 
 The intended role is to import authenticated platform performance observations for exact known publications without making analytics a hidden project-state authority.
 
@@ -379,7 +379,7 @@ restrictions/monetization state where available
 revenue/RPM where available
 ```
 
-The exact PR31 metric model will be designed from current provider APIs rather than freezing this illustrative list prematurely.
+The exact PR36 metric model will be designed from current provider APIs rather than freezing this illustrative list prematurely.
 
 Key planned invariants:
 
@@ -392,7 +392,7 @@ Key planned invariants:
 - analytics evidence does not mutate Project, render, or publish authority;
 - later recommendations remain proposals traceable to retained observations.
 
-See [`../ROADMAP.md`](../ROADMAP.md) for PR31–PR36 sequencing.
+See [`../ROADMAP.md`](../ROADMAP.md) for PR36–PR41 sequencing.
 
 ## Provider configuration
 
@@ -432,4 +432,4 @@ This allows normal CI to test provider contracts without requiring live external
 - TTS semantic/cache identity, pinned Qwen snapshot resolution, WAV verification, and generated-asset integrity;
 - publishing provider health/result validation, exact approval/idempotency identity, crash uncertainty, authenticated YouTube upload bytes, and v2 declaration mapping/verification.
 
-PR31 should follow the same pattern: fake/injected analytics providers in base CI, with any real provider SDK isolated behind an optional contract job.
+PR36 should follow the same pattern: fake/injected analytics providers in base CI, with any real provider SDK isolated behind an optional contract job.
