@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -124,6 +125,18 @@ PRESETS = (
 
 _PRESET_BY_ID = {item.preset_id: item for item in PRESETS}
 _REQUEST_LOCKS = tuple(threading.Lock() for _ in range(128))
+_PRESET_EVIDENCE_KEY = "production_preset_v1"
+_PRESET_EVIDENCE_KEYS = frozenset(
+    {
+        "schema_version",
+        "request_id",
+        "preset_id",
+        "template_id",
+        "template_version",
+        "sources",
+    }
+)
+_PRESET_SOURCE_KEYS = frozenset({"source_project_id", "asset_id", "source_id"})
 
 
 def production_project_id(request_id: str) -> str:
@@ -141,19 +154,62 @@ def _lock_for_request(request_id: str) -> threading.Lock:
     return _REQUEST_LOCKS[int.from_bytes(digest[:4], "big") % len(_REQUEST_LOCKS)]
 
 
-def _preset_evidence(project: Project) -> dict[str, object] | None:
-    """Read nested evidence from the model's JSON form, not immutable internal containers."""
+def _canonical_evidence(payload: dict[str, object]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
-    payload = project.model_dump(mode="json")
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        raise ProductionPresetConflictError("project metadata is malformed")
-    raw = metadata.get("production_preset_v1")
+
+def _preset_evidence(project: Project) -> dict[str, object] | None:
+    """Parse exact scalar metadata evidence without introducing nested FrozenModel state."""
+
+    raw = project.metadata.get(_PRESET_EVIDENCE_KEY)
     if raw is None:
         return None
-    if not isinstance(raw, dict):
+    if not isinstance(raw, str) or not raw:
         raise ProductionPresetConflictError("production preset evidence is malformed")
-    return raw
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProductionPresetConflictError("production preset evidence is malformed") from exc
+    if not isinstance(payload, dict) or set(payload) != _PRESET_EVIDENCE_KEYS:
+        raise ProductionPresetConflictError("production preset evidence shape is malformed")
+    if _canonical_evidence(payload) != raw:
+        raise ProductionPresetConflictError("production preset evidence is not canonical")
+    return payload
+
+
+def _source_snapshots(evidence: dict[str, object]) -> tuple[dict[str, object], ...]:
+    raw_sources = evidence.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources or len(raw_sources) > 64:
+        raise ProductionPresetConflictError("production preset source identity is malformed")
+    snapshots: list[dict[str, object]] = []
+    seen_projects: set[str] = set()
+    seen_assets: set[str] = set()
+    for raw in raw_sources:
+        if not isinstance(raw, dict) or set(raw) != _PRESET_SOURCE_KEYS:
+            raise ProductionPresetConflictError("production preset source identity is malformed")
+        source_project_id = raw.get("source_project_id")
+        asset_id = raw.get("asset_id")
+        source_id = raw.get("source_id")
+        if (
+            not isinstance(source_project_id, str)
+            or not source_project_id
+            or not isinstance(asset_id, str)
+            or not asset_id
+            or (source_id is not None and (not isinstance(source_id, str) or not source_id))
+        ):
+            raise ProductionPresetConflictError("production preset source identity is malformed")
+        if source_project_id in seen_projects or asset_id in seen_assets:
+            raise ProductionPresetConflictError("production preset source identity is duplicated")
+        seen_projects.add(source_project_id)
+        seen_assets.add(asset_id)
+        snapshots.append(raw)
+    return tuple(snapshots)
 
 
 def preset_for_id(preset_id: str) -> ProductionPreset:
@@ -164,40 +220,34 @@ def preset_for_id(preset_id: str) -> ProductionPreset:
 
 
 def preset_for_project(project: Project) -> ProductionPreset | None:
-    raw = _preset_evidence(project)
-    if raw is None:
+    evidence = _preset_evidence(project)
+    if evidence is None:
         return None
-    if raw.get("schema_version") != 1:
+    if evidence.get("schema_version") != 1:
         raise ProductionPresetConflictError("production preset evidence version is unsupported")
-    preset_id = raw.get("preset_id")
-    template_id = raw.get("template_id")
-    template_version = raw.get("template_version")
-    request_id = raw.get("request_id")
-    source_project_ids = raw.get("source_project_ids")
+    preset_id = evidence.get("preset_id")
+    template_id = evidence.get("template_id")
+    template_version = evidence.get("template_version")
+    request_id = evidence.get("request_id")
     if not all(
         isinstance(value, str)
         for value in (preset_id, template_id, template_version, request_id)
     ):
         raise ProductionPresetConflictError("production preset evidence is malformed")
+    assert isinstance(request_id, str)
     try:
         normalized_request = normalize_idempotency_key(request_id)
     except ValueError as exc:
         raise ProductionPresetConflictError("production preset request identity is malformed") from exc
     if normalized_request != request_id:
         raise ProductionPresetConflictError("production preset request identity is not canonical")
-    if (
-        not isinstance(source_project_ids, list)
-        or not source_project_ids
-        or len(source_project_ids) > 64
-        or not all(isinstance(value, str) and value for value in source_project_ids)
-        or len(set(source_project_ids)) != len(source_project_ids)
-    ):
-        raise ProductionPresetConflictError("production preset source identity is malformed")
     if project.project_id != production_project_id(request_id):
         raise ProductionPresetConflictError("production project ID does not match request identity")
 
+    snapshots = _source_snapshots(evidence)
+    assert isinstance(preset_id, str) and isinstance(template_id, str) and isinstance(template_version, str)
     preset = preset_for_id(preset_id)
-    if not preset.min_sources <= len(source_project_ids) <= preset.max_sources:
+    if not preset.min_sources <= len(snapshots) <= preset.max_sources:
         raise ProductionPresetConflictError("production preset source count is outside its contract")
     if (preset.template_id, preset.template_version) != (template_id, template_version):
         raise ProductionPresetConflictError("production preset evidence changed template identity")
@@ -206,6 +256,29 @@ def preset_for_project(project: Project) -> ProductionPreset | None:
         version=preset.template_version,
     ):
         raise ProductionPresetConflictError("project template does not match production preset evidence")
+
+    if len(project.source_refs) != len(snapshots) or len(project.scenes) != len(snapshots):
+        raise ProductionPresetConflictError("project media count does not match production preset evidence")
+    ordered_scenes = tuple(sorted(project.scenes, key=lambda item: item.order))
+    for index, (snapshot, ref, scene) in enumerate(zip(snapshots, project.source_refs, ordered_scenes)):
+        if scene.order != index or scene.media is None:
+            raise ProductionPresetConflictError("project scene order does not match production preset evidence")
+        expected_asset = snapshot["asset_id"]
+        expected_source = snapshot["source_id"]
+        if ref.asset_id != expected_asset or ref.source_id != expected_source:
+            raise ProductionPresetConflictError("project source refs do not match production preset evidence")
+        if scene.media.asset_id != expected_asset or scene.media.source_id != expected_source:
+            raise ProductionPresetConflictError("project scenes do not match production preset evidence")
+        if expected_source is not None:
+            matching_records = [
+                record
+                for record in project.source_records
+                if record.source_id == expected_source and record.asset_id == expected_asset
+            ]
+            if len(matching_records) != 1:
+                raise ProductionPresetConflictError(
+                    "project provenance does not match production preset evidence"
+                )
     return preset
 
 
@@ -350,32 +423,32 @@ class ProductionPresetService:
             raise ProductionPresetValidationError("source project selection contains duplicates")
 
         project_id = production_project_id(normalized_request)
-        evidence = {
-            "schema_version": 1,
-            "request_id": normalized_request,
-            "preset_id": preset.preset_id,
-            "template_id": preset.template_id,
-            "template_version": preset.template_version,
-            "source_project_ids": list(source_project_ids),
-        }
-
         with _lock_for_request(normalized_request):
             existing = self.library.load_project(project_id)
             if existing is not None:
-                if _preset_evidence(existing) != evidence:
+                evidence = _preset_evidence(existing)
+                if evidence is None:
+                    raise ProductionPresetConflictError(
+                        "production request ID is already claimed by a non-preset project"
+                    )
+                snapshots = _source_snapshots(evidence)
+                stored_project_ids = tuple(
+                    str(snapshot["source_project_id"]) for snapshot in snapshots
+                )
+                if (
+                    evidence.get("preset_id") != preset.preset_id
+                    or stored_project_ids != source_project_ids
+                ):
                     raise ProductionPresetConflictError(
                         "production request ID was reused with different preset/source input"
                     )
                 preset_for_project(existing)
                 return existing
 
-            source_refs = []
-            source_records = []
-            scenes = []
+            resolved_sources = []
             seen_assets: set[str] = set()
-            seen_records: set[str] = set()
-            for order, source_project_id in enumerate(source_project_ids):
-                _project, ref, asset, records = self._source(source_project_id)
+            for source_project_id in source_project_ids:
+                source_project, ref, asset, records = self._source(source_project_id)
                 self._validate_source_for_preset(preset, records)
                 if asset.asset_id in seen_assets:
                     raise ProductionPresetValidationError(
@@ -386,6 +459,28 @@ class ProductionPresetService:
                         f"{preset.label} accepts images only"
                     )
                 seen_assets.add(asset.asset_id)
+                resolved_sources.append((source_project, ref, asset, records))
+
+            evidence = {
+                "schema_version": 1,
+                "request_id": normalized_request,
+                "preset_id": preset.preset_id,
+                "template_id": preset.template_id,
+                "template_version": preset.template_version,
+                "sources": [
+                    {
+                        "source_project_id": source_project.project_id,
+                        "asset_id": ref.asset_id,
+                        "source_id": ref.source_id,
+                    }
+                    for source_project, ref, _asset, _records in resolved_sources
+                ],
+            }
+            source_refs = []
+            source_records = []
+            scenes = []
+            seen_records: set[str] = set()
+            for order, (_source_project, ref, asset, records) in enumerate(resolved_sources):
                 source_refs.append(ref)
                 for record in records:
                     if record.source_id not in seen_records:
@@ -408,10 +503,11 @@ class ProductionPresetService:
                 ),
                 variants=(Variant(),),
                 output_profiles=(shorts_preview_profile(), shorts_final_profile()),
-                metadata={"production_preset_v1": evidence},
+                metadata={_PRESET_EVIDENCE_KEY: _canonical_evidence(evidence)},
                 created_at=now,
                 updated_at=now,
             )
+            preset_for_project(project)
             self.library.save_project(project)
             return project
 
