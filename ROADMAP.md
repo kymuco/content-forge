@@ -4,12 +4,12 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 
 ## Current implementation status
 
-- PR1–PR32: **complete** in the intended post-merge repository state.
+- PR1–PR33: **complete** in the intended post-merge repository state.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
 - Milestone 7B — Daily Production Completion: **current product phase**.
-- Current implemented step: **PR32 — Phone create-video wizard and human-facing presets**.
-- Next product step: **PR33 — Project-specific edit, preview, and final happy path**.
+- Current implemented step: **PR33 — Project-specific edit, preview, and final happy path**.
+- Next product step: **PR34 — Final-to-publish phone handoff**.
 - Analytics/experiments remain planned **after** the daily phone production loop is genuinely convenient.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
@@ -278,19 +278,29 @@ See [`docs/pr32-phone-create-video-presets.md`](docs/pr32-phone-create-video-pre
 
 ### PR33 — Project-specific edit, preview, and final happy path
 
-Status: **current next implementation step**.
+Status: **complete in the intended post-merge state**.
 
-Planned deliverables:
+Delivered:
 
-- one project-focused phone surface instead of scrolling a global engineering queue;
-- bounded controls for the selected format: hook/text, crop/focus, and other already-modeled decisions only where relevant;
-- source order shown from PR32 authority and editable only if a future exact reorder contract is intentionally added;
-- generate and watch the authenticated low-resolution preview inline;
-- approve/reject/edit without losing project context;
-- final-render progress/result surfaced on the same project flow;
-- no general-purpose NLE timeline UI.
+- one coherent project-specific phone surface from bounded review through final playback;
+- Production Home `Start / Continue / View progress / View final` actions open that exact Project context;
+- PR32-created Projects open directly after creation instead of dropping into the global Review queue;
+- Hook editing through the existing exact review-task resolve authority;
+- bounded per-scene crop editing over the existing `NormalizedRect` contract, including full-frame/null semantics and mobile 2×2 controls;
+- optional title/description/hashtags through the existing metadata review task;
+- PR32 source order retained as read-only human authority rather than duplicated by a second reorder path;
+- authenticated preview generation and inline playback;
+- exact preview approve/reject-and-edit actions without leaving the Project context;
+- `READY` remains intentionally editable under existing core semantics: an edit invalidates the approved preview and returns to review;
+- `RENDERING` / `QC` / `DONE` never expose false review mutations; historically open optional tasks are shown as locked history;
+- final render progress and authenticated final playback remain on the same Project surface;
+- global Capture / Review and specialist engineering panels remain available behind `Advanced` as fallback/debug controls;
+- no new Project endpoint, state machine, render authority, filesystem exposure, provider dependency, or publishing side effect;
+- installed PWA shell upgraded v18 → v19 while retaining v18 as an explicit predecessor.
 
-Exit condition: the common Short / Framed / Story paths can move from an existing PR32 production Project through review, preview, approval, and final from one coherent phone surface.
+Exit condition achieved: common PR32 Short / Framed / Story Projects can move through relevant decisions, authenticated preview, approval/rejection, final render/QC, and final playback from one coherent phone context without routine use of project IDs, render job IDs, or the global Review surface.
+
+See [`docs/pr33-project-specific-phone-flow.md`](docs/pr33-project-specific-phone-flow.md) for the exact projection and lifecycle contract.
 
 ### PR34 — Final-to-publish phone handoff
 
@@ -460,6 +470,7 @@ These items should not be implemented merely to make the feature list longer.
 14. Routine phone UX should not expose internal IDs, template versions, or subsystem topology when the workflow can derive them safely.
 15. A phone production preset is product vocabulary over exact registered template authority, not a second template system.
 16. Explicit wizard source selection/order is durable human authority and must remain traceable to exact asset/source provenance.
-17. Analytics observations are evidence, not authority to mutate production state.
-18. Recommendations remain proposals and must be traceable to retained evidence.
-19. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+17. Project-specific phone editability is derived from canonical lifecycle state; `RENDERING`, `QC`, and `DONE` never expose review mutations.
+18. Analytics observations are evidence, not authority to mutate production state.
+19. Recommendations remain proposals and must be traceable to retained evidence.
+20. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
