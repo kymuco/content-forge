@@ -243,12 +243,15 @@ class ProductionPresetService:
             raise ProductionPresetValidationError(
                 f"source is not prepared image/video media: {project_id}"
             )
-        if asset.media_type is MediaType.VIDEO and (
-            asset.duration_seconds is None or asset.duration_seconds <= 0
-        ):
-            raise ProductionPresetValidationError(
-                f"source video has no usable duration: {project_id}"
-            )
+        if asset.media_type is MediaType.VIDEO:
+            if asset.duration_seconds is None or asset.duration_seconds <= 0:
+                raise ProductionPresetValidationError(
+                    f"source video has no usable duration: {project_id}"
+                )
+            if asset.has_audio is None:
+                raise ProductionPresetValidationError(
+                    f"source video has incomplete authoritative probe metadata: {project_id}"
+                )
         records = tuple(
             record
             for record in project.source_records
@@ -259,6 +262,18 @@ class ProductionPresetService:
                 f"source provenance is missing from Inbox project: {project_id}"
             )
         return project, ref, asset, records
+
+    @staticmethod
+    def _validate_source_for_preset(preset: ProductionPreset, records) -> None:
+        if preset.template_id != ART_STORY_TEMPLATE_ID:
+            return
+        for record in records:
+            if record.requires_credit is True and (
+                record.credit_text is None or not record.credit_text.strip()
+            ):
+                raise ProductionPresetValidationError(
+                    "Art Story source requires credit text before project creation"
+                )
 
     def list_sources(self, *, limit: int = 100) -> tuple[dict[str, object], ...]:
         if limit < 1 or limit > 500:
@@ -361,6 +376,7 @@ class ProductionPresetService:
             seen_records: set[str] = set()
             for order, source_project_id in enumerate(source_project_ids):
                 _project, ref, asset, records = self._source(source_project_id)
+                self._validate_source_for_preset(preset, records)
                 if asset.asset_id in seen_assets:
                     raise ProductionPresetValidationError(
                         "the same media asset cannot be selected twice in one production project"
