@@ -10,6 +10,21 @@ from .youtube_analytics import YOUTUBE_ANALYTICS_OAUTH_SCOPES
 from .youtube_auth import write_private_token
 
 
+def _token_target(path: Path) -> Path:
+    """Resolve parent aliases without following a final-component token symlink."""
+
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    parent = expanded.parent.resolve()
+    target = parent / expanded.name
+    if target.is_symlink():
+        raise RuntimeError("YouTube Analytics OAuth token path must not be a symlink")
+    if target.exists() and not target.is_file():
+        raise RuntimeError("YouTube Analytics OAuth token path must identify a regular file")
+    return target
+
+
 def _authorized_channel_id(credentials: object) -> str:
     try:
         from googleapiclient.discovery import build
@@ -42,10 +57,7 @@ def authorize_youtube_analytics(
     """Authorize a separate read-only analytics token and return its exact channel ID."""
 
     client_secrets_path = client_secrets_path.expanduser().resolve()
-    token_path = token_path.expanduser()
-    if not token_path.is_absolute():
-        token_path = Path.cwd() / token_path
-    token_path = token_path.absolute()
+    token_path = _token_target(token_path)
     if not client_secrets_path.is_file():
         raise RuntimeError("YouTube Analytics OAuth client-secrets file is missing")
     if client_secrets_path == token_path:
