@@ -65,26 +65,26 @@ content-forge-daily run
 
 ## Preflight and fail-closed behavior
 
-The daily launcher refuses to start when its persisted operational authority is incomplete.
+The daily launcher refuses to start when its persisted operational authority is incomplete. `setup` performs the same readiness checks before replacing the persisted profile, so a bad new configuration does not overwrite the last saved profile merely because its JSON shape was valid.
 
 The profile contract requires:
 
 - an HTTPS phone-visible URL;
 - a valid non-loopback transport configuration with both TLS certificate and key paths;
 - regular-file TLS paths;
-- no symlink for private daily-use files;
+- no final-component symlink for private daily-use files;
 - owner-only private-file permissions on POSIX;
 - an available runtime directory;
-- discoverable FFmpeg and ffprobe commands;
+- executable/discoverable FFmpeg and ffprobe commands;
 - both token path and exact channel ID when YouTube publishing is selected.
 
-Private path values are canonicalized only **after** the supplied path itself is checked, so a symlink cannot be hidden by resolving it first.
+Private path values are canonicalized only **after** the supplied path itself is checked, so a final-component symlink cannot be hidden by resolving it first.
 
-The profile file itself is written atomically in the runtime root and is owner-only on POSIX. Exact provider secret contents remain in their existing provider-local files.
+The profile file itself is written through a randomized exclusive temporary file, fsynced, atomically replaced in the runtime root, and owner-only on POSIX. Exact provider secret contents remain in their existing provider-local files.
 
 ## PWA onboarding projection
 
-`create_app()` gains one optional `public_base_url` configuration value. When supplied by the daily profile, the packaged PWA config exposes the normalized public base URL as non-secret onboarding configuration.
+`create_app()` gains one optional `public_base_url` configuration value. When supplied by the daily profile, the packaged PWA config exposes the normalized public base URL as non-secret onboarding configuration. The served PWA controller then prefills the existing desktop onboarding field from that value, so generating a fresh pairing QR no longer requires retyping the phone-visible address on each launch.
 
 This does not create pairing authority. Pairing challenge creation remains restricted to the existing PR8/PR9 loopback client + loopback Host + loopback Origin boundary, and the generated challenge/code remains short-lived.
 
