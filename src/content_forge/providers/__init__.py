@@ -107,6 +107,11 @@ from .tts import (
     tts_config_digest,
 )
 from .youtube import YOUTUBE_OAUTH_SCOPES, YouTubePublishingConfig
+from .youtube_analytics import (
+    YOUTUBE_ANALYTICS_OAUTH_SCOPES,
+    YouTubeAnalyticsConfig,
+    YouTubeAnalyticsProvider,
+)
 from .youtube_v2 import YouTubePublishingProvider
 
 __all__ = [
@@ -190,7 +195,10 @@ __all__ = [
     "TextCleanupResult",
     "TranslationRequest",
     "TranslationResult",
+    "YOUTUBE_ANALYTICS_OAUTH_SCOPES",
     "YOUTUBE_OAUTH_SCOPES",
+    "YouTubeAnalyticsConfig",
+    "YouTubeAnalyticsProvider",
     "YouTubePublishingConfig",
     "YouTubePublishingProvider",
     "approve_publish_request",
