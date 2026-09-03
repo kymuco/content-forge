@@ -102,12 +102,16 @@ def install_pwa_routes(
     pairing_bootstrap_allowed: Callable[[Request], bool],
     max_upload_bytes: int,
     share_body_limit: int,
+    public_base_url: str | None = None,
 ) -> None:
     """Install the PR9 UI transport without moving Inbox semantics into HTTP routes."""
 
     if max_upload_bytes < 1 or share_body_limit < max_upload_bytes:
         raise ValueError("invalid PWA upload limits")
-    config_payload = {
+    configured_public_base_url: str | None = None
+    if public_base_url is not None:
+        configured_public_base_url = normalize_public_base_url(public_base_url)
+    config_payload: dict[str, object] = {
         "maxUploadBytes": max_upload_bytes,
         "maxShareBodyBytes": share_body_limit,
         # Bound the persistent offline queue to at most one configured upload budget in
@@ -122,6 +126,8 @@ def install_pwa_routes(
         "maxUrlChars": _PWA_MAX_URL_CHARS,
         "maxNoteChars": _PWA_MAX_NOTE_CHARS,
     }
+    if configured_public_base_url is not None:
+        config_payload["publicBaseUrl"] = configured_public_base_url
     config_script = (
         "self.CF_CONFIG = Object.freeze("
         + json.dumps(config_payload, sort_keys=True, separators=(",", ":"))
