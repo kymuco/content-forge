@@ -90,6 +90,14 @@ This does not create pairing authority. Pairing challenge creation remains restr
 
 The phone still receives the challenge only through the existing local QR onboarding flow and stores only the resulting bearer session in its mount-scoped IndexedDB state.
 
+### Installed-PWA upgrade path
+
+PR35's installed shell used cache revision `v21` and cached `app.js`. Merely changing the server-side controller would therefore be insufficient for an already-installed phone: the old shell could continue serving the pre-PR38 controller from its existing cache.
+
+PR38 serves a deterministic Service Worker composition that advances the active shell cache to `v22`, explicitly names PR35's `v21` cache as the immediate predecessor, and removes the predecessor during activation under the existing scoped cache-cleanup contract. The new shell then caches the served PR38 `app.js`, so an existing installation receives the onboarding-prefill behavior rather than requiring a reinstall.
+
+The cache revision changes UI delivery only. IndexedDB pairing/session state and queued shares remain governed by their existing storage contracts; PR38 does not clear them as part of the shell upgrade.
+
 ## What PR38 deliberately does not do
 
 PR38 does not:
