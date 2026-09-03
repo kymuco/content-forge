@@ -109,7 +109,7 @@ YouTube Analytics reports use calendar dates in Pacific Time and an inclusive `e
 PR37 therefore accepts only PR36 windows whose start and end are **exact Pacific local midnights**. It converts:
 
 ```text
-PR36 start_at                 -> Google startDate
+PR36 start_at                  -> Google startDate
 PR36 exclusive end_at - 1 day -> Google inclusive endDate
 ```
 
@@ -199,7 +199,7 @@ PR37 reuses the existing `youtube` optional dependency group:
 pip install 'content-forge[youtube]'
 ```
 
-The base Content Forge install still does not require Google libraries, OAuth credentials, a YouTube account, or analytics storage initialization. The existing YouTube CI optional-contract job now tests both the proven publishing adapter and PR37 analytics adapter with fake/injected services; normal tests never require a live Google account.
+The base Content Forge install still does not require Google libraries, OAuth credentials, a YouTube account, or analytics storage initialization. The existing YouTube CI optional-contract job tests both the proven publishing adapter and PR37 analytics adapter with fake/injected services, including the PR37 adversarial hardening suite; normal tests never require a live Google account.
 
 ## Non-goals
 
