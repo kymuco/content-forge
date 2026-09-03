@@ -18,7 +18,10 @@ from content_forge.providers.youtube_analytics import (
     YouTubeAnalyticsProvider,
     _safe_token_file,
 )
-from content_forge.providers.youtube_analytics_auth import _token_target
+from content_forge.providers.youtube_analytics_auth import (
+    _token_target,
+    authorize_youtube_analytics,
+)
 
 
 UTC = timezone.utc
@@ -36,8 +39,10 @@ class _Reports:
     def __init__(self, daily, aggregate):
         self.daily = daily
         self.aggregate = aggregate
+        self.calls = []
 
     def query(self, **kwargs):
+        self.calls.append(kwargs)
         payload = self.daily if kwargs.get("dimensions") == "day" else self.aggregate
         return _Request(payload)
 
@@ -106,6 +111,22 @@ def _provider(daily, aggregate, *, max_window_days: int = 366, channel_id="UC_ex
     return provider
 
 
+def _provider_and_service(daily, aggregate):
+    analytics = _AnalyticsService(daily, aggregate)
+    provider = YouTubeAnalyticsProvider(
+        YouTubeAnalyticsConfig(
+            token_path="/tmp/content-forge-youtube-analytics-token.json",
+            channel_id="UC_exact_channel",
+        ),
+        credentials_loader=lambda _path: object(),
+        analytics_service_factory=lambda _credentials: analytics,
+        data_service_factory=lambda _credentials: _DataService(),
+        clock=lambda: datetime(2026, 1, 20, 12, tzinfo=UTC),
+    )
+    assert provider.health().available is True
+    return provider, analytics
+
+
 def _valid_views_payloads():
     daily = {
         "columnHeaders": [{"name": "day"}, {"name": "views"}],
@@ -113,6 +134,43 @@ def _valid_views_payloads():
     }
     aggregate = {"columnHeaders": [{"name": "views"}], "rows": [[5]]}
     return daily, aggregate
+
+
+def test_pr37_daily_probe_requests_one_row_budget_per_reporting_day():
+    daily, aggregate = _valid_views_payloads()
+    provider, analytics = _provider_and_service(daily, aggregate)
+
+    observation = provider.observe(_query("views"))
+
+    assert observation.availability == "complete"
+    assert analytics._reports.calls[0]["maxResults"] == 2
+    assert analytics._reports.calls[0]["dimensions"] == "day"
+    assert "maxResults" not in analytics._reports.calls[1]
+
+
+def test_pr37_embedded_google_errors_fail_closed_even_with_table_shape():
+    daily, aggregate = _valid_views_payloads()
+    daily["errors"] = [{"code": "lateData", "message": "not complete"}]
+    provider = _provider(daily, aggregate)
+
+    with pytest.raises(AnalyticsResponseError, match="embedded error evidence"):
+        provider.observe(_query("views"))
+
+
+def test_pr37_wrong_result_kind_or_start_index_fails_closed():
+    aggregate = {"columnHeaders": [{"name": "views"}], "rows": [[5]]}
+    for extra, message in (
+        ({"kind": "other#table"}, "unexpected result kind"),
+        ({"startIndex": 2}, "unexpected start index"),
+    ):
+        daily = {
+            "columnHeaders": [{"name": "day"}, {"name": "views"}],
+            "rows": [["2026-01-15", 2], ["2026-01-16", 3]],
+            **extra,
+        }
+        provider = _provider(daily, aggregate)
+        with pytest.raises(AnalyticsResponseError, match=message):
+            provider.observe(_query("views"))
 
 
 def test_pr37_reordered_google_columns_fail_closed():
@@ -249,7 +307,11 @@ def test_pr37_auth_target_resolves_parent_alias_before_client_secret_comparison(
     resolved = _token_target(alias_parent / "token.json")
     assert resolved == real.resolve() / "token.json"
     assert resolved != client.resolve()
-
-    # The exact client filename through an aliased parent resolves to the same canonical
-    # target, so authorize_youtube_analytics can reject it before any OAuth/browser call.
     assert _token_target(alias_parent / "client.json") == client.resolve()
+
+    with pytest.raises(RuntimeError, match="paths must be different"):
+        authorize_youtube_analytics(
+            client_secrets_path=client,
+            token_path=alias_parent / "client.json",
+            open_browser=False,
+        )
