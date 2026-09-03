@@ -8,28 +8,26 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
 - Milestone 7B — Daily Production Completion: **complete in the intended post-PR35 state**.
-- Current implemented step: **PR37 — YouTube Analytics adapter**.
-- Current product phase: **Milestone 8 — Measurement, experiments, and evidence-driven improvement**.
-- Next planned implementation step: **PR38 — Durable performance history and observation windows**.
+- Milestone 7C — Daily-use Phone Operation: **active; PR38 in progress**.
+- Current merged step: **PR37 — YouTube Analytics adapter**.
+- Current implementation step: **PR38 — Daily-use phone runtime and onboarding**.
+- Milestone 8 measurement foundation is **complete through PR37**, with its comparison/experiment continuation deliberately deferred until after phone dogfooding.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
-The engine is already durable through publication and can now retain provider-agnostic measurement evidence plus concrete read-only YouTube observations for exact known successful publications:
+The engine is durable through publication and can retain provider-agnostic measurement evidence plus concrete read-only YouTube observations for exact known successful publications. The immediate product priority is now to turn the already-proven phone production architecture into a repeatable daily-use deployment before extending that evidence layer further.
 
 ```text
-Source
--> Ingest
--> Project
--> Review
--> Render
--> QC / export
--> Human-approved publish request
--> durable successful publication
--> optional AnalyticsProvider observation
+Phone discovery / share
+-> installed Content Forge PWA
+-> Inbox
+-> Project / bounded review
+-> preview
+-> final render / QC on desktop
+-> human-approved publication
+-> optional analytics evidence
 ```
 
-The phone-first daily production loop remains complete through PR35. Milestone 8 builds a separate evidence loop over exact known publications rather than changing production authority.
-
-The desktop remains the local source of truth and compute worker. The phone is the normal daily control surface. Internal subsystem panels remain available for advanced/debugging work, but routine production should not require knowledge of project IDs, render job IDs, template versions, provider internals, or repository architecture.
+The desktop remains the local source of truth and compute worker. The phone is the normal daily control surface. Internal subsystem panels remain available for advanced/debugging work, but routine production should not require knowledge of project IDs, render job IDs, template versions, provider internals, repository architecture, or a reconstructed multi-flag launch command.
 
 ---
 
@@ -365,11 +363,55 @@ for the common production paths, without requiring routine access to desktop UI,
 
 ---
 
+## Milestone 7C — Daily-use Phone Operation
+
+Status: **active; PR38 in progress**.
+
+Goal: cross the operational last mile between “the phone workflow exists” and “the phone workflow is comfortable to use every day.” The existing PWA, Project/Review/Render/Publishing contracts, and local-first security boundary remain authoritative; this milestone removes repeated setup friction rather than inventing a second product runtime.
+
+### PR38 — Daily-use phone runtime and onboarding
+
+Status: **in progress**.
+
+Current PR38 scope:
+
+- one persisted machine-local `daily-use-v1` runtime profile under the existing runtime root;
+- `content-forge-daily setup / doctor / run` as the repeatable operational entry point;
+- stable HTTPS phone-visible URL, bind/port, TLS paths, FFmpeg/ffprobe paths, and optional provider selection retained once;
+- setup preflight before replacing the saved profile;
+- fail-closed regular/private file handling, final-component symlink rejection for private files, POSIX private permissions, randomized atomic profile persistence, and executable discovery;
+- configured phone URL projected into the existing PWA config and prefilled into loopback desktop QR onboarding;
+- no new pairing authority, public-internet exposure, cloud dependency, Project state, review authority, or publishing authority.
+
+See [`docs/pr38-daily-use-phone-runtime.md`](docs/pr38-daily-use-phone-runtime.md) for the exact operational contract.
+
+### PR39 — Real phone dogfood and friction hardening
+
+Planned after PR38.
+
+PR39 is intentionally evidence-driven rather than pre-specified as another large feature batch. After PR38, the normal path should be exercised on the actual desktop + phone setup and friction should be fixed where it is observed: launch/restart behavior, PWA re-entry, share flow, project navigation, render visibility, editing ergonomics, publishing ergonomics, or other concrete failures of daily use.
+
+The constraint is explicit: PR39 should not add speculative subsystems merely because they sound convenient. Its scope comes from real daily-use evidence.
+
+Milestone 7C exit condition:
+
+```text
+one-time machine/phone setup
+-> repeatable desktop launch
+-> open installed phone PWA
+-> share/create/review/preview/render/publish
+-> recover after ordinary restart
+```
+
+without reconstructing internal CLI configuration for each session.
+
+---
+
 ## Milestone 8 — Measurement, experiments, and evidence-driven improvement
 
-Status: **active; PR36–PR37 complete in the intended post-merge state**.
+Status: **measurement foundation complete through PR37; continuation deferred until after Milestone 7C dogfooding**.
 
-The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge first retains trustworthy observations from the user's own exact published work, then later builds comparable histories and bounded recommendations traceable to that evidence.
+The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge first retains trustworthy observations from the user's own exact published work, then later builds comparable histories and bounded recommendations traceable to that evidence. PR36–PR37 already establish enough of this foundation to pause safely while the product begins producing real daily-use publications.
 
 ### PR36 — Analytics provider boundary
 
@@ -417,35 +459,35 @@ Delivered:
 
 See [`docs/pr37-youtube-analytics-adapter.md`](docs/pr37-youtube-analytics-adapter.md) for the exact adapter/reporting contract.
 
-### PR38 — Durable performance history and observation windows
+### PR40 — Durable performance history and observation windows
 
-Planned next.
+Deferred until after PR38–PR39 establish real daily use.
 
 - history-preserving observation snapshots over PR36 records;
 - explicit comparable windows where provider data permits;
 - provisional versus mature measurements;
 - deterministic summaries and explicit missing/late data.
 
-### PR39 — Experiment identity and publication attribution
+### PR41 — Experiment identity and publication attribution
 
-Planned.
+Planned after PR40.
 
 - immutable experiment definitions over already-represented production decisions;
 - exact attribution from production choice to render and publish receipt;
 - no automatic causal claims from uncontrolled comparisons.
 
-### PR40 — Performance dashboard and comparison PWA
+### PR42 — Performance dashboard and comparison PWA
 
-Planned.
+Planned after PR41.
 
 - publication timeline and metric-window views;
 - comparisons across supported production dimensions;
 - visible sample sizes and missing/partial/stale state;
 - no hidden ranking objective.
 
-### PR41 — Recommendation assistance from owned historical evidence
+### PR43 — Recommendation assistance from owned historical evidence
 
-Planned only after PR36–PR40 produce trustworthy evidence.
+Planned only after PR36–PR42 produce trustworthy, genuinely used evidence.
 
 - bounded recommendations from retained production/performance history;
 - traceable supporting observations;
@@ -468,7 +510,7 @@ exact production choice
 
 ## Later convenience integrations and operational reach
 
-Useful, but not blockers for Daily Production Completion or the evidence loop.
+Useful, but not blockers for Daily Production Completion, Daily-use Phone Operation, or the later evidence loop.
 
 ### Source-specific import helpers
 
@@ -528,3 +570,5 @@ These items should not be implemented merely to make the feature list longer.
 24. Analytics history is additive; a later snapshot does not silently overwrite earlier evidence.
 25. Recommendations remain proposals and must be traceable to retained evidence.
 26. The project optimizes human attention and trustworthy evidence before it optimizes machine cleverness.
+27. Daily-use deployment configuration is machine-local operational state, not Project, render, publication, or analytics semantic evidence.
+28. A configured phone-visible URL improves onboarding convenience but never grants pairing or session authority; the existing authenticated bootstrap remains authoritative.
