@@ -190,6 +190,9 @@ def _execute_object(request: Any, *, retries: int, label: str) -> dict[str, obje
         raise AnalyticsExecutionError(f"YouTube {label} request failed") from exc
     if not isinstance(payload, dict):
         raise AnalyticsResponseError(f"YouTube {label} returned a non-object response")
+    embedded_errors = payload.get("errors")
+    if embedded_errors not in (None, []):
+        raise AnalyticsResponseError(f"YouTube {label} returned embedded error evidence")
     return payload
 
 
@@ -224,6 +227,12 @@ def _reporting_dates(query: AnalyticsQuery, *, max_window_days: int) -> tuple[da
 
 
 def _headers(payload: dict[str, object], *, label: str) -> tuple[str, ...]:
+    kind = payload.get("kind")
+    if kind is not None and kind != "youtubeAnalytics#resultTable":
+        raise AnalyticsResponseError(f"YouTube {label} returned an unexpected result kind")
+    start_index = payload.get("startIndex")
+    if start_index is not None and start_index != 1:
+        raise AnalyticsResponseError(f"YouTube {label} returned an unexpected start index")
     raw = payload.get("columnHeaders")
     if not isinstance(raw, list) or not raw:
         raise AnalyticsResponseError(f"YouTube {label} lacks column headers")
@@ -390,7 +399,7 @@ class YouTubeAnalyticsProvider:
                 "analytics subject channel does not match configured YouTube channel"
             )
         video_id = _canonical_video_id(publication.remote_id)
-        start_date, end_date, _day_count = _reporting_dates(
+        start_date, end_date, day_count = _reporting_dates(
             query,
             max_window_days=self.config.max_window_days,
         )
@@ -429,9 +438,15 @@ class YouTubeAnalyticsProvider:
 
         # Google documents that reports stop at the last date for which all requested
         # metrics are available. A daily probe makes that truncation visible before we
-        # accept an aggregate as evidence for the full PR36 window.
+        # accept an aggregate as evidence for the full PR36 window. maxResults is exact
+        # to the number of possible reporting days so pagination cannot hide the end day.
         daily = _execute_object(
-            service.reports().query(**common, dimensions="day", sort="day"),
+            service.reports().query(
+                **common,
+                dimensions="day",
+                sort="day",
+                maxResults=day_count,
+            ),
             retries=self.config.max_retries,
             label="daily coverage",
         )
