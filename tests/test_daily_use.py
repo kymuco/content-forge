@@ -73,7 +73,7 @@ def test_daily_profile_round_trip_and_doctor(tmp_path) -> None:
     }
 
 
-def test_daily_profile_rejects_plaintext_path_and_partial_youtube_config() -> None:
+def test_daily_profile_rejects_unreachable_or_misrouted_phone_urls_and_partial_youtube_config() -> None:
     with pytest.raises(ValidationError, match="requires HTTPS"):
         DailyUseProfile(
             public_base_url="http://192.168.1.20:8765",
@@ -87,6 +87,14 @@ def test_daily_profile_rejects_plaintext_path_and_partial_youtube_config() -> No
             ssl_certfile="certificate.pem",
             ssl_keyfile="private-key.pem",
         )
+
+    for phone_url in ("https://localhost:8765", "https://127.0.0.1:8765", "https://0.0.0.0:8765"):
+        with pytest.raises(ValidationError, match="phone-reachable host"):
+            DailyUseProfile(
+                public_base_url=phone_url,
+                ssl_certfile="certificate.pem",
+                ssl_keyfile="private-key.pem",
+            )
 
     with pytest.raises(ValidationError, match="youtube_channel_id"):
         DailyUseProfile(
