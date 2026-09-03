@@ -95,6 +95,48 @@ def _production_home_script() -> str:
     return source
 
 
+def _app_script() -> str:
+    """Compose optional daily-use onboarding defaults into the proven PR9 client."""
+
+    source = static_path("app.js").read_text(encoding="utf-8")
+    marker = "async function initialize() {\n"
+    if source.count(marker) != 1:
+        raise RuntimeError("PWA daily-use composition marker mismatch")
+    injection = (
+        marker
+        + "  if (typeof window.CF_CONFIG.publicBaseUrl === \"string\" && window.CF_CONFIG.publicBaseUrl && !elements.publicUrl.value) elements.publicUrl.value = window.CF_CONFIG.publicBaseUrl;\n"
+    )
+    return source.replace(marker, injection, 1)
+
+
+def _service_worker_script() -> str:
+    """Advance the installed PWA cache revision for the PR38 client composition."""
+
+    source = static_path("sw.js").read_text(encoding="utf-8")
+    cache_marker = (
+        "const PR34_CACHE_NAME = `${CACHE_PREFIX}v20`;\n"
+        "const CACHE_NAME = `${CACHE_PREFIX}v21`;\n"
+    )
+    cache_replacement = (
+        "const PR34_CACHE_NAME = `${CACHE_PREFIX}v20`;\n"
+        "const PR35_CACHE_NAME = `${CACHE_PREFIX}v21`;\n"
+        "const CACHE_NAME = `${CACHE_PREFIX}v22`;\n"
+    )
+    activation_marker = (
+        "            || key === PR34_CACHE_NAME\n"
+        "            || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)\n"
+    )
+    activation_replacement = (
+        "            || key === PR34_CACHE_NAME\n"
+        "            || key === PR35_CACHE_NAME\n"
+        "            || (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)\n"
+    )
+    if source.count(cache_marker) != 1 or source.count(activation_marker) != 1:
+        raise RuntimeError("PWA PR38 cache-upgrade composition marker mismatch")
+    source = source.replace(cache_marker, cache_replacement, 1)
+    return source.replace(activation_marker, activation_replacement, 1)
+
+
 def install_pwa_routes(
     app: FastAPI,
     *,
@@ -102,12 +144,16 @@ def install_pwa_routes(
     pairing_bootstrap_allowed: Callable[[Request], bool],
     max_upload_bytes: int,
     share_body_limit: int,
+    public_base_url: str | None = None,
 ) -> None:
     """Install the PR9 UI transport without moving Inbox semantics into HTTP routes."""
 
     if max_upload_bytes < 1 or share_body_limit < max_upload_bytes:
         raise ValueError("invalid PWA upload limits")
-    config_payload = {
+    configured_public_base_url: str | None = None
+    if public_base_url is not None:
+        configured_public_base_url = normalize_public_base_url(public_base_url)
+    config_payload: dict[str, object] = {
         "maxUploadBytes": max_upload_bytes,
         "maxShareBodyBytes": share_body_limit,
         # Bound the persistent offline queue to at most one configured upload budget in
@@ -122,6 +168,8 @@ def install_pwa_routes(
         "maxUrlChars": _PWA_MAX_URL_CHARS,
         "maxNoteChars": _PWA_MAX_NOTE_CHARS,
     }
+    if configured_public_base_url is not None:
+        config_payload["publicBaseUrl"] = configured_public_base_url
     config_script = (
         "self.CF_CONFIG = Object.freeze("
         + json.dumps(config_payload, sort_keys=True, separators=(",", ":"))
@@ -187,8 +235,9 @@ def install_pwa_routes(
         return _asset("shared.js", "text/javascript; charset=utf-8")
 
     @app.get("/app/app.js", include_in_schema=False)
-    def pwa_app_js() -> FileResponse:
-        return _asset("app.js", "text/javascript; charset=utf-8")
+    def pwa_app_js() -> Response:
+        response = Response(_app_script(), media_type="text/javascript; charset=utf-8")
+        return _harden(response, cache_control="no-cache")
 
     @app.get("/app/production-home.js", include_in_schema=False)
     def pwa_production_home_js() -> Response:
@@ -199,8 +248,12 @@ def install_pwa_routes(
         return _harden(response, cache_control="no-cache")
 
     @app.get("/app/sw.js", include_in_schema=False)
-    def pwa_service_worker() -> FileResponse:
-        response = _asset("sw.js", "text/javascript; charset=utf-8", cache_control="no-cache")
+    def pwa_service_worker() -> Response:
+        response = Response(
+            _service_worker_script(),
+            media_type="text/javascript; charset=utf-8",
+        )
+        response = _harden(response, cache_control="no-cache")
         response.headers["Service-Worker-Allowed"] = "./"
         return response
 

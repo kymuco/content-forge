@@ -71,7 +71,7 @@ Inbox                Review Queue
  append-only observations
 ```
 
-The original asymmetric daily-production workflow is now complete through PR35:
+The original asymmetric daily-production workflow is complete through PR35:
 
 ```text
 Phone: Share / Create video / choose format + sources / bounded decisions / approve / publish / triage
@@ -80,15 +80,17 @@ Phone: Share / Create video / choose format + sources / bounded decisions / appr
 Desktop: ingest / prepare / preview / render / QC / authenticated publishing boundary / safe work
 ```
 
-Milestone 8 now builds a separate evidence loop over exact successful publications. PR36 supplies the generic analytics contract/history layer; PR37 adds the first concrete read-only YouTube Analytics adapter over that boundary.
+PR36 and PR37 also establish a separate evidence loop over exact successful publications: a generic append-only analytics boundary plus the first concrete read-only YouTube Analytics adapter. PR38 deliberately pauses further analytics expansion to make the already-built phone workflow repeatable as a real daily-use deployment.
 
 ## Development status
 
 **PR1–PR37 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, and Milestone 7B completes the original phone-first daily production loop. PR31 adds the project-centric Production Home, PR32 the real phone Create video wizard, PR33 the coherent Project-specific Review/Preview/Final flow, PR34 the exact final-to-publish phone handoff, PR35 the multi-item daily attention/safe-work surface, PR36 the provider-independent analytics evidence/history boundary, and PR37 the first concrete read-only YouTube Analytics collector over exact known successful publications.
 
+**PR38 is the active implementation step** and begins Milestone 7C — Daily-use Phone Operation. It adds a persisted machine-local runtime profile, `content-forge-daily setup / doctor / run`, fail-closed operational preflight, and configured phone-URL reuse in the existing desktop QR onboarding flow. The objective is that ordinary sessions stop requiring reconstruction of internal launch flags before real phone dogfooding begins.
+
 The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved publication declarations, human-facing phone production presets, a project-specific Review/Preview/Final flow, an exact final-to-publish handoff, a grouped daily attention queue with bounded deterministic safe work, append-only typed analytics observations with explicit provider/time-window/missing-data evidence, and optional read-only YouTube Analytics collection with exact channel/video/reporting-window binding.
 
-The current product direction is **Milestone 8 — Measurement, experiments, and evidence-driven improvement**. PR36 establishes `durable successful publication → exact analytics query/window → optional AnalyticsProvider → validated complete/partial/unavailable observation → append-only history`; PR37 proves that boundary with a concrete YouTube Analytics adapter and separate read-only OAuth capability. The next implementation step is **PR38 — Durable performance history and observation windows**. Dashboarding, experiments, and recommendations remain later steps and must consume retained evidence rather than create hidden production authority. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
+The current product direction is **Milestone 7C — Daily-use Phone Operation**. PR38 closes repeated startup/onboarding configuration friction; PR39 is reserved for friction found through actual desktop + phone dogfooding rather than speculative features. The measurement roadmap then resumes with durable comparable performance history, experiments, dashboarding, and recommendations over real retained publications. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
 
 The original v0.1 vertical slice remains implemented through PR17:
 
@@ -123,6 +125,28 @@ content-forge-api --lan \
 ```
 
 The certificate must be trusted by the phone and valid for the hostname/IP used to connect. Bearer credentials are never sent over plaintext LAN HTTP; PR9 adds the current PWA/pairing/onboarding flow around this boundary.
+
+### Daily-use phone launcher
+
+PR38 adds a persisted operational profile over the same API rather than a second runtime. One-time setup records the stable phone-visible HTTPS address and existing machine-local runtime options:
+
+```text
+content-forge-daily setup \
+  --phone-url https://content-forge.example.test:8765 \
+  --ssl-certfile /path/to/content-forge.crt \
+  --ssl-keyfile /path/to/content-forge.key
+```
+
+Then readiness and normal launch are short repeatable commands:
+
+```text
+content-forge-daily doctor
+content-forge-daily run
+```
+
+The profile lives under the existing runtime root as machine-local operational state. It stores paths/configuration rather than secret contents or production evidence, is written atomically, and is owner-only on POSIX. `setup` performs readiness checks before replacing the saved profile; `run` repeats the preflight before starting the existing app.
+
+When the profile supplies `--phone-url`, the PWA receives that normalized non-secret value and the loopback desktop onboarding surface prefills it when generating a pairing QR. This convenience does not weaken pairing authority: challenge creation still requires the existing loopback peer + loopback Host + loopback Origin checks. PR38 does not silently generate/trust certificates, expose the service publicly, or add a cloud relay.
 
 Sensitive reads and writes require a paired bearer session. Pairing challenge creation additionally requires a loopback peer plus loopback `Host` and browser `Origin` (when present), closing the browser/DNS-rebinding bootstrap path. The API never returns raw runtime filesystem paths or stored token digests.
 
@@ -217,13 +241,13 @@ The production runtime currently covers:
 - optional provider-independent typed analytics observation history over exact successful publications;
 - optional read-only YouTube Analytics collection for exact known Content Forge publications.
 
-Performance dashboarding, experiment attribution, and recommendation logic remain staged in Milestone 8 after the generic evidence contract and first concrete adapter.
+Performance-history comparison, experiment attribution, dashboarding, and recommendation logic remain staged after Milestone 7C phone dogfooding so those layers can consume real daily-use evidence.
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
 ## Documentation
 
-- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR37 roadmap
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current PR38 daily-use priority
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
@@ -261,6 +285,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr35-mobile-batch-attention-queue.md`](docs/pr35-mobile-batch-attention-queue.md) — multi-item phone attention projection, bounded safe work, source/history safety, and remote-risk recovery
 - [`docs/pr36-analytics-provider-boundary.md`](docs/pr36-analytics-provider-boundary.md) — exact successful-publication analytics subject, typed observation evidence, and append-only history
 - [`docs/pr37-youtube-analytics-adapter.md`](docs/pr37-youtube-analytics-adapter.md) — read-only YouTube Analytics OAuth, exact report/window binding, metric mapping, and completeness/late-data contract
+- [`docs/pr38-daily-use-phone-runtime.md`](docs/pr38-daily-use-phone-runtime.md) — persisted daily-use runtime profile, preflight, and phone onboarding reuse
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 
