@@ -14,7 +14,7 @@ The profile is stored as `daily-use.json` under the existing Content Forge runti
 
 It contains only the configuration needed to start the existing runtime consistently:
 
-- stable HTTPS phone-visible base URL;
+- stable HTTPS phone-visible origin;
 - desktop bind host and port;
 - TLS certificate and private-key paths;
 - FFmpeg / ffprobe command paths;
@@ -69,11 +69,12 @@ The daily launcher refuses to start when its persisted operational authority is 
 
 The profile contract requires:
 
-- an HTTPS phone-visible URL;
+- an HTTPS phone-visible origin with no URL path;
+- a host that is meaningful from the phone, rejecting `localhost`, loopback IPs, and unspecified IPs such as `0.0.0.0`;
 - a valid non-loopback transport configuration with both TLS certificate and key paths;
-- regular-file TLS paths;
-- no final-component symlink for private daily-use files;
-- owner-only private-file permissions on POSIX;
+- regular readable TLS paths;
+- no final-component symlink for daily-use files;
+- current-user ownership and owner-only permissions for private files on POSIX;
 - an available runtime directory;
 - executable/discoverable FFmpeg and ffprobe commands;
 - both token path and exact channel ID when YouTube publishing is selected.
