@@ -94,6 +94,7 @@ jobs:
             tests/test_pr29_youtube_preflight_mapping.py \
             tests/test_pr29_publishing_storage_compat.py \
             tests/test_pr37_youtube_analytics.py \
+            tests/test_pr37_youtube_analytics_hardening.py \
             tests/test_pr37_youtube_analytics_optional_runtime.py \
             tests/test_api_cli.py
 
