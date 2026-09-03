@@ -38,8 +38,9 @@ def create_app(
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024,
     tts_provider: TTSProvider | None = None,
     publishing_provider: PublishingProvider | None = None,
+    public_base_url: str | None = None,
 ):
-    """Build the local API/PWA with optional voice and publishing providers."""
+    """Build the local API/PWA with optional voice, publishing, and phone URL config."""
 
     app = _create_api_app(
         root=root,
@@ -132,6 +133,7 @@ def create_app(
             pairing_bootstrap_allowed=_pairing_bootstrap_allowed,
             max_upload_bytes=max_upload_bytes,
             share_body_limit=max_upload_bytes + MULTIPART_OVERHEAD_BUDGET,
+            public_base_url=public_base_url,
         )
         install_daily_production_pwa_route(app)
     except BaseException:
