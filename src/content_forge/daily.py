@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import secrets
@@ -54,6 +55,17 @@ class DailyUseProfile(BaseModel):
             raise ValueError("daily-use phone URL must use HTTPS")
         if parsed.path:
             raise ValueError("daily-use phone URL must not include a path")
+        hostname = parsed.hostname
+        assert hostname is not None
+        if hostname.lower() == "localhost":
+            raise ValueError("daily-use phone URL must identify a phone-reachable host")
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            pass
+        else:
+            if address.is_loopback or address.is_unspecified:
+                raise ValueError("daily-use phone URL must identify a phone-reachable host")
         return normalized
 
     @field_validator("host", "ssl_certfile", "ssl_keyfile", "ffmpeg_path", "ffprobe_path")
@@ -117,8 +129,14 @@ def _require_regular_file(path: Path, *, private: bool) -> None:
         raise ValueError(f"symlink is not accepted for daily-use file: {path}")
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError(f"not a regular file: {path}")
-    if private and os.name != "nt" and metadata.st_mode & 0o077:
-        raise ValueError(f"private file permissions are too broad: {path}")
+    if not os.access(path, os.R_OK):
+        raise ValueError(f"file is not readable: {path}")
+    if private and os.name != "nt":
+        getuid = getattr(os, "getuid", None)
+        if callable(getuid) and metadata.st_uid != getuid():
+            raise ValueError(f"private file is not owned by the current user: {path}")
+        if metadata.st_mode & 0o077:
+            raise ValueError(f"private file permissions are too broad: {path}")
 
 
 def _absolute_file(value: str, *, private: bool) -> str:
