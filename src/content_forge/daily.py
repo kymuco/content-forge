@@ -49,8 +49,11 @@ class DailyUseProfile(BaseModel):
     @classmethod
     def normalize_phone_url(cls, value: str) -> str:
         normalized = normalize_public_base_url(value)
-        if urlsplit(normalized).scheme != "https":
+        parsed = urlsplit(normalized)
+        if parsed.scheme != "https":
             raise ValueError("daily-use phone URL must use HTTPS")
+        if parsed.path:
+            raise ValueError("daily-use phone URL must not include a path")
         return normalized
 
     @field_validator("host", "ssl_certfile", "ssl_keyfile", "ffmpeg_path", "ffprobe_path")
