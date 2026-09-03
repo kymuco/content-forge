@@ -68,7 +68,7 @@ jobs:
           cache: pip
       - name: Install optional YouTube integration
         run: python -m pip install -e ".[dev,youtube]"
-      - name: Verify Google publishing runtime imports
+      - name: Verify Google publishing and analytics runtime imports
         run: |
           python - <<'PY'
           import importlib.metadata
@@ -84,7 +84,7 @@ jobs:
           PY
       - name: Compile
         run: python -m compileall -q src
-      - name: YouTube publishing contract tests
+      - name: YouTube publishing and analytics contract tests
         run: |
           pytest -q \
             tests/test_pr28_youtube_publishing.py \
@@ -93,6 +93,9 @@ jobs:
             tests/test_pr29_youtube_declarations.py \
             tests/test_pr29_youtube_preflight_mapping.py \
             tests/test_pr29_publishing_storage_compat.py \
+            tests/test_pr37_youtube_analytics.py \
+            tests/test_pr37_youtube_analytics_hardening.py \
+            tests/test_pr37_youtube_analytics_optional_runtime.py \
             tests/test_api_cli.py
 
   ffmpeg-integration:

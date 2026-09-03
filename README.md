@@ -80,15 +80,15 @@ Phone: Share / Create video / choose format + sources / bounded decisions / appr
 Desktop: ingest / prepare / preview / render / QC / authenticated publishing boundary / safe work
 ```
 
-Milestone 8 now builds a separate evidence loop over exact successful publications. PR36 supplies the generic analytics contract/history layer; platform-specific collection begins with PR37.
+Milestone 8 now builds a separate evidence loop over exact successful publications. PR36 supplies the generic analytics contract/history layer; PR37 adds the first concrete read-only YouTube Analytics adapter over that boundary.
 
 ## Development status
 
-**PR1–PR36 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, and Milestone 7B completes the original phone-first daily production loop. PR31 adds the project-centric Production Home, PR32 the real phone Create video wizard, PR33 the coherent Project-specific Review/Preview/Final flow, PR34 the exact final-to-publish phone handoff, and PR35 the multi-item daily attention/safe-work surface. PR36 begins Milestone 8 with a provider-independent analytics evidence boundary linked only to exact durable successful publications.
+**PR1–PR37 are complete in the intended post-merge repository state.** Milestones 0–6 are complete, Milestone 7A includes the first production YouTube publishing path, and Milestone 7B completes the original phone-first daily production loop. PR31 adds the project-centric Production Home, PR32 the real phone Create video wizard, PR33 the coherent Project-specific Review/Preview/Final flow, PR34 the exact final-to-publish phone handoff, PR35 the multi-item daily attention/safe-work surface, PR36 the provider-independent analytics evidence/history boundary, and PR37 the first concrete read-only YouTube Analytics collector over exact known successful publications.
 
-The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved publication declarations, human-facing phone production presets, a project-specific Review/Preview/Final flow, an exact final-to-publish handoff, a grouped daily attention queue with bounded deterministic safe work, and append-only typed analytics observations with explicit provider/time-window/missing-data evidence.
+The implemented system includes canonical domain/storage/provenance contracts, deterministic timeline compilation, generic FFmpeg rendering, durable preview/final jobs, authenticated Inbox ingest, phone-first PWA review, versioned template/component/skin registries, initial format coverage, reusable motion/audio components, optional LLM assistance, localized variants, batch/QC/reproducibility, retained OCR and dialogue authority, verified per-line TTS, persistent Voice Cast identity, voiced-story timed text, dialogue/music/ambience presentation, camera choreography, long-form 1080p/1440p output, reusable project/series/channel profiles, production-library search/tagging/reuse history, a platform-independent publishing ledger, authenticated YouTube upload/scheduling, versioned human-approved publication declarations, human-facing phone production presets, a project-specific Review/Preview/Final flow, an exact final-to-publish handoff, a grouped daily attention queue with bounded deterministic safe work, append-only typed analytics observations with explicit provider/time-window/missing-data evidence, and optional read-only YouTube Analytics collection with exact channel/video/reporting-window binding.
 
-The current product direction is **Milestone 8 — Measurement, experiments, and evidence-driven improvement**. PR36 establishes `durable successful publication → exact analytics query/window → optional AnalyticsProvider → validated complete/partial/unavailable observation → append-only history`. The next implementation step is **PR37 — YouTube Analytics adapter**. Dashboarding, comparable mature observation windows, experiments, and recommendations remain later steps and must consume retained evidence rather than create hidden production authority. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
+The current product direction is **Milestone 8 — Measurement, experiments, and evidence-driven improvement**. PR36 establishes `durable successful publication → exact analytics query/window → optional AnalyticsProvider → validated complete/partial/unavailable observation → append-only history`; PR37 proves that boundary with a concrete YouTube Analytics adapter and separate read-only OAuth capability. The next implementation step is **PR38 — Durable performance history and observation windows**. Dashboarding, experiments, and recommendations remain later steps and must consume retained evidence rather than create hidden production authority. See [`ROADMAP.md`](ROADMAP.md) for the staged plan.
 
 The original v0.1 vertical slice remains implemented through PR17:
 
@@ -132,7 +132,7 @@ Accepted file bytes are identified by a durable exact size + SHA-256 receipt onl
 
 The publishing runtime is optional. With no publishing provider configured, Content Forge still renders, exports, and can retain an approved `prepared` publication attempt without crossing a remote side-effect boundary. YouTube OAuth tokens remain explicitly local provider state and do not enter publish request identity, API/PWA payloads, or durable semantic evidence.
 
-The analytics runtime is also optional. Normal `LocalLibrary` construction does not initialize analytics storage. When measurement is used, `LocalLibrary.analytics` lazily opens an additive history component linked to the existing publishing ledger. No analytics credentials or platform adapter are required by the base runtime.
+The analytics runtime is also optional. Normal `LocalLibrary` construction does not initialize analytics storage. When measurement is used, `LocalLibrary.analytics` lazily opens an additive history component linked to the existing publishing ledger. No analytics credentials or platform adapter are required by the base runtime. PR37's YouTube adapter uses a separate provider-local read-only OAuth token, so adding analytics does not widen the existing YouTube publishing token contract.
 
 ## Phone Create video presets
 
@@ -194,7 +194,7 @@ An `AnalyticsQuery` combines that immutable publication reference with a half-op
 
 Observations are stored append-only by semantic SHA-256. Exact replay is idempotent and preserves the original local `ingested_at`; later observations create new history instead of overwriting counters. `observed_at`, reporting-window time, and local ingestion time remain separate concepts.
 
-Analytics never mutates Project, Review, Render, QC, or Publishing authority. PR37 is responsible for the first concrete YouTube analytics adapter; later comparison/recommendation work must remain traceable to retained observations.
+PR37 adds `YouTubeAnalyticsProvider` over this boundary. It binds the authenticated channel and exact known published video ID, requires exact Pacific reporting-day windows with DST-aware conversion, probes the requested final reporting day before accepting an aggregate, maps only explicit non-monetary metrics, and keeps unsupported/missing/late data distinct from numeric zero. Analytics still never mutates Project, Review, Render, QC, or Publishing authority; later comparison/recommendation work must remain traceable to retained observations.
 
 ## Initial content families
 
@@ -214,15 +214,16 @@ The production runtime currently covers:
 - short vertical and 16:9 long-form output through the same timeline/render authority;
 - reusable project/series/channel defaults and production-library search/tagging;
 - optional exact human-approved YouTube upload and scheduling;
-- optional provider-independent typed analytics observation history over exact successful publications.
+- optional provider-independent typed analytics observation history over exact successful publications;
+- optional read-only YouTube Analytics collection for exact known Content Forge publications.
 
-A concrete YouTube analytics adapter, performance dashboard, experiment attribution, and recommendation engine are **not** implemented in PR36. They remain staged in Milestone 8 after the generic evidence contract.
+Performance dashboarding, experiment attribution, and recommendation logic remain staged in Milestone 8 after the generic evidence contract and first concrete adapter.
 
 See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonomy.
 
 ## Documentation
 
-- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR36 roadmap
+- [`ROADMAP.md`](ROADMAP.md) — staged implementation plan and current post-PR37 roadmap
 - [`docs/vision.md`](docs/vision.md) — product goals and boundaries
 - [`docs/architecture.md`](docs/architecture.md) — domain and runtime architecture
 - [`docs/content-formats.md`](docs/content-formats.md) — content kinds, templates, and composition model
@@ -259,6 +260,7 @@ See [`docs/content-formats.md`](docs/content-formats.md) for the current taxonom
 - [`docs/pr34-final-to-publish-phone-handoff.md`](docs/pr34-final-to-publish-phone-handoff.md) — exact final-to-publish phone handoff, credential-free destination projection, and durable publish-state recovery
 - [`docs/pr35-mobile-batch-attention-queue.md`](docs/pr35-mobile-batch-attention-queue.md) — multi-item phone attention projection, bounded safe work, source/history safety, and remote-risk recovery
 - [`docs/pr36-analytics-provider-boundary.md`](docs/pr36-analytics-provider-boundary.md) — exact successful-publication analytics subject, typed observation evidence, and append-only history
+- [`docs/pr37-youtube-analytics-adapter.md`](docs/pr37-youtube-analytics-adapter.md) — read-only YouTube Analytics OAuth, exact report/window binding, metric mapping, and completeness/late-data contract
 - [`SECURITY.md`](SECURITY.md) — private vulnerability reporting and supported security scope
 - [`THIRD_PARTY.md`](THIRD_PARTY.md) — third-party software, runtime tools, and media licensing boundary
 

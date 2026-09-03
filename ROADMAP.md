@@ -4,16 +4,16 @@ This roadmap is organized as small reviewable pull requests. Content Forge shoul
 
 ## Current implementation status
 
-- PR1–PR36: **complete in the intended post-merge repository state**.
+- PR1–PR37: **complete in the intended post-merge repository state**.
 - Milestones 0–6: **complete**.
 - Milestone 7A — Publishing: **complete through the first production YouTube path**.
 - Milestone 7B — Daily Production Completion: **complete in the intended post-PR35 state**.
-- Current implemented step: **PR36 — Analytics provider boundary and durable observation history**.
+- Current implemented step: **PR37 — YouTube Analytics adapter**.
 - Current product phase: **Milestone 8 — Measurement, experiments, and evidence-driven improvement**.
-- Next planned implementation step: **PR37 — YouTube Analytics adapter**.
+- Next planned implementation step: **PR38 — Durable performance history and observation windows**.
 - The intended **v0.1 batch-production boundary remains complete through PR17**; later PRs extend the same runtime rather than replacing it.
 
-The engine is already durable through publication and can now retain provider-agnostic measurement evidence:
+The engine is already durable through publication and can now retain provider-agnostic measurement evidence plus concrete read-only YouTube observations for exact known successful publications:
 
 ```text
 Source
@@ -27,7 +27,7 @@ Source
 -> optional AnalyticsProvider observation
 ```
 
-The phone-first daily production loop remains complete through PR35. Milestone 8 now builds a separate evidence loop over exact known publications rather than changing production authority.
+The phone-first daily production loop remains complete through PR35. Milestone 8 builds a separate evidence loop over exact known publications rather than changing production authority.
 
 The desktop remains the local source of truth and compute worker. The phone is the normal daily control surface. Internal subsystem panels remain available for advanced/debugging work, but routine production should not require knowledge of project IDs, render job IDs, template versions, provider internals, or repository architecture.
 
@@ -367,7 +367,7 @@ for the common production paths, without requiring routine access to desktop UI,
 
 ## Milestone 8 — Measurement, experiments, and evidence-driven improvement
 
-Status: **active; PR36 complete in the intended post-merge state**.
+Status: **active; PR36–PR37 complete in the intended post-merge state**.
 
 The objective is not to build a generic prediction engine that claims to know what will perform well. Content Forge first retains trustworthy observations from the user's own exact published work, then later builds comparable histories and bounded recommendations traceable to that evidence.
 
@@ -397,17 +397,29 @@ See [`docs/pr36-analytics-provider-boundary.md`](docs/pr36-analytics-provider-bo
 
 ### PR37 — YouTube Analytics adapter
 
-Planned next.
+Status: **complete in the intended post-merge state**.
 
-- optional authenticated YouTube Analytics/Data implementation behind the PR36 protocol;
-- observe exact known successful YouTube publication IDs first;
-- map only provider-supported metrics with explicit units and retained provider evidence;
-- bounded partial/unavailable behavior rather than invented zeroes;
-- credentials remain provider-local and the base runtime remains provider-free.
+Delivered:
+
+- optional `YouTubeAnalyticsProvider` behind the PR36 read-only provider contract;
+- a separate read-only OAuth token using `yt-analytics.readonly` + `youtube.readonly`, without widening the proven publishing token/scopes;
+- exact authenticated channel binding through YouTube Data API `channels.list(mine=True)`;
+- exact known successful YouTube publication/video binding through `channel==MINE` plus `video==<remote_id>`;
+- PR36 half-open UTC windows accepted only when they align exactly to Pacific reporting-day boundaries, including DST-aware conversion to inclusive YouTube dates;
+- bounded `max_window_days` before any report call;
+- daily same-metric coverage probe before aggregate acceptance so late/truncated YouTube reporting cannot silently masquerade as a complete larger window;
+- exact result-shape/date/column validation with fail-closed embedded-error, duplicate/reordered column, malformed-row, multi-row aggregate, and out-of-window evidence handling;
+- provider-neutral non-monetary metrics for views, engaged views, watch-time seconds, likes, comments, shares, and subscribers gained/lost;
+- explicit `complete / partial / unavailable` mapping where unsupported/missing/no-row/late metrics never become numeric zero;
+- provider-local credential files with private-file/symlink hardening and canonical auth target resolution;
+- optional Google dependencies remain isolated behind the existing `youtube` extra and provider-free Content Forge remains usable;
+- no dashboard, experiment attribution, recommendation logic, monetary scope, arbitrary historical channel crawl, or production-state mutation.
+
+See [`docs/pr37-youtube-analytics-adapter.md`](docs/pr37-youtube-analytics-adapter.md) for the exact adapter/reporting contract.
 
 ### PR38 — Durable performance history and observation windows
 
-Planned.
+Planned next.
 
 - history-preserving observation snapshots over PR36 records;
 - explicit comparable windows where provider data permits;

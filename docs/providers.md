@@ -14,7 +14,7 @@ OCRProvider        # implemented in PR18
 TTSProvider        # implemented in PR20
 SourceProvider     # later convenience work
 PublishingProvider # implemented in PR27; YouTube adapter in PR28/PR29
-AnalyticsProvider  # implemented in PR36; concrete platform adapter next
+AnalyticsProvider  # implemented in PR36; YouTube adapter in PR37
 ```
 
 ## General provider rules
@@ -405,9 +405,23 @@ Provider health and returned observations are canonical-revalidated at the appli
 
 Analytics never mutates `Project`, Review, Render/QC, or Publishing state. The analytics schema is lazy and provider-free rendering/export/publishing remains usable without any analytics provider.
 
-PR36 does **not** implement a YouTube Analytics SDK adapter, dashboard, comparable/mature-window summaries, experiments, or recommendations. Those remain PR37+.
+### YouTube Analytics adapter
 
-See [`pr36-analytics-provider-boundary.md`](pr36-analytics-provider-boundary.md) and [`../ROADMAP.md`](../ROADMAP.md) for the exact contract and PR37–PR41 sequencing.
+PR37 adds the first concrete adapter without changing PR36 authority or storage semantics.
+
+`YouTubeAnalyticsProvider` uses a separate provider-local read-only OAuth token with `yt-analytics.readonly` plus `youtube.readonly` for exact channel verification. It does not widen or reuse the PR28/PR29 publishing token contract, and it requests no monetary analytics scope.
+
+The adapter accepts only exact successful YouTube publications whose destination channel matches the configured/authenticated channel. Reports use `channel==MINE` plus an exact validated `video==<remote_id>` filter.
+
+Because YouTube Analytics reports use Pacific calendar dates while PR36 uses half-open timezone-aware windows, PR37 accepts only windows aligned to exact `America/Los_Angeles` local midnights. The conversion is DST-aware and maps PR36's exclusive end to Google's inclusive `endDate`.
+
+Before accepting one aggregate, PR37 runs a daily report with the same supported metrics and enough `maxResults` for every possible reporting day. The requested final reporting day must actually be present; otherwise the observation remains explicitly `unavailable`. This prevents Google's documented late-data truncation from masquerading as a complete larger window.
+
+Initial provider-neutral metric mappings are additive and non-monetary: views, engaged views, watch time seconds, likes, comments, shares, subscribers gained, and subscribers lost. Unsupported or absent values remain missing/unavailable rather than becoming zero.
+
+Malformed API shapes, embedded error evidence, unexpected pagination/result metadata, reordered/duplicate columns, malformed numeric values, and subject/channel/video mismatch all fail closed before PR36 storage.
+
+See [`pr36-analytics-provider-boundary.md`](pr36-analytics-provider-boundary.md), [`pr37-youtube-analytics-adapter.md`](pr37-youtube-analytics-adapter.md), and [`../ROADMAP.md`](../ROADMAP.md) for the exact evidence and adapter contracts.
 
 ## Provider configuration
 
@@ -434,11 +448,11 @@ providers:
     enabled: false
 
   analytics:
-    kind: future_platform_adapter
+    kind: youtube_analytics
     enabled: false
 ```
 
-This example is architectural documentation, not a promise that one canonical YAML loader currently owns all provider configuration or that a concrete analytics adapter already exists.
+This example is architectural documentation, not a promise that one canonical YAML loader currently owns all provider configuration.
 
 ## Testing
 
@@ -450,6 +464,7 @@ This allows normal CI to test provider contracts without requiring live external
 - OCR source/request evidence validation and raw-versus-corrected retention;
 - TTS semantic/cache identity, pinned Qwen snapshot resolution, WAV verification, and generated-asset integrity;
 - publishing provider health/result validation, exact approval/idempotency identity, crash uncertainty, authenticated YouTube upload bytes, and v2 declaration mapping/verification;
-- analytics exact successful-publication binding, temporal-window semantics, complete/partial/unavailable coverage, provider identity drift, model-copy bypass hardening, append-only/idempotent history, stored-row tamper detection, and provider-free lazy storage.
+- analytics exact successful-publication binding, temporal-window semantics, complete/partial/unavailable coverage, provider identity drift, model-copy bypass hardening, append-only/idempotent history, stored-row tamper detection, and provider-free lazy storage;
+- YouTube analytics read-only scope isolation, exact channel/video binding, Pacific/DST reporting-day conversion, late-data coverage probing, response-shape hardening, and optional Google runtime imports.
 
-A real PR37 analytics adapter should add an optional contract job without making external analytics SDKs or credentials part of base CI.
+The existing optional YouTube contract job installs Google dependencies and exercises both publishing and analytics adapters with fake/injected services; CI does not require a live Google account or committed credentials.
