@@ -144,8 +144,10 @@ def test_pr37_health_binds_exact_authenticated_channel_and_reuses_same_credentia
 
 
 def test_pr37_collects_exact_video_metrics_and_normalizes_watch_minutes_to_seconds():
-    api_metrics = ("views", "estimatedMinutesWatched", "likes")
-    daily, aggregate = _payloads(api_metrics, [17, 2.5, 3])
+    # AnalyticsQuery canonicalizes metric IDs, so the provider's exact API request order is
+    # likes -> views -> watch_time_seconds/estimatedMinutesWatched.
+    api_metrics = ("likes", "views", "estimatedMinutesWatched")
+    daily, aggregate = _payloads(api_metrics, [3, 17, 2.5])
     provider, analytics, _data = _provider(daily, aggregate)
     query = _query("views", "watch_time_seconds", "likes")
 
