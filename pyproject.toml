@@ -41,6 +41,7 @@ youtube = [
 [project.scripts]
 content-forge-api = "content_forge.api.__main__:main"
 content-forge-youtube-auth = "content_forge.providers.youtube_auth:main"
+content-forge-youtube-analytics-auth = "content_forge.providers.youtube_analytics_auth:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
