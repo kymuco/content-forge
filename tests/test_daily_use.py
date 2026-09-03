@@ -135,5 +135,13 @@ def test_daily_phone_url_is_projected_and_prefilled_for_desktop_onboarding(tmp_p
         assert 'typeof window.CF_CONFIG.publicBaseUrl === "string"' in app_script.text
         assert "elements.publicUrl.value = window.CF_CONFIG.publicBaseUrl" in app_script.text
         assert app_script.headers["cache-control"] == "no-cache"
+
+        worker = client.get("/app/sw.js", headers={"Host": "localhost"})
+        assert worker.status_code == 200
+        assert 'const PR35_CACHE_NAME = `${CACHE_PREFIX}v21`;' in worker.text
+        assert 'const CACHE_NAME = `${CACHE_PREFIX}v22`;' in worker.text
+        assert "key === PR35_CACHE_NAME" in worker.text
+        assert worker.headers["cache-control"] == "no-cache"
+        assert worker.headers["service-worker-allowed"] == "./"
     finally:
         app.state.runtime_lease.close()
