@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import stat
 from pathlib import Path
@@ -152,7 +153,9 @@ def save_profile(profile: DailyUseProfile, *, root: str | Path | None = None) ->
         )
         + "\n"
     )
-    temporary = paths.root / f".{_PROFILE_NAME}.{os.getpid()}.tmp"
+    temporary = paths.root / (
+        f".{_PROFILE_NAME}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+    )
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             if os.name != "nt":
@@ -185,7 +188,12 @@ def load_profile(*, root: str | Path | None = None) -> DailyUseProfile:
 def _executable_check(name: str, command: str) -> DailyUseCheck:
     candidate = Path(command).expanduser()
     looks_like_path = candidate.is_absolute() or candidate.parent != Path(".")
-    resolved = str(candidate.resolve()) if looks_like_path and candidate.is_file() else shutil.which(command)
+    if looks_like_path:
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            return DailyUseCheck(name=name, ok=False, detail=f"not executable: {command}")
+        resolved = str(candidate.resolve())
+    else:
+        resolved = shutil.which(command)
     if resolved is None:
         return DailyUseCheck(name=name, ok=False, detail=f"not found: {command}")
     return DailyUseCheck(name=name, ok=True, detail=resolved)
@@ -200,7 +208,9 @@ def doctor_profile(
     paths = RuntimePaths.from_root(root)
     try:
         paths.ensure()
-        writable_probe = paths.root / f".daily-use-write-{os.getpid()}"
+        writable_probe = paths.root / (
+            f".daily-use-write-{os.getpid()}-{secrets.token_hex(8)}"
+        )
         with writable_probe.open("x", encoding="utf-8"):
             pass
         writable_probe.unlink()
@@ -350,12 +360,12 @@ def main() -> None:
     try:
         if args.command == "setup":
             profile = canonicalize_profile(_profile_from_args(args))
-            target = save_profile(profile, root=args.root)
             checks = doctor_profile(profile, root=args.root)
-            print(f"Saved daily-use profile: {target}")
             _print_checks(checks)
             if not profile_ready(checks):
-                raise ValueError("daily-use profile was saved but preflight is not ready")
+                raise ValueError("daily-use preflight failed; profile was not saved")
+            target = save_profile(profile, root=args.root)
+            print(f"Saved daily-use profile: {target}")
             print(f"Phone app: {profile.phone_app_url}")
             return
         profile = load_profile(root=args.root)
