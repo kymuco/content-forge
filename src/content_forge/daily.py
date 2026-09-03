@@ -118,9 +118,9 @@ def _require_regular_file(path: Path, *, private: bool) -> None:
 
 
 def _absolute_file(value: str, *, private: bool) -> str:
-    path = Path(value).expanduser().resolve()
+    path = Path(value).expanduser()
     _require_regular_file(path, private=private)
-    return str(path)
+    return str(path.resolve())
 
 
 def canonicalize_profile(profile: DailyUseProfile) -> DailyUseProfile:
@@ -201,7 +201,8 @@ def doctor_profile(
     try:
         paths.ensure()
         writable_probe = paths.root / f".daily-use-write-{os.getpid()}"
-        writable_probe.write_bytes(b"")
+        with writable_probe.open("x", encoding="utf-8"):
+            pass
         writable_probe.unlink()
     except OSError as exc:
         checks.append(DailyUseCheck(name="runtime", ok=False, detail=str(exc)))
