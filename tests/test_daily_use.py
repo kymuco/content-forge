@@ -111,7 +111,7 @@ def test_daily_profile_rejects_private_file_symlink(tmp_path) -> None:
         canonicalize_profile(profile)
 
 
-def test_daily_phone_url_is_projected_into_pwa_config(tmp_path) -> None:
+def test_daily_phone_url_is_projected_and_prefilled_for_desktop_onboarding(tmp_path) -> None:
     app = create_app(
         root=tmp_path,
         public_base_url="https://forge.home.test:8765/",
@@ -123,11 +123,17 @@ def test_daily_phone_url_is_projected_into_pwa_config(tmp_path) -> None:
         payload = response.json()
         assert payload["publicBaseUrl"] == "https://forge.home.test:8765"
 
-        script = client.get("/app/config.js", headers={"Host": "localhost"})
-        assert script.status_code == 200
+        config_script = client.get("/app/config.js", headers={"Host": "localhost"})
+        assert config_script.status_code == 200
         prefix = "self.CF_CONFIG = Object.freeze("
         suffix = ");\n"
-        encoded = script.text[len(prefix) : -len(suffix)]
+        encoded = config_script.text[len(prefix) : -len(suffix)]
         assert json.loads(encoded)["publicBaseUrl"] == "https://forge.home.test:8765"
+
+        app_script = client.get("/app/app.js", headers={"Host": "localhost"})
+        assert app_script.status_code == 200
+        assert 'typeof window.CF_CONFIG.publicBaseUrl === "string"' in app_script.text
+        assert "elements.publicUrl.value = window.CF_CONFIG.publicBaseUrl" in app_script.text
+        assert app_script.headers["cache-control"] == "no-cache"
     finally:
         app.state.runtime_lease.close()
