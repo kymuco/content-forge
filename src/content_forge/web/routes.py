@@ -95,6 +95,20 @@ def _production_home_script() -> str:
     return source
 
 
+def _app_script() -> str:
+    """Compose optional daily-use onboarding defaults into the proven PR9 client."""
+
+    source = static_path("app.js").read_text(encoding="utf-8")
+    marker = "async function initialize() {\n"
+    if source.count(marker) != 1:
+        raise RuntimeError("PWA daily-use composition marker mismatch")
+    injection = (
+        marker
+        + "  if (typeof window.CF_CONFIG.publicBaseUrl === \"string\" && window.CF_CONFIG.publicBaseUrl && !elements.publicUrl.value) elements.publicUrl.value = window.CF_CONFIG.publicBaseUrl;\n"
+    )
+    return source.replace(marker, injection, 1)
+
+
 def install_pwa_routes(
     app: FastAPI,
     *,
@@ -193,8 +207,9 @@ def install_pwa_routes(
         return _asset("shared.js", "text/javascript; charset=utf-8")
 
     @app.get("/app/app.js", include_in_schema=False)
-    def pwa_app_js() -> FileResponse:
-        return _asset("app.js", "text/javascript; charset=utf-8")
+    def pwa_app_js() -> Response:
+        response = Response(_app_script(), media_type="text/javascript; charset=utf-8")
+        return _harden(response, cache_control="no-cache")
 
     @app.get("/app/production-home.js", include_in_schema=False)
     def pwa_production_home_js() -> Response:
