@@ -74,7 +74,7 @@ def test_daily_profile_round_trip_and_doctor(tmp_path) -> None:
 
 
 def test_daily_profile_rejects_plaintext_phone_url_and_partial_youtube_config() -> None:
-    with pytest.raises(ValidationError, match="must use HTTPS"):
+    with pytest.raises(ValidationError, match="requires HTTPS"):
         DailyUseProfile(
             public_base_url="http://192.168.1.20:8765",
             ssl_certfile="certificate.pem",
