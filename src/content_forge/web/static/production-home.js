@@ -131,8 +131,10 @@
     for (const id of ADVANCED_PANEL_IDS) {
       const element = document.getElementById(id);
       if (!element) continue;
-      if (advancedVisible) element.classList.remove("hidden");
-      else element.classList.add("hidden");
+      const shouldHide = !advancedVisible;
+      if (element.classList.contains("hidden") !== shouldHide) {
+        element.classList.toggle("hidden", shouldHide);
+      }
     }
     advancedButton.textContent = advancedVisible ? "Hide advanced" : "Advanced";
     advancedButton.setAttribute("aria-expanded", advancedVisible ? "true" : "false");
